@@ -52,7 +52,7 @@ cat > "$TMPCTX/debian/control" <<EOF
 Source: apple-devices
 Section: utils
 Priority: optional
-Maintainer: Saitexna <saitexna@users.noreply.github.com>
+Maintainer: Saitexna <anxetias@users.noreply.github.com>
 Standards-Version: 4.6.0
 
 Package: apple-devices
@@ -77,8 +77,8 @@ Version: ${DEB_VERSION}
 Section: utils
 Priority: optional
 Architecture: ${ARCH}
-Maintainer: Saitexna <saitexna@users.noreply.github.com>
-Homepage: https://github.com/saitexna/apple-devices
+Maintainer: Saitexna <anxetias@users.noreply.github.com>
+Homepage: https://github.com/anxetias/apple-devices
 Depends: ${DEPENDS}
 Description: Manage Apple devices over USB - GNOME application
  Apple Devices is a GTK4/libadwaita application for managing Apple

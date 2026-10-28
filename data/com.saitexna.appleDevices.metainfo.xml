@@ -35,12 +35,12 @@
       копия, подключение и отключение USB подхватываются автоматически.
     </p>
   </description>
-  <developer id="com.github.saitexna">
+  <developer id="com.github.anxetias">
     <name>Saitexna</name>
   </developer>
   <launchable type="desktop-id">com.saitexna.appleDevices.desktop</launchable>
-  <url type="homepage">https://github.com/saitexna/apple-devices</url>
-  <url type="bugtracker">https://github.com/saitexna/apple-devices/issues</url>
+  <url type="homepage">https://github.com/anxetias/apple-devices</url>
+  <url type="bugtracker">https://github.com/anxetias/apple-devices/issues</url>
   <provides>
     <binary>apple-devices</binary>
   </provides>

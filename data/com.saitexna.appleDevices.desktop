@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Apple Devices
+Name[ru]=Apple Devices
+GenericName=Apple device manager
+GenericName[ru]=Менеджер устройств Apple
+Comment=Manage iPhone and iPad over USB: music library, device info
+Comment[ru]=Управление iPhone и iPad по USB: медиатека, сведения об устройстве
+Exec=apple-devices
+Icon=com.saitexna.appleDevices
+Terminal=false
+Categories=Utility;GTK;
+Keywords=iphone;ipad;ipod;usb;afc;music;sync;айфон;музыка;синхронизация;
+StartupNotify=true

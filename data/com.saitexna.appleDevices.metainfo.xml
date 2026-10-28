@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream-метаданные: каталоги приложений (GNOME Software, Discover) -->
+<component type="desktop-application">
+  <id>com.saitexna.appleDevices</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Apple Devices</name>
+  <summary>Manage Apple devices over USB from a GNOME desktop</summary>
+  <summary xml:lang="ru">Управление устройствами Apple по USB из GNOME</summary>
+  <description>
+    <p>
+      Apple Devices is a GTK4/libadwaita application for managing Apple
+      devices (iPhone, iPad, iPod touch) connected over USB. It talks to
+      the device through the open libimobiledevice stack — the same
+      plumbing used by usbmuxd and the console tools.
+    </p>
+    <p>
+      The Music section browses the on-device library with search and
+      sorting, imports tracks together with their embedded cover art —
+      covers appear in the device Music app immediately — and can export
+      or delete tracks. A backup of the media library database is taken
+      before every write, and USB hotplug is picked up automatically.
+    </p>
+    <p xml:lang="ru">
+      Apple Devices — приложение на GTK4/libadwaita для управления
+      устройствами Apple (iPhone, iPad, iPod touch), подключёнными по USB.
+      Общение с устройством идёт через открытый стек libimobiledevice —
+      ту же основу, что используют usbmuxd и консольные утилиты.
+    </p>
+    <p xml:lang="ru">
+      Раздел «Музыка» просматривает медиатеку устройства с поиском и
+      сортировкой, импортирует треки вместе со встроенными обложками —
+      обложки появляются в «Музыке» сразу — а также экспортирует и
+      удаляет треки. Перед каждой записью базы создаётся резервная
+      копия, подключение и отключение USB подхватываются автоматически.
+    </p>
+  </description>
+  <developer id="com.github.saitexna">
+    <name>Saitexna</name>
+  </developer>
+  <launchable type="desktop-id">com.saitexna.appleDevices.desktop</launchable>
+  <url type="homepage">https://github.com/saitexna/apple-devices</url>
+  <url type="bugtracker">https://github.com/saitexna/apple-devices/issues</url>
+  <provides>
+    <binary>apple-devices</binary>
+  </provides>
+  <releases>
+    <release version="1.0.0" date="2026-10-28">
+      <description>
+        <p>First public release.</p>
+        <p xml:lang="ru">Первый публичный релиз.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

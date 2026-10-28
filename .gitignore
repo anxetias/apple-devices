@@ -1,0 +1,11 @@
+# Meson build directories
+build/
+build-*/
+
+# Debian packaging artifacts
+packaging/
+*.deb
+debian/substvars
+
+# Python/tooling caches
+__pycache__/

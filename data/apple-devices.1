@@ -1,0 +1,31 @@
+.TH APPLE-DEVICES 1 "2026-10-28" "apple-devices 1.0.0" "User Commands"
+.SH NAME
+apple-devices \- manage Apple devices over USB
+.SH SYNOPSIS
+.B apple-devices
+.RI [ options ]
+.SH DESCRIPTION
+.B apple-devices
+is a GTK4/libadwaita application for managing Apple devices (iPhone, iPad,
+iPod touch) connected over USB. It talks to the device through the open
+libimobiledevice stack (usbmuxd/lockdownd/AFC).
+.PP
+The Music section browses the on-device media library, imports audio files
+together with their embedded cover art (covers become visible in the
+device Music app immediately), exports and deletes tracks. A backup of the
+device media library database is taken before every write.
+.SH OPTIONS
+This program follows the usual GNU command line syntax. See
+.B "apple-devices --help"
+for a summary of options.
+.SH FILES
+.TP
+.I ~/.config/apple-devices/settings.ini
+Application settings (interface language and similar).
+.TP
+.I ~/.local/share/apple-devices/backups/
+Automatic backups of the device media library database, one per write.
+.SH SEE ALSO
+.BR usbmuxd (8),
+.BR ideviceinfo (1),
+.BR ifuse (1)

@@ -9,6 +9,20 @@ iPad, iPod touch — по USB. Собрано на **GTK4 / libadwaita** пов�
 > Управляйте медиатекой iPhone из Linux — с обложками, без перезагрузок
 > и без борьбы с устройством.
 
+<p align="center">
+  <img src="screenshots/music-player.jpg" width="340"
+       alt="Трек, импортированный через Apple Devices, играет с обложкой в приложении «Музыка» на iPhone"/><br>
+  <em>Трек, импортированный через Apple Devices, — с обложкой — играет
+  в приложении «Музыка» на iPhone.</em>
+</p>
+
+<p align="center">
+  <img src="screenshots/overview.png" width="400"
+       alt="Обзор устройства: модель, версия iOS, батарея, диаграмма накопителя"/>
+  <img src="screenshots/music.png" width="400"
+       alt="Медиатека с миниатюрами обложек, поиском и кнопками импорта"/>
+</p>
+
 ## Возможности
 
 - **Обзор устройства** — модель, версия iOS, серийный номер, заряд

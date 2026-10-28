@@ -9,6 +9,20 @@ touch — over USB, built with **GTK4 / libadwaita** on top of the open
 > Manage your iPhone's music library from Linux — with covers, without
 > reboots, and without fighting the device.
 
+<p align="center">
+  <img src="screenshots/music-player.jpg" width="340"
+       alt="A track imported by Apple Devices playing with its cover art in the iPhone Music app"/><br>
+  <em>A track imported by Apple Devices — cover art included — playing in
+  the iPhone Music app.</em>
+</p>
+
+<p align="center">
+  <img src="screenshots/overview.png" width="400"
+       alt="Device overview: model, iOS version, battery, storage chart"/>
+  <img src="screenshots/music.png" width="400"
+       alt="Music library with cover thumbnails, search and import controls"/>
+</p>
+
 ## Features
 
 - **Device overview** — model, iOS version, serial number, battery level

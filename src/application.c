@@ -1016,6 +1016,17 @@ musicImportThread(GTask *task, gpointer source_object,
     return;
   }
 
+  /* Гейт до заливки файлов: при грязном wal устройства фаза базы всё
+   * равно будет отменена — не создаём файлы-сироты в Imported/. */
+  GError *wal_err = NULL;
+  if (!medialibDeviceWalIsClean(s.afc, &wal_err)) {
+    logMessage(tr("Музыка: импорт отменён: %s"), wal_err->message);
+    g_clear_error(&wal_err);
+    afcSessionClose(&s);
+    g_task_return_int(task, -1);
+    return;
+  }
+
   afc_make_directory(s.afc, MUSIC_REMOTE_ROOT "/Imported");
 
   int done = 0;

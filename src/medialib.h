@@ -94,6 +94,11 @@ char *medialibBackup(const char *db_path);
 /* Залить базу обратно на устройство. */
 gboolean medialibUpload(afc_client_t afc, const char *db_path, GError **error);
 
+/* Гейт безопасности: TRUE — заменять базу можно (wal устройства
+ * отсутствует или пуст), FALSE — нельзя (error заполнена). Вызывать ДО
+ * любых записей на устройство: и до заливки mp3, и перед фазой базы. */
+gboolean medialibDeviceWalIsClean(afc_client_t afc, GError **error);
+
 /* Удалить временную папку с базой. */
 void medialibCleanupTmpDir(const char *tmpdir, const char *db_path);
 

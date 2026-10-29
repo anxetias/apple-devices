@@ -324,8 +324,10 @@ fail:
  * содержать только заголовок (32 Б). Большой wal = у демона есть
  * некчекпоинченные транзакции: он держит базу открытой и при замене
  * main откатывает нашу заливку своим старым wal (инцидент 29.10,
- * research/3utools/FINDINGS.md). */
-static gboolean medialibDeviceWalIsClean(afc_client_t afc, GError **error)
+ * research/3utools/FINDINGS.md). Публичная: вызывается и до заливки
+ * mp3-файлов (application.c), чтобы отказ не создавал сирот в
+ * Imported/, и внутри потоков базы (вторая линия обороны). */
+gboolean medialibDeviceWalIsClean(afc_client_t afc, GError **error)
 {
   char **fi = NULL;
   const char *wal = "/iTunes_Control/iTunes/MediaLibrary.sqlitedb-wal";

@@ -94,6 +94,8 @@ struct _AppleApplication {
   double storage_used_frac;
   StorageCategory storage_cats[STORAGE_MAX_CATS]; // измеренные категории
   int storage_n_cats; // сколько категорий измерено (0 — «Занято/Свободно»)
+  gboolean storage_measuring; // идёт подсчёт категорий — рисуем плашку
+  guint storage_scan_seq; // счётчик запусков подсчёта (устаревшие отбрасываем)
 };
 
 /* === Сервисы application.c, используемые модулями === */

@@ -290,6 +290,7 @@ static const TrEntry trTable[] = {
   {"Занято", "Used"},
   {"Свободно", "Free"},
   {"Данные о накопителе недоступны", "Storage information is not available"},
+  {"Подсчёт категорий…", "Counting categories…"},
   {"О программе", "About"},
   {"Главное меню", "Main menu"},
 };
@@ -609,6 +610,13 @@ storageBarDraw(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointe
     return;
   }
 
+  // Категории ещё считаются — нейтральная плашка вместо «Занято/Свободно»
+  if (self->storage_measuring && self->storage_n_cats == 0) {
+    drawSegmentLabel(cr, pctx, width / 2.0, height / 2.0,
+                     tr("Подсчёт категорий…"), &fg, width - 12);
+    return;
+  }
+
   double usedW = width * CLAMP(self->storage_used_frac, 0.0, 1.0);
 
   // Занятая часть: измеренные категории, затем «Прочее»
@@ -647,14 +655,14 @@ storageBarDraw(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointe
     g_free(txt);
     cx += w;
   }
-  if (rest > 0) {
+  if (self->storage_n_cats > 0 && rest > 0) {
     double w = usedW - cx;
     char *txt = g_strdup_printf("%s · %s", tr("Прочее"), g_format_size(rest));
     drawSegmentLabel(cr, pctx, cx + w / 2.0, height / 2.0, txt, &white, w - 12);
     g_free(txt);
   }
   if (self->storage_n_cats == 0) {
-    // Категории ещё не измерены — обычные «Занято/Свободно»
+    // Категории не измерены (подсчёт не удался) — обычные «Занято/Свободно»
     char *txt = g_strdup_printf("%s · %s", tr("Занято"),
                                 g_format_size(self->storage_used));
     drawSegmentLabel(cr, pctx, usedW / 2.0, height / 2.0, txt, &white, usedW - 12);
@@ -872,6 +880,7 @@ startMusicScan(AppleApplication *self, const char *udid)
 typedef struct {
   char *udid;
   guint64 bytes[STORAGE_MAX_CATS];
+  guint seq; // какому запуску подсчёта принадлежит результат
 } StorageScanCtx;
 
 static void
@@ -920,6 +929,14 @@ onStorageScanFinished(GObject *source_object, GAsyncResult *res, gpointer user_d
   GTask *task = G_TASK(res);
   StorageScanCtx *ctx = g_task_get_task_data(task);
 
+  // Устаревший запуск (устройство сменили, подсчёт перезапущен) —
+  // игнорируем, не трогая флаги более нового запуска
+  if (ctx->seq != self->storage_scan_seq)
+    return;
+
+  // Подсчёт завершён (успешно или нет) — плашка больше не нужна
+  self->storage_measuring = FALSE;
+
   if (!g_task_propagate_boolean(task, NULL))
     return;
 
@@ -948,13 +965,16 @@ startStorageScan(AppleApplication *self, const char *udid)
   if (self->storage_total == 0)
     return; // размеры накопителя неизвестны — категориям не от чего считать долю
 
-  // Пока идёт измерение, бар показывает «Занято/Свободно»
+  // Пока идёт подсчёт, бар показывает плашку «Подсчёт категорий…»
   self->storage_n_cats = 0;
+  self->storage_measuring = TRUE;
+  self->storage_scan_seq++;
   if (self->storage_area)
     gtk_widget_queue_draw(self->storage_area);
 
   StorageScanCtx *ctx = g_new0(StorageScanCtx, 1);
   ctx->udid = g_strdup(udid);
+  ctx->seq = self->storage_scan_seq;
 
   GTask *task = g_task_new(G_OBJECT(self), NULL, onStorageScanFinished, NULL);
   g_task_set_task_data(task, ctx, storageScanCtxFree);

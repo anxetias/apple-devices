@@ -295,6 +295,7 @@ void onRowSelected(GtkListBox *list, GtkListBoxRow *row, AppleApplication *self)
     self->storage_used = 0;
     self->storage_used_frac = 0;
     self->storage_n_cats = 0;
+    self->storage_measuring = FALSE;
     gtk_stack_set_visible_child_name(GTK_STACK(self->content_stack), "empty");
     if (self->settings_list)
       gtk_list_box_unselect_all(GTK_LIST_BOX(self->settings_list));

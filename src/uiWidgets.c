@@ -8,6 +8,10 @@
 
 /* === uiWidgets.c === */
 
+/* Демо-значения диаграммы накопителя (когда данные от устройства недоступны) */
+#define DEMO_TOTAL_GB 128 // «объём накопителя» для демо-данных
+#define DEMO_USED_PCT 47  // «занято» для демо-данных
+
 GtkWidget *makeButton(const char *icon_name, const char *label,
                       const char *css_class, GCallback cb,
                       AppleApplication *self)
@@ -171,6 +175,26 @@ gboolean musicFilterMatch(gpointer item, gpointer user_data)
   return musicTrackMatches(MUSIC_TRACK(item), self->music_filter);
 }
 
+// Сравнение текстовых полей сортировки: пустые — в конец, без учёта регистра
+static gint
+musicCmpText(const char *a, const char *b)
+{
+  gboolean ea = !a || !*a;
+  gboolean eb = !b || !*b;
+  if (ea && eb)
+    return 0;
+  if (ea)
+    return 1;
+  if (eb)
+    return -1;
+  char *fa = g_utf8_casefold(a, -1);
+  char *fb = g_utf8_casefold(b, -1);
+  gint r = g_utf8_collate(fa, fb);
+  g_free(fa);
+  g_free(fb);
+  return r;
+}
+
 gint musicSortCompare(gpointer a, gpointer b, gpointer user_data)
 {
   AppleApplication *self = APPLE_APPLICATION(user_data);
@@ -178,20 +202,20 @@ gint musicSortCompare(gpointer a, gpointer b, gpointer user_data)
   MusicTrack *tb = MUSIC_TRACK(b);
 
   switch (self->music_sort_mode) {
-  case 1:
-    return g_utf8_collate(ta->title ? ta->title : "", tb->title ? tb->title : "");
-  case 2:
-  case 3: {
+  case 1: // по названию
+    return musicCmpText(ta->title, tb->title);
+  case 2: // по исполнителю, затем по названию
+  case 3: { // по альбому, затем по названию
     const char *fa = self->music_sort_mode == 2 ? ta->artist : ta->album;
     const char *fb = self->music_sort_mode == 2 ? tb->artist : tb->album;
-    gint c = g_utf8_collate(fa ? fa : "", fb ? fb : "");
-    return c ? c : g_utf8_collate(ta->title ? ta->title : "", tb->title ? tb->title : "");
+    gint c = musicCmpText(fa, fb);
+    return c ? c : musicCmpText(ta->title, tb->title);
   }
-  case 4:
+  case 4: // по длительности, затем по названию
     if (ta->duration != tb->duration)
       return ta->duration < tb->duration ? -1 : 1;
-    return g_utf8_collate(ta->title ? ta->title : "", tb->title ? tb->title : "");
-  default:
+    return musicCmpText(ta->title, tb->title);
+  default: // как на устройстве — порядок скана
     if (ta->scan_order != tb->scan_order)
       return ta->scan_order < tb->scan_order ? -1 : 1;
     return 0;
@@ -281,7 +305,7 @@ void onRowSelected(GtkListBox *list, GtkListBoxRow *row, AppleApplication *self)
     self->selected_track = NULL;
     updateMusicButtons(self);
     if (self->header_title) {
-      adw_window_title_set_title(ADW_WINDOW_TITLE(self->header_title), "Устройство не выбрано");
+      adw_window_title_set_title(ADW_WINDOW_TITLE(self->header_title), tr("Устройство не выбрано"));
       adw_window_title_set_subtitle(ADW_WINDOW_TITLE(self->header_title), NULL);
     }
     if (self->battery_box)
@@ -314,24 +338,26 @@ void onRowSelected(GtkListBox *list, GtkListBoxRow *row, AppleApplication *self)
     adw_action_row_set_subtitle(ADW_ACTION_ROW(self->row_battery), "—");
   }
 
+  // Хранилище: реальные значения, иначе демо (честно помечаем)
   guint64 total = info->total_capacity;
   guint64 used = info->disk_usage;
   self->storage_demo = (total == 0 || used > total);
   if (self->storage_demo) {
-    total = 128ULL * 1000000000ULL;
-    used = total * 47 / 100;
+    total = (guint64)DEMO_TOTAL_GB * 1000000000ULL;
+    used = total * DEMO_USED_PCT / 100;
   }
   self->storage_total = total;
   self->storage_used = used;
   self->storage_used_frac = (double)used / (double)total;
 
+  // Шапка: иконка, имя, «модель · всего (свободно)», батарея
   if (self->header_title) {
     adw_window_title_set_title(ADW_WINDOW_TITLE(self->header_title), info->name);
-    char *sub = g_strdup_printf("%s · %s (%s свободно)%s",
+    char *sub = g_strdup_printf(tr("%s · %s (%s свободно)%s"),
                                 info->product_type ? info->product_type : "—",
                                 g_format_size(total),
                                 g_format_size(total - used),
-                                self->storage_demo ? " (демо)" : "");
+                                self->storage_demo ? tr(" (демо)") : "");
     adw_window_title_set_subtitle(ADW_WINDOW_TITLE(self->header_title), sub);
     g_free(sub);
   }
@@ -363,45 +389,51 @@ void onRowSelected(GtkListBox *list, GtkListBoxRow *row, AppleApplication *self)
   gtk_stack_set_visible_child_name(GTK_STACK(self->content_stack), "general");
   if (self->storage_area)
     gtk_widget_queue_draw(self->storage_area);
+
+  // Подгружаем медиатеку этого устройства
+  startMusicScan(self, info->udid);
 }
 
 void onBackupClicked(GtkButton *btn, AppleApplication *self)
 {
   (void)btn;
-  (void)self;
+  showStubToast(self, tr("резервное копирование"));
 }
 
 void onRestoreClicked(GtkButton *btn, AppleApplication *self)
 {
   (void)btn;
-  (void)self;
+  showStubToast(self, tr("восстановление из копии"));
 }
 
 void onCheckUpdatesClicked(GtkButton *btn, AppleApplication *self)
 {
   (void)btn;
-  (void)self;
+  showStubToast(self, tr("проверка обновлений"));
 }
 
 void onRestoreFirmwareClicked(GtkButton *btn, AppleApplication *self)
 {
   (void)btn;
-  (void)self;
+  showStubToast(self, tr("восстановление прошивки"));
 }
 
 void onSyncClicked(GtkButton *btn, AppleApplication *self)
 {
   (void)btn;
-  (void)self;
+  showStubToast(self, tr("синхронизация"));
 }
 
+// Выбор языка в настройках: сохраняем в файл, применится после перезапуска
 void onLanguageChanged(GObject *obj, GParamSpec *pspec, AppleApplication *self)
 {
   (void)pspec;
   (void)self;
+
   guint idx = adw_combo_row_get_selected(ADW_COMBO_ROW(obj));
   const char *lang = (idx == 1) ? "en" : "ru";
-  g_print("%s\n", "Язык применится после перезапуска приложения.");
+  appSettingsSaveLanguage(lang);
+  logMessage("%s", tr("Язык применится после перезапуска приложения."));
 }
 
 void onMusicSearchChanged(GtkSearchEntry *entry, AppleApplication *self)
@@ -420,12 +452,15 @@ void onMusicSortChanged(GObject *obj, GParamSpec *pspec, AppleApplication *self)
 
 void showSettingsPage(AppleApplication *self)
 {
+  // Страница настроек доступна и без выбранного устройства
   if (!self->content_stack)
     return;
   gtk_stack_set_visible_child_name(GTK_STACK(self->content_stack), "settings");
+  // Снимаем выделение с разделов навигации: подсвечен только текущий раздел,
+  // иначе повторный клик по выделенной строке не сработает (row-selected не меняется)
   if (self->nav_list)
     gtk_list_box_unselect_all(GTK_LIST_BOX(self->nav_list));
-  g_print("%s\n", "Открыта страница настроек.");
+  logMessage("%s", tr("Открыта страница настроек."));
 }
 
 void onSettingsActivated(AdwActionRow *row, AppleApplication *self)

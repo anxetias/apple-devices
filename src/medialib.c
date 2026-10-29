@@ -11,9 +11,6 @@
 
 /* === medialib.c === */
 
-int afcRemovePath(afc_client_t afc, const char *path);
-int afcMakeDirectory(afc_client_t afc, const char *path);
-
 G_DEFINE_TYPE(MusicTrack, music_track, G_TYPE_OBJECT)
 
 static void
@@ -365,9 +362,9 @@ char *medialibBackup(const char *db_path)
 
 gboolean medialibUpload(afc_client_t afc, const char *db_path, GError **error)
 {
-  afcRemovePath(afc, "/iTunes_Control/iTunes/MediaLibrary.sqlitedb-wal");
-  afcRemovePath(afc, "/iTunes_Control/iTunes/MediaLibrary.sqlitedb-shm");
-  if (afcRemovePath(afc, "/iTunes_Control/iTunes/MediaLibrary.sqlitedb") != AFC_E_SUCCESS) {
+  afc_remove_path(afc, "/iTunes_Control/iTunes/MediaLibrary.sqlitedb-wal");
+  afc_remove_path(afc, "/iTunes_Control/iTunes/MediaLibrary.sqlitedb-shm");
+  if (afc_remove_path(afc, "/iTunes_Control/iTunes/MediaLibrary.sqlitedb") != AFC_E_SUCCESS) {
     g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED,
                 "не удалось удалить базу на устройстве");
     return FALSE;
@@ -401,14 +398,14 @@ int musicCleanMedialib(AfcSession *s, MusicTrack *track)
   char *base_path = g_strndup(full + 1, (gsize)(slash - full - 1));
   const char *location = slash + 1;
 
-  g_print("%s\n", "Музыка: чистим запись в базе «Музыки»…");
+  logMessage(tr("Музыка: чистим запись в базе «Музыки»…"));
 
   GError *err = NULL;
   int result = -1;
   char *tmpdir = g_dir_make_tmp("apple-devices-XXXXXX", NULL);
   char *db_path = tmpdir ? medialibDownload(s->afc, tmpdir, &err) : NULL;
   if (!db_path) {
-    g_print("%s\n", "Музыка: не удалось скачать базу медиатеки.");
+    logMessage(tr("Музыка: не удалось скачать базу медиатеки: %s"), err->message);
     g_clear_error(&err);
     g_free(base_path);
     g_free(tmpdir);
@@ -417,13 +414,14 @@ int musicCleanMedialib(AfcSession *s, MusicTrack *track)
 
   char *backup = medialibBackup(db_path);
   if (backup)
-    g_print("%s\n", "Музыка: резервная копия базы.");
+    logMessage(tr("Музыка: резервная копия базы: %s"), backup);
   else
-    g_print("%s\n", "Музыка: резервная копия не создана — продолжаем без неё.");
+    logMessage(tr("Музыка: резервная копия не создана — продолжаем без неё."));
 
   sqlite3 *db = NULL;
   if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
-    g_print("%s\n", "Музыка: не удалось открыть базу.");
+    logMessage(tr("Музыка: не удалось открыть базу: %s"),
+               db ? sqlite3_errmsg(db) : "sqlite3_open failed");
     if (db)
       sqlite3_close(db);
     g_free(backup);
@@ -437,22 +435,23 @@ int musicCleanMedialib(AfcSession *s, MusicTrack *track)
   MedialibTrackRow row;
   int found = medialibFindTrack(db, base_path, location, (gint64)track->size, &row);
   if (found < 0) {
-    g_print("%s\n", "Музыка: ошибка поиска записи в базе.");
+    logMessage(tr("Музыка: ошибка поиска записи в базе."));
   } else if (found == 0) {
-    g_print("%s\n", "Музыка: записи в медиатеке нет — база не тронута.");
+    logMessage(tr("Музыка: записи в медиатеке нет (файл не из синка) — база не тронута."));
     result = 0;
   } else if (medialibDeleteTrack(db, &row, &err)) {
-    g_print("%s\n", "Музыка: запись вычищена из базы.");
+    logMessage(tr("Музыка: запись вычищена из базы (ID %lld)."),
+               (long long)row.item_pid);
     result = 1;
   } else {
-    g_print("%s\n", "Музыка: не удалось вычистить запись.");
+    logMessage(tr("Музыка: не удалось вычистить запись: %s"), err->message);
     g_clear_error(&err);
   }
 
   sqlite3_close(db);
 
   if (result == 1 && !medialibUpload(s->afc, db_path, &err)) {
-    g_print("%s\n", "Музыка: не удалось загрузить базу на устройство.");
+    logMessage(tr("Музыка: не удалось загрузить базу на устройство: %s"), err->message);
     g_clear_error(&err);
     result = -1;
   }
@@ -1233,7 +1232,7 @@ int medialibAttachArtwork(afc_client_t afc, sqlite3 *db, const char *tmpdir,
   }
   fclose(f);
   char *dir = g_strdup_printf("/iTunes_Control/iTunes/Artwork/Originals/%.2s", sha1);
-  afcMakeDirectory(afc, dir);
+  afc_make_directory(afc, dir);
   g_free(dir);
   char *remote = g_strdup_printf("/iTunes_Control/iTunes/Artwork/Originals/%s", rel_path);
   int up = afcUploadFile(afc, tmp_path, remote);
@@ -1341,26 +1340,28 @@ int musicSyncMedialibAdd(afc_client_t afc, GPtrArray *metas)
     if (!((MedialibMeta *)metas->pdata[i])->has_cover)
       no_cover++;
   if (no_cover)
-    g_print("%s\n", "Музыка: у треков нет встроенной обложки.");
+    logMessage(tr("Музыка: у %u трека(ов) нет встроенной обложки — попробуем унаследовать обложку альбома."),
+               no_cover);
 
-  g_print("%s\n", "Музыка: добавляем треки в базу медиатеки…");
+  logMessage(tr("Музыка: добавляем треки в базу медиатеки…"));
 
   tmpdir = g_dir_make_tmp("apple-devices-XXXXXX", NULL);
   db_path = tmpdir ? medialibDownload(afc, tmpdir, &err) : NULL;
   if (!db_path) {
-    g_print("%s\n", "Музыка: не удалось скачать базу медиатеки.");
+    logMessage(tr("Музыка: не удалось скачать базу медиатеки: %s"), err->message);
     g_clear_error(&err);
     goto fail;
   }
 
   backup = medialibBackup(db_path);
   if (backup)
-    g_print("%s\n", "Музыка: резервная копия базы.");
+    logMessage(tr("Музыка: резервная копия базы: %s"), backup);
   else
-    g_print("%s\n", "Музыка: резервная копия не создана — продолжаем без неё.");
+    logMessage(tr("Музыка: резервная копия не создана — продолжаем без неё."));
 
   if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
-    g_print("%s\n", "Музыка: не удалось открыть базу.");
+    logMessage(tr("Музыка: не удалось открыть базу: %s"),
+               db ? sqlite3_errmsg(db) : "sqlite3_open failed");
     goto fail;
   }
 
@@ -1377,7 +1378,8 @@ int musicSyncMedialibAdd(afc_client_t afc, GPtrArray *metas)
 
   int art_fixed = medialibFixArtworkPaths(db);
   if (art_fixed > 0)
-    g_print("%s\n", "Музыка: исправлено путей обложек.");
+    logMessage(tr("Музыка: исправлено путей обложек от прошлых импортов: %d."),
+               art_fixed);
 
   for (guint i = 0; i < metas->len; i++) {
     MedialibMeta *m = metas->pdata[i];
@@ -1387,9 +1389,9 @@ int musicSyncMedialibAdd(afc_client_t afc, GPtrArray *metas)
       goto rollback;
     if (rc > 0) {
       added++;
-      g_print("%s\n", "Музыка: трек добавлен в базу.");
+      logMessage(tr("Музыка: трек добавлен в базу (ID %lld)."), (long long)new_pid);
     } else {
-      g_print("%s\n", "Музыка: трек уже есть в медиатеке.");
+      logMessage(tr("Музыка: трек уже есть в медиатеке — обновляю ревизию («%s»)."), m->title);
     }
   }
 
@@ -1416,7 +1418,7 @@ int musicSyncMedialibAdd(afc_client_t afc, GPtrArray *metas)
     if (pok)
       arc = medialibAttachArtwork(afc, db, tmpdir, t_pid, al_pid, m, &err);
     if (!pok && lookup_err) {
-      g_print("%s\n", "Музыка: ошибка базы при записи обложки.");
+      logMessage(tr("Музыка: ошибка базы при записи обложки: %s"), lookup_err->message);
       g_error_free(lookup_err);
       goto rollback;
     }
@@ -1425,7 +1427,8 @@ int musicSyncMedialibAdd(afc_client_t afc, GPtrArray *metas)
       dbExecSql(db, "ROLLBACK TO artwork", NULL);
       dbExecSql(db, "RELEASE artwork", NULL);
       g_clear_error(&err);
-      g_print("%s\n", "Музыка: обложку записать не удалось — трек без неё.");
+      logMessage(tr("Музыка: обложку для «%s» записать не удалось — трек добавлен без неё."),
+                 m->title);
       continue;
     }
     if (!dbExecSql(db, "RELEASE artwork", NULL))
@@ -1433,7 +1436,8 @@ int musicSyncMedialibAdd(afc_client_t afc, GPtrArray *metas)
     art_attached += arc;
   }
   if (art_attached)
-    g_print("%s\n", "Музыка: обложки привязаны к трекам.");
+    logMessage(tr("Музыка: обложки привязаны к трекам (%u шт.)."),
+               (guint)art_attached);
 
   if (!dbExecSql(db, "COMMIT", &err))
     goto fail;
@@ -1442,7 +1446,7 @@ int musicSyncMedialibAdd(afc_client_t afc, GPtrArray *metas)
   db = NULL;
 
   if (!medialibUpload(afc, db_path, &err)) {
-    g_print("%s\n", "Музыка: не удалось загрузить базу на устройство.");
+    logMessage(tr("Музыка: не удалось загрузить базу на устройство: %s"), err->message);
     g_clear_error(&err);
     goto fail;
   }
@@ -1465,14 +1469,3 @@ fail:
   return result;
 }
 
-/* --- AfcSession helper wrappers for medialib --- */
-
-int afcRemovePath(afc_client_t afc, const char *path)
-{
-  return afc_remove_path(afc, path);
-}
-
-int afcMakeDirectory(afc_client_t afc, const char *path)
-{
-  return afc_make_directory(afc, path);
-}

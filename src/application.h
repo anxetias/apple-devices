@@ -84,6 +84,23 @@ struct _AppleApplication {
   gboolean storage_demo;
 };
 
+/* === Сервисы application.c, используемые модулями === */
+
+/* Перевод: возвращает английскую строку, если язык en, иначе как есть. */
+const char *tr(const char *ru);
+
+/* Лог-сообщение: в виджет лога и в stdout (потокобезопасно, через idle). */
+void logMessage(const char *format, ...);
+
+/* Toast-заглушка для нереализованных действий. */
+void showStubToast(AppleApplication *self, const char *what);
+
+/* Сохранить язык интерфейса в settings.ini. */
+void appSettingsSaveLanguage(const char *lang);
+
+/* Запуск сканирования медиатеки выбранного устройства. */
+void startMusicScan(AppleApplication *self, const char *udid);
+
 AppleApplication *apple_application_new(void);
 
 G_END_DECLS

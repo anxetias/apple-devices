@@ -200,6 +200,7 @@ plistToInt(plist_t node)
 
 /* --- Фоновый поток: сканирование USB --- */
 
+// Фоновый поток: без обращений к виджетам GTK. UI обновляется в колбэке.
 void
 scanDevicesThread(GTask *task, gpointer sourceObject,
                   gpointer taskData, GCancellable *cancellable)
@@ -211,30 +212,40 @@ scanDevicesThread(GTask *task, gpointer sourceObject,
   char **devices = NULL;
   int count = 0;
 
-  g_print("%s\n", "Starting USB scan...");
+  logMessage(tr("Начинаем сканирование USB..."));
 
   if (idevice_get_device_list(&devices, &count) < 0) {
-    g_print("%s\n", "Error: idevice_get_device_list failed.");
+    logMessage(tr("Ошибка: idevice_get_device_list вернула ошибку."));
     g_task_return_boolean(task, FALSE);
     return;
   }
 
-  g_print("%s\n", "Devices found in the system: ...");
+  logMessage(tr("Найдено устройств в системе: %d"), count);
 
   for (int i = 0; i < count; i++) {
     idevice_t device = NULL;
     lockdownd_client_t client = NULL;
 
-    g_print("%s\n", "Processing UDID: ...");
+    logMessage(tr("Обработка UDID: %s"), devices[i]);
 
     if (idevice_new(&device, devices[i]) != IDEVICE_E_SUCCESS) {
+      logMessage(tr("  -> Ошибка: idevice_new не смог создать устройство."));
       continue;
     }
 
     if (lockdownd_client_new_with_handshake(device, &client, "AppleDeviceManager") == LOCKDOWN_E_SUCCESS) {
-      plist_t nodeName = NULL, nodeVer = NULL, nodeType = NULL;
-      plist_t nodeSerial = NULL, nodeTotal = NULL, nodeDisk = NULL;
+      logMessage(tr("  -> Handshake успешен."));
+      plist_t nodeName = NULL;
+      plist_t nodeVer = NULL;
+      plist_t nodeType = NULL;
+      plist_t nodeSerial = NULL;
+      plist_t nodeTotal = NULL;
+      plist_t nodeDisk = NULL;
       plist_t nodeBatt = NULL;
+      char *nameStr = NULL;
+      char *verStr = NULL;
+      char *typeStr = NULL;
+      char *serialStr = NULL;
 
       lockdownd_get_value(client, NULL, "DeviceName", &nodeName);
       lockdownd_get_value(client, NULL, "ProductVersion", &nodeVer);
@@ -248,7 +259,6 @@ scanDevicesThread(GTask *task, gpointer sourceObject,
       info->udid = g_strdup(devices[i]);
 
       if (nodeName) {
-        char *nameStr = NULL;
         plist_get_string_val(nodeName, &nameStr);
         info->name = g_strdup(nameStr ? nameStr : "Unknown Device");
         g_free(nameStr);
@@ -258,7 +268,6 @@ scanDevicesThread(GTask *task, gpointer sourceObject,
       }
 
       if (nodeVer) {
-        char *verStr = NULL;
         plist_get_string_val(nodeVer, &verStr);
         info->version = g_strdup(verStr ? verStr : "N/A");
         g_free(verStr);
@@ -268,15 +277,13 @@ scanDevicesThread(GTask *task, gpointer sourceObject,
       }
 
       if (nodeType) {
-        char *typeStr = NULL;
-        plist_get_string_val(nodeType, &typeStr);
+        plist_get_string_val(nodeType, &typeStr); // NULL, если значения нет
         info->product_type = g_strdup(typeStr);
         g_free(typeStr);
         plist_free(nodeType);
       }
 
       if (nodeSerial) {
-        char *serialStr = NULL;
         plist_get_string_val(nodeSerial, &serialStr);
         info->serial_number = g_strdup(serialStr);
         g_free(serialStr);
@@ -284,6 +291,7 @@ scanDevicesThread(GTask *task, gpointer sourceObject,
       }
 
       if (nodeTotal) {
+        // Значение может прийти и числом, и строкой — обрабатываем оба варианта
         if (plist_get_node_type(nodeTotal) == PLIST_UINT) {
           plist_get_uint_val(nodeTotal, &info->total_capacity);
         } else {
@@ -309,48 +317,84 @@ scanDevicesThread(GTask *task, gpointer sourceObject,
         plist_free(nodeDisk);
       }
 
+      // Фоллбек: новые iOS не отдают TotalDiskCapacity/DiskUsage через
+      // lockdown. Берём данные через AFC (сервис файлового обмена):
+      // FSTotalBytes/FSFreeBytes — media-раздел с пользовательскими данными,
+      // примерно то, что iOS показывает в «Настройки → Хранилище».
       if (info->total_capacity == 0) {
         afc_client_t afc = NULL;
         lockdownd_service_descriptor_t afcService = NULL;
+
+        // Поднимаем сервис AFC через уже установленный lockdown-сеанс
         if (lockdownd_start_service(client, "com.apple.afc", &afcService) == LOCKDOWN_E_SUCCESS &&
             afc_client_new(device, afcService, &afc) == AFC_E_SUCCESS) {
           char **afcKeys = NULL;
           if (afc_get_device_info(afc, &afcKeys) == AFC_E_SUCCESS && afcKeys) {
-            guint64 fsTotal = 0, fsFree = 0;
+            guint64 fsTotal = 0;
+            guint64 fsFree = 0;
+
+            // Массив — NULL-терминированный список пар «ключ, значение»
             for (char **kv = afcKeys; kv[0] && kv[1]; kv += 2) {
               if (g_strcmp0(kv[0], "FSTotalBytes") == 0)
                 fsTotal = g_ascii_strtoull(kv[1], NULL, 10);
               else if (g_strcmp0(kv[0], "FSFreeBytes") == 0)
                 fsFree = g_ascii_strtoull(kv[1], NULL, 10);
             }
+
             if (fsTotal > 0) {
               info->total_capacity = fsTotal;
               info->disk_usage = fsTotal > fsFree ? fsTotal - fsFree : 0;
+              logMessage(tr("  -> Накопитель (AFC, media-раздел): занято %"
+                          G_GUINT64_FORMAT " из %" G_GUINT64_FORMAT " байт"),
+                          info->disk_usage, info->total_capacity);
             }
+
+            // Память под строки выделял сам libimobiledevice (malloc) —
+            // освобождаем парным free()
             for (char **kv = afcKeys; *kv; kv++)
               free(*kv);
             free(afcKeys);
+          } else {
+            logMessage(tr("  -> AFC: не удалось получить информацию о разделе."));
           }
           afc_client_free(afc);
+        } else {
+          logMessage(tr("  -> AFC: сервис не открылся (нужен Trust?)."));
         }
+
         if (afcService)
           lockdownd_service_descriptor_free(afcService);
       }
 
+      // Уровень батареи (домен com.apple.mobile.battery)
       info->battery_percent = plistToInt(nodeBatt);
       if (nodeBatt)
         plist_free(nodeBatt);
-      if (info->battery_percent > 100)
-        info->battery_percent = 100;
+      if (info->battery_percent >= 0) {
+        if (info->battery_percent > 100)
+          info->battery_percent = 100;
+        logMessage(tr("  -> Батарея: %d%%"), info->battery_percent);
+      }
 
+      logMessage(tr("  -> Имя: %s, Версия: %s"), info->name, info->version);
+      logMessage(tr("  -> Тип: %s"), info->product_type ? info->product_type : "N/A");
+      if (info->total_capacity > 0)
+        logMessage(tr("  -> Накопитель: занято %" G_GUINT64_FORMAT
+                    " из %" G_GUINT64_FORMAT " байт"),
+                    info->disk_usage, info->total_capacity);
+      else
+        logMessage(tr("  -> Накопитель: данные недоступны — будет показан демо-режим."));
       g_list_store_append(store, info);
       g_object_unref(info);
 
       lockdownd_client_free(client);
+    } else {
+      logMessage(tr("  -> Ошибка: не удалось установить соединение (Trust?)."));
     }
     idevice_free(device);
   }
   idevice_device_list_free(devices);
+  logMessage(tr("Сканирование завершено."));
   g_task_return_boolean(task, TRUE);
 }
 

@@ -52,7 +52,7 @@ logMessageIdle(gpointer data)
   return G_SOURCE_REMOVE;
 }
 
-static void
+void
 logMessage(const char *format, ...)
 {
   va_list args;
@@ -281,7 +281,7 @@ static const TrEntry trTable[] = {
   {"Открыта страница настроек.", "Opened the settings page."},
 };
 
-static const char *
+const char *
 tr(const char *ru)
 {
   if (!appLanguage || appLanguage[0] != 'e')
@@ -316,7 +316,7 @@ appSettingsLoad(void)
   g_free(path);
 }
 
-static void
+void
 appSettingsSaveLanguage(const char *lang)
 {
   char *dir = g_build_filename(g_get_user_config_dir(), "apple-devices", NULL);
@@ -334,7 +334,7 @@ appSettingsSaveLanguage(const char *lang)
   g_free(path);
 }
 
-static void
+void
 showStubToast(AppleApplication *self, const char *what)
 {
   char *msg = g_strdup_printf(tr("Заглушка: %s ещё не реализовано"), what);
@@ -387,7 +387,8 @@ signalHandler(int sig)
   for (size_t i = 0; suffix[i] != '\0'; i++)
     banner[pos++] = suffix[i];
 
-  write(STDERR_FILENO, banner, pos);
+  ssize_t rc = write(STDERR_FILENO, banner, pos);
+  (void)rc; // результат сознательно не проверяем: пишем в stderr перед _exit
   backtrace_symbols_fd(array, size, STDERR_FILENO);
   _exit(1);
 }
@@ -572,6 +573,101 @@ musicScanThread(GTask *task, gpointer source_object,
   g_task_return_boolean(task, TRUE);
 }
 
+// Колбэк завершения сканирования медиатеки (главный поток)
+static void
+onMusicScanFinished(GObject *source_object, GAsyncResult *res, gpointer user_data)
+{
+  (void)user_data;
+
+  AppleApplication *self = APPLE_APPLICATION(source_object);
+  GTask *task = G_TASK(res);
+  MusicScanCtx *ctx = g_task_get_task_data(task);
+
+  self->music_busy = FALSE;
+  updateMusicButtons(self);
+
+  if (!self->music_list || !self->music_stack)
+    return; // окно уже закрыто
+
+  if (!g_task_propagate_boolean(task, NULL)) {
+    logMessage(tr("Музыка: сканирование не удалось."));
+    return;
+  }
+
+  // Пока шло сканирование, устройство могли сменить — результаты устарели
+  if (!self->selected || g_strcmp0(self->selected->udid, ctx->udid) != 0) {
+    logMessage(tr("Музыка: скан устарел (устройство сменилось) — отброшен."));
+    return;
+  }
+
+  guint n = g_list_model_get_n_items(G_LIST_MODEL(ctx->store));
+  g_list_store_remove_all(self->music_store);
+  for (guint i = 0; i < n; i++) {
+    MusicTrack *t = MUSIC_TRACK(g_list_model_get_item(G_LIST_MODEL(ctx->store), i));
+    t->scan_order = i; // порядок скана — для сортировки «как на устройстве»
+    g_list_store_append(self->music_store, t);
+    g_object_unref(t); // владение забрал music_store
+  }
+  self->selected_track = NULL;
+  musicApplyFilter(self); // пересчитать поиск/сортировку под новый список
+
+  if (n > 0) {
+    gtk_stack_set_visible_child_name(GTK_STACK(self->music_stack), "list");
+  } else {
+    adw_status_page_set_title(ADW_STATUS_PAGE(self->music_status), tr("Медиатека пуста"));
+    adw_status_page_set_description(ADW_STATUS_PAGE(self->music_status),
+                                    tr("В " MUSIC_REMOTE_ROOT " нет аудиофайлов. Загрузите музыку кнопкой «Импорт»."));
+    gtk_stack_set_visible_child_name(GTK_STACK(self->music_stack), "empty");
+  }
+  logMessage(tr("Музыка: в списке %u треков."), n);
+  logMessage(tr("Музыка: сканирование заняло %.1f с."),
+             (g_get_monotonic_time() - ctx->started_usec) / 1000000.0);
+  if (ctx->total_bytes > 0)
+    logMessage(tr("Музыка: скачано %s из %s (умное частичное чтение тегов)."),
+               g_format_size(ctx->network_bytes),
+               g_format_size(ctx->total_bytes));
+}
+
+// Запуск сканирования медиатеки выбранного устройства
+void
+startMusicScan(AppleApplication *self, const char *udid)
+{
+  if (!udid || !self->music_stack)
+    return;
+
+  if (self->music_busy) {
+    logMessage(tr("Музыка: операция уже идёт — сканирование отложено (нажмите «Обновить»)."));
+    return;
+  }
+  self->music_busy = TRUE;
+  updateMusicButtons(self);
+  self->selected_track = NULL;
+
+  // Сбрасываем поиск — новый скан показывает всю медиатеку
+  if (self->music_search)
+    gtk_editable_set_text(GTK_EDITABLE(self->music_search), "");
+
+  // Очищаем список сразу, чтобы не показывать музыку прошлого устройства
+  g_list_store_remove_all(self->music_store);
+  if (!gtk_widget_get_first_child(self->music_list)) {
+    adw_status_page_set_title(ADW_STATUS_PAGE(self->music_status), tr("Загружаем медиатеку…"));
+    adw_status_page_set_description(ADW_STATUS_PAGE(self->music_status),
+                                    tr("Читаем теги и обложки с устройства — это может занять время."));
+    gtk_stack_set_visible_child_name(GTK_STACK(self->music_stack), "empty");
+  }
+
+  MusicScanCtx *ctx = g_new0(MusicScanCtx, 1);
+  ctx->udid = g_strdup(udid);
+  ctx->store = g_list_store_new(MUSIC_TRACK_TYPE);
+  ctx->started_usec = g_get_monotonic_time(); // для замера времени в логе
+
+  GTask *task = g_task_new(G_OBJECT(self), NULL, onMusicScanFinished, NULL);
+  g_task_set_task_data(task, ctx, musicScanCtxFree);
+  g_task_run_in_thread(task, musicScanThread);
+
+  g_object_unref(task); // только наш ref от g_task_new (см. startScan)
+}
+
 typedef struct {
   char *udid;
   GPtrArray *local_paths;
@@ -667,8 +763,9 @@ onMusicImportFinished(GObject *source_object, GAsyncResult *res, gpointer user_d
   else if (done > 0)
     logMessage(tr("Музыка: файлы загружены, но база «Музыки» не обновлена — треки появятся только после перезагрузки iPhone."));
 
+  // Обновляем список, чтобы показать импортированное
   if (done > 0 && self->selected && g_strcmp0(self->selected->udid, ctx->udid) == 0)
-    startScan(self);
+    startMusicScan(self, self->selected->udid);
 }
 
 static void
@@ -1012,13 +1109,9 @@ onMusicRefreshClicked(GtkButton *btn, AppleApplication *self)
   (void)btn;
 
   if (self->selected)
-    startScan(self);
+    startMusicScan(self, self->selected->udid);
 }
 
-static void startScan(AppleApplication *self);
-
-/* Forward declaration for function defined later in this file */
-static void startScan(AppleApplication *self);
 static void storageBarDraw(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer userData);
 
 static void
@@ -1062,7 +1155,6 @@ onScanFinished(GObject *source_object, GAsyncResult *res, gpointer user_data)
       adw_status_page_set_title(ADW_STATUS_PAGE(self->status_page), tr("Устройства не найдены"));
       adw_status_page_set_description(ADW_STATUS_PAGE(self->status_page),
                                       tr("Подключите iPhone, iPad или другое устройство Apple по USB и нажмите «Обновить»."));
-      gtk_stack_set_visible_child_name(GTK_STACK(self->sidebar_stack), "status");
     }
 
     restoreSelection(self, prev_udid);
@@ -1593,7 +1685,7 @@ apple_application_activate(GApplication *app)
   gtk_widget_set_margin_end(storage_box, 12);
   gtk_box_append(GTK_BOX(storage_box), self->storage_area);
   GtkWidget *sync_btn = gtk_button_new_with_label(tr("Синхронизировать"));
-  g_signal_connect(sync_btn, "clicked", G_CALLBACK(onRefreshClicked), self);
+  g_signal_connect(sync_btn, "clicked", G_CALLBACK(onSyncClicked), self);
   gtk_box_append(GTK_BOX(storage_box), sync_btn);
 
   GtkWidget *content_tb = adw_toolbar_view_new();

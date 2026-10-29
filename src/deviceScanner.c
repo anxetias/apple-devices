@@ -3,6 +3,7 @@
 #include <libimobiledevice/lockdown.h>
 #include <libimobiledevice/afc.h>
 #include <glib.h>
+#include <string.h>
 
 /* === deviceScanner.c === */
 
@@ -198,6 +199,20 @@ plistToInt(plist_t node)
   }
 }
 
+/* --- Приватность: маскирование UDID --- */
+
+// Маска UDID: первые 4 символа + «…» + последние 4 («0000…402E»)
+char *
+deviceMaskUdid(const char *udid)
+{
+  if (!udid)
+    return NULL;
+  gsize len = strlen(udid);
+  if (len <= 8)
+    return g_strdup(udid); // слишком короткий UDID не маскируем
+  return g_strdup_printf("%.4s…%s", udid, udid + len - 4);
+}
+
 /* --- Фоновый поток: сканирование USB --- */
 
 // Фоновый поток: без обращений к виджетам GTK. UI обновляется в колбэке.
@@ -226,7 +241,14 @@ scanDevicesThread(GTask *task, gpointer sourceObject,
     idevice_t device = NULL;
     lockdownd_client_t client = NULL;
 
-    logMessage(tr("Обработка UDID: %s"), devices[i]);
+    // UDID в логе маскируется, если включён приватный режим
+    if (appHidePersonalData()) {
+      char *masked = deviceMaskUdid(devices[i]);
+      logMessage(tr("Обработка UDID: %s"), masked);
+      g_free(masked);
+    } else {
+      logMessage(tr("Обработка UDID: %s"), devices[i]);
+    }
 
     if (idevice_new(&device, devices[i]) != IDEVICE_E_SUCCESS) {
       logMessage(tr("  -> Ошибка: idevice_new не смог создать устройство."));

@@ -279,6 +279,11 @@ static const TrEntry trTable[] = {
   {"Язык применится после перезапуска приложения.",
    "The language will be applied after the application restarts."},
   {"Открыта страница настроек.", "Opened the settings page."},
+  {"Скрывать личные данные", "Hide personal data"},
+  {"Серийный номер и UDID будут замаскированы.",
+   "Serial number and UDID will be masked."},
+  {"Личные данные скрыты.", "Personal data is now hidden."},
+  {"Личные данные снова видны.", "Personal data is visible again."},
 };
 
 const char *
@@ -299,7 +304,7 @@ appSettingsPath(void)
 }
 
 static void
-appSettingsLoad(void)
+appSettingsLoad(AppleApplication *self)
 {
   char *path = appSettingsPath();
   GKeyFile *kf = g_key_file_new();
@@ -311,13 +316,18 @@ appSettingsLoad(void)
     } else {
       g_free(lang);
     }
+    // Приватный режим: по умолчанию выключен (личные данные видны)
+    self->hide_personal_data =
+        g_key_file_get_boolean(kf, "general", "hide-personal-data", NULL);
   }
   g_key_file_free(kf);
   g_free(path);
 }
 
-void
-appSettingsSaveLanguage(const char *lang)
+// Записать строковый ключ в settings.ini, сохранив остальные
+// (load-modify-save: файл читается целиком, правится один ключ, пишется назад)
+static void
+appSettingsSetKeyString(const char *key, const char *value)
 {
   char *dir = g_build_filename(g_get_user_config_dir(), "apple-devices", NULL);
   g_mkdir_with_parents(dir, 0755);
@@ -325,13 +335,53 @@ appSettingsSaveLanguage(const char *lang)
 
   char *path = appSettingsPath();
   GKeyFile *kf = g_key_file_new();
-  g_key_file_set_string(kf, "general", "language", lang);
+  g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, NULL);
+  g_key_file_set_string(kf, "general", key, value);
   gsize len = 0;
   char *data = g_key_file_to_data(kf, &len, NULL);
   g_file_set_contents(path, data, (gssize)len, NULL);
   g_free(data);
   g_key_file_free(kf);
   g_free(path);
+}
+
+// То же для булева ключа
+static void
+appSettingsSetKeyBoolean(const char *key, gboolean value)
+{
+  char *dir = g_build_filename(g_get_user_config_dir(), "apple-devices", NULL);
+  g_mkdir_with_parents(dir, 0755);
+  g_free(dir);
+
+  char *path = appSettingsPath();
+  GKeyFile *kf = g_key_file_new();
+  g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, NULL);
+  g_key_file_set_boolean(kf, "general", key, value);
+  gsize len = 0;
+  char *data = g_key_file_to_data(kf, &len, NULL);
+  g_file_set_contents(path, data, (gssize)len, NULL);
+  g_free(data);
+  g_key_file_free(kf);
+  g_free(path);
+}
+
+void
+appSettingsSaveLanguage(const char *lang)
+{
+  appSettingsSetKeyString("language", lang);
+}
+
+void
+appSettingsSaveHidePersonalData(gboolean hide)
+{
+  appSettingsSetKeyBoolean("hide-personal-data", hide);
+}
+
+// Приватный режим включён? (до создания окна — данные видны)
+gboolean
+appHidePersonalData(void)
+{
+  return globalApp ? globalApp->hide_personal_data : FALSE;
 }
 
 void
@@ -1244,7 +1294,14 @@ onDeviceEventIdle(gpointer user_data)
       g_object_unref(info);
       if (match) {
         g_list_store_remove(self->device_store, i);
-        logMessage(tr("Устройство отключено: %s"), msg->udid);
+        // UDID в логе маскируется, если включён приватный режим
+        if (appHidePersonalData()) {
+          char *masked = deviceMaskUdid(msg->udid);
+          logMessage(tr("Устройство отключено: %s"), masked);
+          g_free(masked);
+        } else {
+          logMessage(tr("Устройство отключено: %s"), msg->udid);
+        }
         if (g_list_model_get_n_items(G_LIST_MODEL(self->device_store)) == 0 &&
             self->sidebar_stack && self->status_page) {
           adw_status_page_set_title(ADW_STATUS_PAGE(self->status_page), tr("Устройство отключено"));
@@ -1256,7 +1313,14 @@ onDeviceEventIdle(gpointer user_data)
       }
     }
   } else if (msg->kind == IDEVICE_DEVICE_ADD) {
-    logMessage(tr("Устройство подключено: %s — обновляю список…"), msg->udid);
+    // UDID в логе маскируется, если включён приватный режим
+    if (appHidePersonalData()) {
+      char *masked = deviceMaskUdid(msg->udid);
+      logMessage(tr("Устройство подключено: %s — обновляю список…"), masked);
+      g_free(masked);
+    } else {
+      logMessage(tr("Устройство подключено: %s — обновляю список…"), msg->udid);
+    }
     if (self->scanning)
       self->rescan_pending = TRUE;
     else
@@ -1449,6 +1513,19 @@ apple_application_activate(GApplication *app)
   adw_preferences_group_add(ADW_PREFERENCES_GROUP(group_info), self->row_serial);
   adw_preferences_group_add(ADW_PREFERENCES_GROUP(group_info), self->row_udid);
   adw_preferences_group_add(ADW_PREFERENCES_GROUP(group_info), self->row_battery);
+
+  // Приватность: маскировать серийный номер и UDID в UI и логах
+  AdwSwitchRow *privacy_row = ADW_SWITCH_ROW(adw_switch_row_new());
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(privacy_row),
+                                tr("Скрывать личные данные"));
+  adw_action_row_set_subtitle(ADW_ACTION_ROW(privacy_row),
+                              tr("Серийный номер и UDID будут замаскированы."));
+  // Начальное состояние ставим ДО подключения сигнала, чтобы не словить
+  // ложное срабатывание notify::active при построении UI
+  adw_switch_row_set_active(privacy_row, self->hide_personal_data);
+  g_signal_connect(privacy_row, "notify::active",
+                   G_CALLBACK(onHidePersonalChanged), self);
+  adw_preferences_group_add(ADW_PREFERENCES_GROUP(group_info), GTK_WIDGET(privacy_row));
 
   GtkWidget *sw_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
   gtk_box_append(GTK_BOX(sw_box),
@@ -1764,7 +1841,7 @@ static void
 apple_application_init(AppleApplication *self)
 {
   (void)self;
-  appSettingsLoad();
+  appSettingsLoad(self);
   g_set_application_name("Apple Devices");
 }
 

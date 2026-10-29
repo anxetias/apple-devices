@@ -327,9 +327,8 @@ void onRowSelected(GtkListBox *list, GtkListBoxRow *row, AppleApplication *self)
   char *os = g_strdup_printf("%s %s", osLabelForProductType(info->product_type), info->version);
   adw_action_row_set_subtitle(ADW_ACTION_ROW(self->row_os), os);
   g_free(os);
-  adw_action_row_set_subtitle(ADW_ACTION_ROW(self->row_serial),
-                              info->serial_number ? info->serial_number : "—");
-  adw_action_row_set_subtitle(ADW_ACTION_ROW(self->row_udid), info->udid);
+  // Серийный номер и UDID — с учётом приватного режима
+  updatePrivacyRows(self);
   if (info->battery_percent >= 0) {
     char *bt = g_strdup_printf("%d%%", info->battery_percent);
     adw_action_row_set_subtitle(ADW_ACTION_ROW(self->row_battery), bt);
@@ -422,6 +421,39 @@ void onSyncClicked(GtkButton *btn, AppleApplication *self)
 {
   (void)btn;
   showStubToast(self, tr("синхронизация"));
+}
+
+// Строки «Серийный номер» и «UDID» с учётом приватного режима
+void updatePrivacyRows(AppleApplication *self)
+{
+  if (!self->selected)
+    return;
+
+  if (appHidePersonalData()) {
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(self->row_serial), "••••••••");
+    char *masked = deviceMaskUdid(self->selected->udid);
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(self->row_udid), masked);
+    g_free(masked);
+  } else {
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(self->row_serial),
+                                self->selected->serial_number
+                                    ? self->selected->serial_number : "—");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(self->row_udid),
+                                self->selected->udid);
+  }
+}
+
+// Переключатель «Скрывать личные данные»: сохраняем и сразу маскируем строки
+void onHidePersonalChanged(GObject *obj, GParamSpec *pspec, AppleApplication *self)
+{
+  (void)pspec;
+
+  gboolean active = adw_switch_row_get_active(ADW_SWITCH_ROW(obj));
+  self->hide_personal_data = active;
+  appSettingsSaveHidePersonalData(active);
+  updatePrivacyRows(self);
+  logMessage("%s", tr(active ? "Личные данные скрыты."
+                             : "Личные данные снова видны."));
 }
 
 // Выбор языка в настройках: сохраняем в файл, применится после перезапуска

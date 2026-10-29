@@ -45,6 +45,10 @@ const char *osLabelForProductType(const char *product_type);
 /* Число из plist-узла (int/uint/real/string), -1 если значения нет. */
 int plistToInt(plist_t node);
 
+/* Маска UDID для приватного режима: первые 4 символа + «…» + последние 4.
+ * Возвращает новую строку (освободить g_free) или NULL. */
+char *deviceMaskUdid(const char *udid);
+
 /* Фоновый поток сканирования USB (вызывается через GTask). */
 void scanDevicesThread(GTask *task, gpointer source_object,
                        gpointer task_data, GCancellable *cancellable);

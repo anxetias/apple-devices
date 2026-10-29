@@ -55,6 +55,7 @@ struct _AppleApplication {
   DeviceInfo *selected;
   gboolean scanning;
   gboolean rescan_pending;
+  gboolean hide_personal_data; // приватный режим: маскировать серийник и UDID
 
   /* Музыка */
   GListStore *music_store;
@@ -97,6 +98,12 @@ void showStubToast(AppleApplication *self, const char *what);
 
 /* Сохранить язык интерфейса в settings.ini. */
 void appSettingsSaveLanguage(const char *lang);
+
+/* Сохранить переключатель приватности в settings.ini. */
+void appSettingsSaveHidePersonalData(gboolean hide);
+
+/* Приватный режим включён? (до создания окна — данные видны) */
+gboolean appHidePersonalData(void);
 
 /* Запуск сканирования медиатеки выбранного устройства. */
 void startMusicScan(AppleApplication *self, const char *udid);

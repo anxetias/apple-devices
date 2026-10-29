@@ -36,6 +36,11 @@ void onNavSelected(GtkListBox *list, GtkListBoxRow *row,
                    AppleApplication *self);
 void onRowSelected(GtkListBox *list, GtkListBoxRow *row,
                    AppleApplication *self);
+
+/* Приватность: строки серийника/UDID по состоянию переключателя. */
+void updatePrivacyRows(AppleApplication *self);
+void onHidePersonalChanged(GObject *obj, GParamSpec *pspec,
+                           AppleApplication *self);
 void onMusicSearchChanged(GtkSearchEntry *entry, AppleApplication *self);
 void onMusicSortChanged(GObject *obj, GParamSpec *pspec,
                         AppleApplication *self);

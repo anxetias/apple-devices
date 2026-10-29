@@ -1357,3 +1357,57 @@ mode==0 → `_ex(K, A, B, cig)`, иначе `_get(url, K, A, B, cig, v)`.
 (или прямая работа с сервером 3u по разобранному протоколу
 get_step_2_data/get_auth_server_data — теперь это ЕДИНСТВЕННЫЙ способ
 получить anchor/Grappa хоста, если устройство их валидирует).
+
+### SSL-путь снят: «баг» был во фрейминге (29.10, ночь)
+
+Зонд `/tmp/opencode/atc_probe.c` (идея: явный `idevice_connect` +
+`idevice_connection_enable_ssl` + ручное чтение с дампом очереди
+ошибок OpenSSL) на живом устройстве:
+
+- `enable_ssl`: rc=0; TLS-рукопожатие проходит (как и раньше);
+- чтение 4 байт: rc=0, байты `b8 00 00 00`; чтение следующего байта:
+  `62` = 'b';
+- **фрейминг atc-канала: 4 байта длины в LITTLE-ENDIAN + bplist**.
+  `b8 00 00 00` = 184 (LE) — ровно размер следующего bplist-а;
+- дочитали 184 байта: `bplist00…`, plist распарсился без остатка.
+
+Диагноз прежнего «SSL-бага»: `property_list_service` читает префикс
+как **big-endian** (`be32toh`), получает 0xB8000000 > 2^31, далее
+`SSL_read((int)pktlen < 0)` → OpenSSL `SSL_R_BAD_LENGTH`
+(`error:0A00010F`, ssl_lib.c:2363 — num<0) → `IDEVICE_E_SSL_ERROR`
+(-4). **TLS-слой libimobiledevice (OpenSSL 3.5) работает корректно**
+(cipher 0xC030 = ECDHE-RSA-AES256-GCM-SHA384 — потому запись и была
+«8 nonce + 4 данные + 16 тег»: это GCM-фрейминг TLS 1.2, а не CBC).
+Вывод: `property_list_service` для atc НЕПРИГОДЕН (жёсткое BE),
+нужен ручной фрейминг LE32 поверх `idevice_connection_*`.
+
+Зонд `/tmp/opencode/atc_probe2.c` (после enable_ssl просто слушаем,
+НИЧЕГО не отвечая, бюджет 30 с) — реальные первые сообщения канала:
+
+1. `[0.0 с]` `{"Command":"Capabilities", "Params":{"GrappaSupportInfo":
+   {version:1, deviceType:0, protocolVersion:1}}, "Type":0,
+   "Session":0, "Id":52}`;
+2. `[0.0 с]` `{"Command":"InstalledAssets", "Params":{"Application":
+   {"_Deleted":[]}}, "Type":0, "Session":0, "Id":53}`;
+3. `[0.0 с]` `{"Command":"AssetMetrics", …}` (Id ~54);
+4. `[0.0 с]` `{"Command":"SyncAllowed", …}` — диалог начинается!
+5. `[1.0 с]` ошибка связи — устройство РВЁТ соединение, если хост не
+   отвечает на SyncAllowed (у 3u на это место сразу ставится
+   RequestingSync).
+
+Значения:
+- реконструкция «устройство шлёт ПЕРВЫМ SyncAllowed» была НЕПОЛНОЙ:
+  перед SyncAllowed устройство шлёт 3 уведомления (Capabilities,
+  InstalledAssets, AssetMetrics); цикл опроса 3u (poll 1000 мс) их
+  ПРОПУСКАЕТ (в libidm нет строк Capabilities/InstalledAssets/
+  AssetMetrics/Id/GrappaSupportInfo — проверено strings), т.е. хост
+  НЕ отвечает на уведомления, и устройства это устраивает;
+- все сообщения устройства несут `Id` (возрастает), `Type`: 0,
+  `Session`: 0; в реконструированном RequestingSync от 3u полей
+  Id/Type нет — проверить в дизасме, добавляет ли их обёртка;
+- GrappaSupportInfo (v1, deviceType 0, protocolVersion 1) —
+  объявление поддержки Grappa со стороны устройства.
+
+Зонды перенесены в проект: `research/3utools/atc_probe.c`,
+`research/3utools/atc_probe2.c` (сборка: gcc + pkg-config
+libimobiledevice-1.0 libplist-2.0 openssl; запуск: `./atc_probe2`).

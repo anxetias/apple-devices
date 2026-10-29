@@ -609,5 +609,19 @@ apple-devices/
   зависимость вшита в точку входа импорта** — 3u отказывает локально,
   до любых сетевых действий; офлайн-ветку 3u повторить нельзя.
   Детали — FINDINGS.md, «Офлайн-эксперимент: результат»; разбор трасс
-  — `research/3utools/analyze_trace.py`. Следующий шаг — починка
-  SSL-пути и репликация atc-диалога (план в «Стратегии репликации»).
+  — `research/3utools/analyze_trace.py`.
+- **«SSL-баг» СНЯТ (ночь 29.10)**: TLS-слой libimobiledevice работает
+  корректно; причина падений — **фрейминг atc-канала: 4 байта длины в
+  LITTLE-ENDIAN + bplist**, а `property_list_service` читает префикс
+  как big-endian → pktlen 0xB8000000 → `SSL_read(num<0)` → OpenSSL
+  BAD_LENGTH → rc=-4. Для atc нужен ручной фрейминг LE32 поверх
+  `idevice_connection_*`. Зонды `atc_probe.c`/`atc_probe2.c` (в
+  `research/3utools/`) подтвердили на живом устройстве: enable_ssl ок;
+  устройство шлёт Capabilities (GrappaSupportInfo v1) → InstalledAssets
+  → AssetMetrics → **SyncAllowed**; на уведомления хост не отвечает
+  (3u их пропускает — строк этих Command в libidm нет); без ответа на
+  SyncAllowed устройство рвёт связь. Детали — FINDINGS.md, «SSL-путь
+  снят». Следующий шаг — репликация диалога: пропускаем уведомления,
+  на SyncAllowed отвечаем RequestingSync (LE32-фрейминг), ждём
+  ReadyForSync; выяснить — нужен ли `Id` в сообщениях хоста и чем
+  заполнять C/D/E (Dataclasses) в ios_add_media.

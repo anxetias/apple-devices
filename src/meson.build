@@ -1,6 +1,10 @@
 app_sources = files(
   'main.c',
   'application.c',
+  'deviceScanner.c',
+  'medialib.c',
+  'afcUtils.c',
+  'uiWidgets.c',
 )
 
 # SQLite (amalgamation) — для правки базы медиатеки iPhone (MediaLibrary.sqlitedb).
@@ -16,5 +20,6 @@ executable('apple-devices',
   include_directories: include_directories('../vendor/sqlite'),
   link_with: sqlite_lib,
   dependencies: [gtk_dep, adw_dep, imob_dep, tag_dep],
+  c_args: ['-Wall', '-Wextra'],
   install: true,
 )

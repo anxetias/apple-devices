@@ -164,3 +164,16 @@ apple-devices/
 - Скрины добавлены в `screenshots/` и в README.
 - Исправлены URL в metainfo/build-deb.sh: `github.com/anxetias` вместо `github.com/saitexna`.
 - appstream-cli валидация проходит без предупреждений.
+
+#### Шаг 1 — Модуляризация и рефакторинг (ЗАВЕРШЁН)
+
+- Создан `src/deviceScanner.h/c` — DeviceInfo GObject, иконки устройств, plist helpers, поток сканирования USB, события usbmuxd, восстановление выделения.
+- Создан `src/medialib.h/c` — MusicTrack GObject, вся работа с MediaLibrary.sqlitedb (SQL helpers, sort_map, ensure_* сущностей, вставка/удаление треков, artwork,自我исправление путей).
+- Создан `src/afcUtils.h/c` — AfcSession, AFC скачивание/загрузка, умное частичное чтение тегов (MP3/M4A/FLAC), readTrackTags.
+- Создан `src/uiWidgets.h/c` — виджеты UI: makeButton, makeStubPage, createSidebarRow, createMusicRow, навигация, фильтрация/сортировка, заглушки, настройки.
+- `src/application.h` — перенесено определение структуры `AppleApplication`, типы DeviceInfo/MusicTrack через G_DECLARE_FINAL_TYPE.
+- `src/application.c` — оставлен только UI и жизненный цикл, все функции переименованы в `camelCase`, библиотечные вызовы оставлены в `snake_case`.
+- `src/meson.build` — добавлены 4 новых исходных файла, флаги `-Wall -Wextra`.
+- Проект собирается без ошибок, приложение запускается.
+
+#### Шаг 2 — Приватность в UI (В ОЧЕРЕДИ)

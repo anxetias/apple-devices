@@ -976,3 +976,169 @@ wal стабильно **1 759 272 Б** весь час (рост останов
    `.cig`; без ArtworkDB → роль ArtworkDB). Если не ингестит — `.cig`
    динамический (сервер/время), и путь — либо протокол сервера 3u
    (`get_auth_server_data`), либо офлайн-хуки libidm.
+
+---
+
+## Replay-эксперимент (20:57–21:00) — ПРОВАЛ
+
+Подготовка: точный `.cig` извлечён из трассы (в старых заметках при
+переписывании была потеряна hex-цифра; источник истины — трасса):
+`01 30 0d 1d a0 2e 21 3e f2 7a 21 f5 53 d5 7d a9 a9 85 42 47 be` (21 Б).
+Обложка — APIC-кадр fuze.mp3 (43 839 Б JPEG); сам fuze.mp3 — 320 kbps,
+ровно как `bit_rate=320` в декларации 3u.
+
+Порядок заливки повторял fd75 3uTools:
+- 20:57:08 — декларация 1513 Б, `.cig` 21 Б, ArtworkDB 616 Б →
+  `/iTunes_Control/Artwork/ArtworkDB`;
+- 20:57:12 — fuze.mp3 (7 600 463 Б) в `/Airlock/Media/` под 3 pid
+  декларации (8664704158950401262, 3593234474127905889, 3239703942062469562);
+- 20:57:14 — обложки в `/Airlock/Media/Artwork/<pid>`, mkdir F09/F50/F87;
+- далее 3 мин опроса (шаг 20 с): **ноль реакции** — файлы на месте,
+  F-бакеты пусты, db/wal не изменились (wal 1 759 272 Б стабилен).
+
+Вывод: точный байтовый replay не работает ⇒ `.cig` — не статичный токен.
+
+## fd65 (трасса, уточнение)
+
+- 19:15:40 fd65 = usbmuxd→lockdownd (XML-плисты, 4-байтная BE-длина);
+  fd-номера переиспользуются после close — атрибуция fd по номеру
+  ненадёжна, только по содержимому.
+- 19:15:51.195 GETINFO `/iTunes_Control/iTunes/MediaLibrary.sqlitedb`,
+  затем OPEN `-shm`/`-wal` — чтение базы целиком; трижды за импорт
+  (до, 19:16:31 перед записью, 19:16:37 после — верификация).
+- 19:15:51.204 между GETINFO и OPEN — bplist-фрагмент с ключами
+  `MPExplicitContentAllowed`, `MLSyncClientGenerationID`,
+  `MLCloudDatabaseUserVersion` (релеи в fd66/72) — синк-состояние.
+- `RequestingSync` строкой в трассе не виден (0 вхождений),
+  `SyncAnchor` — 12 вхождений.
+
+## Дизассемблерский прорыв: полный алгоритм импорта (ios_add_media)
+
+Главный бинарник 3uTools — 29 МБ ELF PIE **с debug_info, не стрипнут**.
+`QTaskRingSync::request_import` @0xc0f710 — только UI-слой; вся работа
+в libidm.so. Интерфейс main→libidm (~140 символов, comm undefined∩defined):
+`ios_*` (add/del media, ringtone, playlist, photo, backup, activate…),
+`am_*` (apps), `cm_*` (contacts), `FileMgr::*` (AFC-обёртка), `zip_*`.
+
+`FileMgr::FileBuf2Dev` определён В libidm.so (@0x8c100), а не в main.
+
+### ios_add_media(dev, m, m, list<music_info>&, cb, string& err) @0x9d270 (0xaa1)
+
+1. `sync_new(dev, &sync, "music", true)` @0x7eef0 (0x263):
+   - `lockdownd_client_handshake(idevice, &ldc, label="music")`;
+   - `lockdownd_start_service(ldc, "com.apple.atc", &d)` →
+     `property_list_service_client_new` → sync->plist_client;
+   - при bool=true: `lockdownd_start_service(ldc, AFC_SERVICE_NAME)` →
+     `afc_client_new` → sync->afc_client;
+   - `udid_25_24` → буфер 0x2c (24-симв. UDID);
+   - `sync_t = {plist_client@0, afc_client@8, int mode@0x10, udid24@0x18}`;
+     mode=1 ставится, если глобал через GOT 0xeaee0 (рядом g_InitHost)
+     разыменовывается в 0.
+2. stat64 локальных файлов, сумма размеров; `afc_get_file_system_size`;
+   если (free − total) ≤ 0xc7fffff (≈200 МиБ резерва) → ошибка 0x586.
+3. `sync_send_requesting_sync(&sync, "Media", &a1, &a2, &a3, &anchor,
+   &bin, &flag, &vec, cb, int)` @0x80760 (0x17d):
+   - mode==0 → офлайн `get_step_2_data_ex(udid24, &anchor, &bin)`
+     @0x7edb0 (0x135); неудача → mode=1 и онлайн-путь;
+   - mode==1 → онлайн `get_step_2_data("Media", udid24, &anchor, &bin,
+     vec, cb, …)` — ключ с сервера 3u;
+   - затем `send_requesting_sync(&plist_client, &bin(ключ), &out,
+     a1, a2, a3, flag, int)` @0x7f160 (0x268) — RequestingSync через
+     `com.apple.atc`; **anchor (uint) возвращает УСТРОЙСТВО**
+     (первый член sync_t — plist_client, поэтому &sync кастится как
+     client&).
+4. `afc_read_small_file_to_buf(afc, "/iTunes_Control/Artwork/ArtworkDB",
+   &buf, &len)`:
+   - rc=8 (нет файла): mkdir `/iTunes_Control/Artwork`; буфер = шаблон
+     616 Б из @0xeaeb8 (77 qwords, сохранён:
+     /tmp/opencode/replay_pkg/ArtworkDB_default.bin); counter=шаблон[0x1c];
+   - len>28: counter = buf[0x1c] (dword, offset 28);
+   - len≤28: counter = 0.
+5. `create_Media_Sync_add_plist(&decl, m, m, &counter, tracks)`
+   @0x9b300 — counter по указателю (обновляется); `plist_to_bin`.
+6. `get_media_sync_cig(int=sync->mode, char*=*(void**)dev (вероятно
+   UDID), uint=anchor, bin_t&, bin_t&(декларация), bin_t&(выход .cig),
+   vector<string>&)`; rc≠0 → ошибка 0x1388+. Вызов через PLT 0x32af0;
+   реализация — диспетчер ~0x81450 (jmp-хвосты на PLT 0x31fc0/0x30cd0
+   — вот где «пропавшие» вызовы cig-функций) → офлайн `_ex` @0x7fd50 /
+   онлайн `_get` @0x812d0.
+7. mkdir `/iTunes_Control/Sync`, `/iTunes_Control/Sync/Media`;
+   `afc_write_small_file_to_dev` декларации → `.cig`.
+8. `send_FinishedSyncingMetadata_media(plist_client)` @0x9bb10 (0x110).
+9. Цикл (лимит time()−start ≤ 119 с):
+   `property_list_service_receive_plist_with_timeout(plist_client, &pl,
+   60000 мс, 0)`; rc=−5 (таймаут) → повтор; иной rc → ошибка 0x176f.
+   Разбор: ключ `Command` → строка:
+   - `"AssetManifest"` → обработка манифеста (п.10);
+   - `"SyncFinished"` → выход 0x176e;
+   - иное → продолжить цикл.
+10. Манифест: `Params` → `AssetManifest` (массив) → `Media` (массив);
+    элемент: `AssetID` = имя файла (сверяется с music_info+0xb0);
+    на каждый найденный трек — ответ `send_binary_plist`:
+    `{Params:{Dataclass:"Media", ErrorCode:3, AssetID:<имя>},
+    Command:"FileError", Session:1}` — раскладку set_item сверить
+    с трассой fd66/72 при реализации.
+11. Обновление ArtworkDB: buf[0x1c] = counter → AFC write ArtworkDB
+    (если len>28).
+12. `afc_make_directory_ex("/Airlock/Media/Artwork")`;
+    `send_media_data(&afc, &plist_client, tracks, l, cb, …)`
+    @0x9be90 (0xac6) — заливка mp3/обложек.
+13. `sync_wait_SyncFinished_plist(plist_client, buf(0xb4), NULL, 0)`
+    — 2 перегрузки: @0x7f8d0 (vector<size_t>), @0x7f440 (vector<string>);
+    ошибка → откат: `afc_remove_path("/Airlock/Media/"+имя)` каждому.
+
+## Пересмотр гипотез о провале replay
+
+- **H3 подтверждена и уточнена**: без `RequestingSync` через
+  `com.apple.atc` нет anchor; anchor — 3-й аргумент
+  `get_media_sync_cig` ⇒ чужой `.cig` неверен по построению.
+  Прежний вывод «send_requesting_sync не требуется» — **НЕВЕРЕН,
+  отзываю**.
+- H1 (одноразовость/сервер) — сводится к H3: новый anchor → новый
+  `.cig`; офлайн-ветка (mode=0, `get_step_2_data_ex` от UDID) может
+  вообще не требовать сервера.
+- H2 (MAC над контентом) — частично: `.cig` зависит от ключа
+  (get_step_2_data) + anchor + декларации; роль bin_t-аргументов
+  (возможно ArtworkDB/контент) уточнить.
+- ArtworkDB — файл-счётчик состояния: counter[0x1c] входит в
+  декларацию и пишется обратно. Шаблон из бинарника ≠ ArtworkDB из
+  трассы (байт 0: 0x00 vs 0x6d) — 3u писал не дефолт; сверить.
+
+## Константы (строки libidm)
+
+- сервисы: `com.apple.atc` (plist-канал синка), `com.apple.afc`;
+- пути: `/iTunes_Control/Sync/Media/Sync_00000000.plist(.cig)`,
+  `/iTunes_Control/Ringtones/Sync/Sync_00000000.plist` (рингтоны),
+  `/iTunes_Control/Artwork/ArtworkDB`, `/Airlock/Media/`,
+  `/Airlock/Media/Artwork/`, `/Airlock/Ringtone/%s`;
+- ключи плистов: `Command`, `Params`, `AssetManifest`, `AssetID`,
+  `Dataclass`, `ErrorCode`, `FileError`, `Session`, `SyncFinished`;
+- нотификации iTunes-синка: `com.apple.itunes-mobdev.syncWillStart/
+  syncLockRequest/syncDidStart/syncDidFinish`,
+  `com.apple.itunes-client.syncSuspend/Resume/CancelRequest`,
+  `com.apple.itunes.lock_sync`, `com.apple.mobile.iTunes.
+  SQLMusicLibraryPostProcessCommands` — где используются, выяснить
+  при реализации;
+- `MOBILESYNC_SERVICE_NAME` @0xee408; `g_CigHash` @0xee6e8,
+  `g_EstablishKey` @0xee6f0 (.bss-указатели; GOT-слоты 0xeafb8/0xeaf38).
+
+## Адреса libidm для следующего шага
+
+`get_step_2_data_ex` @0x7edb0 (офлайн-ключ — дизасм ПЕРВЫМ);
+`send_requesting_sync` @0x7f160; `send_FinishedSyncingMetadata_media`
+@0x9bb10; `send_media_data` @0x9be90; `sync_wait_SyncFinished_plist`
+@0x7f8d0/@0x7f440; `afc_write_small_file_to_dev` @0x6fe30;
+`afc_make_directory_ex` @0x70080; `afc_get_file_system_size` @0x70410;
+`send_FinishedSyncingMetadata` @0x7ebd0 (ringtone @0x96730, photo
+@0xa0430). `mobilesync.h` есть в /usr/include/libimobiledevice/ —
+но канал 3u = `com.apple.atc`, транспорт — property_list_service.
+
+## Следующий шаг
+
+1. Дизасм `get_step_2_data_ex` (0x135) и cig-диспетчера — полный вход
+   `.cig` (ключ, anchor, декларация).
+2. Дизасм `send_requesting_sync` + `send_FinishedSyncingMetadata_media`
+   — формат плистов atc-канала; сверка с fd65/fd66 трассы.
+3. Реплика флоу на libimobiledevice (lockdown StartService com.apple.atc
+   → property_list_service; AFC; цикл манифеста).
+4. Убрать артефакты replay с устройства (по согласованию).

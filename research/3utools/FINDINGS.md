@@ -1494,3 +1494,39 @@ SSL_read/SSL_write(+_ex) и пишет открытый текст в бинар
 5. Полные артефакты: `traces/capture_20261029/` (дамп, каптуры
    сообщений, блобы Grappa — в git НЕ попадают); код хука и диалога —
    там же (`ssl_dump.c`, `atc_dialog2.c`).
+
+### Ответ на AssetManifest: полный цикл до SyncFinished (29.10, ночь)
+
+**Состояние устройства после импорта 3u**: декларация и .cig
+**ТРАНЗИЕНТНЫЕ** — `/iTunes_Control/Sync/Media` ПУСТ (3u удалил
+Sync_00000000.plist и .cig после SyncFinished); файл трека на месте
+(`/iTunes_Control/Music/F88/HZVJ.mp3`, 11 334 448 Б); в
+`/Airlock/Media` остались 3 старых файла replay-эксперимента
+(7 600 463 Б, pids 8664704158950401262 / 3593234474127905889 /
+3239703942062469562) + Artwork/<pid>; ArtworkDB 616 Б.
+
+**Эксперимент (atc_dialog2 v3 — фаза 5 отвечает на сообщения)**:
+диалог с реплеем Grappa → ReadyForSync (свежий device-Grappa
+`01 01 cd aa …`, извлечён корректно через Params.DeviceInfo) →
+FinishedSyncingMetadata → устройство запросило **AssetManifest** (тот
+же AssetID 5041182994606310077, хотя файл уже в библиотеке!) → мы
+записали 11 334 448 Б в `/Airlock/Media/5041182994606310077` через
+`com.apple.afc` → `FileProgress{AssetProgress:0.0}` →
+`FileProgress{1.0}` → `FileComplete{AssetID, AssetPath:
+"/iTunes_Control/Music/F88/HZVJ.mp3", Dataclass:"Media"}` →
+**SyncFinished**. Файл из Airlock устройство ПОГЛОТИЛО (удалило).
+
+**ВЫВОДЫ**:
+1. Протокол доставки актива воспроизведён полностью: запрос
+   AssetManifest → AFC-запись в /Airlock/Media/<AssetID> →
+   FileProgress/FileComplete → SyncFinished; устройство само чистит
+   Airlock.
+2. AssetManifest приходит ПОВТОРНО для уже доставленного трека —
+   либо устройство перезапрашивает актив каждую сессию (возможно, из-за
+   якоря "1" у хоста против "0" у устройства), либо состояние трека на
+   устройстве не финализировано (проверить: виден ли трек в Music).
+3. .cig в этом цикле НЕ участвовал (декларации на устройстве не было)
+   — вопрос валидации .cig всё ещё открыт; для него нужен эксперимент
+   с декларацией (старый .cig против нулевого).
+4. Код: `traces/capture_20261029/atc_dialog2.c` обновлён (фаза 5 с
+   AFC-ответом); свежий device-Grappa — `/tmp/opencode/device_grappa.bin`.

@@ -641,3 +641,17 @@ apple-devices/
   известны) → полный импорт без 3u. Открытые вопросы: живучесть блоба
   Grappa (перезагрузка/время/изменение библиотеки), источник K для
   .cig, валидирует ли устройство .cig.
+- **ПОЛНЫЙ ЦИКЛ ДО SyncFinished (ночь 29.10)**: atc_dialog2 v3 (фаза 5
+  отвечает на сообщения) провёл весь цикл сам: диалог с реплеем Grappa →
+  ReadyForSync (свежий device-Grappa извлечён через Params.DeviceInfo) →
+  FinishedSyncingMetadata → устройство запросило **AssetManifest** (тот
+  же AssetID 5041182994606310077, хотя файл уже в библиотеке) →
+  записали 11 334 448 Б в `/Airlock/Media/<AssetID>` через
+  `com.apple.afc` → FileProgress{0.0} → FileProgress{1.0} →
+  FileComplete{AssetPath:"/iTunes_Control/Music/F88/HZVJ.mp3"} →
+  **SyncFinished**. Файл из Airlock устройство ПОГЛОТИЛО (удалило).
+  Важно: декларация и .cig на устройстве ТРАНЗИЕНТНЫЕ —
+  `/iTunes_Control/Sync/Media` пуст после синка 3u. .cig в цикле не
+  участвовал — вопрос валидации открыт (эксперимент со старой
+  декларацией из replay_pkg). Детали — FINDINGS.md, «Ответ на
+  AssetManifest».

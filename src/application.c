@@ -290,6 +290,8 @@ static const TrEntry trTable[] = {
   {"Занято", "Used"},
   {"Свободно", "Free"},
   {"Данные о накопителе недоступны", "Storage information is not available"},
+  {"О программе", "About"},
+  {"Главное меню", "Main menu"},
 };
 
 const char *
@@ -1517,6 +1519,31 @@ onRefreshAction(GSimpleAction *action, GVariant *parameter, gpointer user_data)
   startScan(APPLE_APPLICATION(user_data));
 }
 
+// Действие «О программе»: диалог AdwAboutDialog по GNOME HIG
+// (современная замена устаревшему с libadwaita 1.5 AdwAboutWindow)
+static void
+onAboutAction(GSimpleAction *action, GVariant *parameter, gpointer user_data)
+{
+  (void)action;
+  (void)parameter;
+
+  AppleApplication *self = APPLE_APPLICATION(user_data);
+
+  AdwAboutDialog *about = ADW_ABOUT_DIALOG(adw_about_dialog_new());
+  adw_about_dialog_set_application_name(about, "Apple Devices");
+  // Иконка-плейсхолдер: телефон Apple из установленной темы
+  adw_about_dialog_set_application_icon(about, "phone-apple-iphone-symbolic");
+  adw_about_dialog_set_version(about, APP_VERSION);
+  adw_about_dialog_set_developer_name(about, "Pavel Burimskiy (saitexna)");
+  adw_about_dialog_set_copyright(about, "© 2026 Pavel Burimskiy");
+  // GTK_LICENSE_GPL_3_0 в GTK означает «GPL 3.0 или новее»
+  adw_about_dialog_set_license_type(about, GTK_LICENSE_GPL_3_0);
+  adw_about_dialog_set_website(about, "https://github.com/anxetias/apple-devices");
+  adw_about_dialog_set_issue_url(about, "https://github.com/anxetias/apple-devices/issues");
+
+  adw_dialog_present(ADW_DIALOG(about), GTK_WIDGET(self->window));
+}
+
 typedef struct {
   AppleApplication *self;
   int kind;
@@ -1990,6 +2017,16 @@ apple_application_activate(GApplication *app)
   GtkWidget *content_header = adw_header_bar_new();
   adw_header_bar_set_title_widget(ADW_HEADER_BAR(content_header), title_box);
 
+  // Меню приложения: «О программе» (GNOME HIG — гамбургер в правом углу)
+  GMenu *app_menu = g_menu_new();
+  g_menu_append(app_menu, tr("О программе"), "win.about");
+  GtkMenuButton *menu_btn = GTK_MENU_BUTTON(gtk_menu_button_new());
+  gtk_menu_button_set_icon_name(menu_btn, "open-menu-symbolic");
+  gtk_menu_button_set_menu_model(menu_btn, G_MENU_MODEL(app_menu));
+  gtk_widget_set_tooltip_text(GTK_WIDGET(menu_btn), tr("Главное меню"));
+  g_object_unref(app_menu);
+  adw_header_bar_pack_end(ADW_HEADER_BAR(content_header), GTK_WIDGET(menu_btn));
+
   self->storage_area = gtk_drawing_area_new();
   gtk_widget_set_size_request(self->storage_area, -1, 26);
   gtk_widget_set_hexpand(self->storage_area, TRUE);
@@ -2061,6 +2098,11 @@ apple_application_activate(GApplication *app)
   g_signal_connect(refresh_action, "activate", G_CALLBACK(onRefreshAction), self);
   g_action_map_add_action(G_ACTION_MAP(window), G_ACTION(refresh_action));
   g_object_unref(refresh_action);
+
+  GSimpleAction *about_action = g_simple_action_new("about", NULL);
+  g_signal_connect(about_action, "activate", G_CALLBACK(onAboutAction), self);
+  g_action_map_add_action(G_ACTION_MAP(window), G_ACTION(about_action));
+  g_object_unref(about_action);
 
   const char *refresh_accels[] = {"<Ctrl>R", NULL};
   gtk_application_set_accels_for_action(GTK_APPLICATION(app), "win.refresh", refresh_accels);

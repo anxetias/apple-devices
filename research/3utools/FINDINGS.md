@@ -836,3 +836,143 @@ artwork_cache_id строго уникальным (max+1 проверять п�
   после заливки, чистка `best_artwork_token` в medialibDeleteTrack.
   Гейт можно валидировать сразу: импорт при грязном wal должен
   отказать с понятным сообщением.
+
+---
+
+## Разбор трассы 3u_trace2.log до конца + libidm.so (20:20–21:00)
+
+### Полная последовательность fd75 (AFC-запись пакета, 19:15:33–19:16:37.18)
+
+Парсер strace доработан (кратчайшее octal-экранирование, payload от первой
+кавычки, размер из `", N,`); unfinished/resumed пар в логе нет — все
+вызовы атомарные. Итог по каналам:
+
+- fd75 = AFC-запись синка (602 события, 19:15:33.09 — 19:16:37.18);
+- fd65 = usbmuxd+lockdownd+AFC-чтение (позже — чтение базы);
+- fd66 = usbmuxd/lockdownd опросы + TLS-телеметрия 3u;
+- fd63/69/73 = TLS i4.cn/3u.com + DNS; fd18/19/20/109 = фон/телеметрия.
+
+Порядок fd75 на пакет (3 трека):
+
+1. `MAKE_DIR /iTunes_Control/Sync` → `MAKE_DIR /iTunes_Control/Sync/Media`
+   (op9, ответы ok);
+2. `FILE_OPEN WRONLY Sync_00000000.plist` → op16-записи → op20 CLOSE —
+   **декларация** (1513 Б, bplist00, начинается прямо с `bplist00`
+   без AFC-магии в payload — магия только в заголовке пакета);
+3. `FILE_OPEN WRONLY Sync_00000000.plist.cig` → запись 21 Б → CLOSE —
+   **`.cig`** (`01 300d1da02e213ef27a21f553d57da9a9854247be`);
+4. `FILE_OPEN WRONLY /iTunes_Control/Artwork/ArtworkDB` → запись 616 Б
+   (`mhfd`) → CLOSE — **перезапись ArtworkDB**;
+5. `GET_FILE_INFO /Airlock/Media/Artwork` (проверка каталога);
+6. на каждый трек: `FILE_OPEN RDWR /Airlock/Media/<pid>` → mp3 кусками
+   4 МиБ → CLOSE; `FILE_OPEN RDWR /Airlock/Media/Artwork/<pid>` → JPEG
+   → CLOSE;
+7. `MAKE_DIR /iTunes_Control/Music/F%02d` (F09/F50/F87);
+8. `GET_FILE_INFO /iTunes_Control/Music/F%02d/<XXXX>.mp3` → ожидание
+   **кода 8 (AFC_E_OBJECT_NOT_FOUND)** = имя свободно;
+9. конец записи 19:16:37.18.
+
+### Пост-записное окно (19:16:35–19:17:20): триггера-команды НЕТ
+
+- 19:16:37.39 fd65: usbmuxd ReadPairRecord → Connect 32498 (lockdownd) →
+  StartSession с `Label=filemgr` → Connect **44500** → это AFC: в
+  прочитанном видны SQL-тексты триггеров базы
+  (`...ption_store_item_id > 0 OR NEW.cloud_asset_available > 0 ...`)
+  и бинарные SQLite-страницы — **3uTools читает MediaLibrary.sqlitedb
+  напрямую через AFC**, проверяя результат ингеста;
+- fd66 каждые ~13 с (19:16:41, :54, 19:17:08): lockdownd-сессии
+  `Label=battery` и `Label=gii` (опрос батареи/инфы) + TLS-хендшейки к
+  серверам 3u — телеметрия, НЕ триггер;
+- `StartService` = 0 упоминаний во всей трассе (старты сервисов ушли до
+  начала трассировки; порты берутся из уже открытых lockdownd-сессий);
+- декларация + `.cig` потреблены устройством к 19:16:45 (~8 с после
+  последней записи) — **ингест инициирует само устройство**,
+  командой от хоста не запускается.
+
+### libidm.so: алгоритм `.cig` (бинарник НЕ стрипнут,
+`/opt/apps/com.3u.3utools/lib/libidm.so`, ELF x86-64, BuildID e97d8ead…)
+
+Символы (nm): `get_media_sync_cig(int, char const*, uint, bin_t&,
+bin_t&, bin_t&, vector<string>&)` @0x81450 (0x40 Б — диспетчер),
+`_get_media_sync_cig(char const*, uint, bin_t&, bin_t&, bin_t&,
+vector<string>&)` @0x812d0 (онлайн), `_get_media_sync_cig_ex(uint,
+bin_t&, bin_t&, bin_t&)` @0x7fd50 (офлайн), глобалы `g_CigHash`
+@0xee6e8 (8 Б, BSS), `g_EstablishKey` @0xee6f0; хелперы `calc_buf_sha1_
+sha256`, `calc_file_sha1_sha256`, `_SHA1`, `FileSHA1`; импорты OpenSSL
+SHA1/SHA1_Init/Update/Final, EVP_sha1, PKCS5_PBKDF2_HMAC.
+
+Структуры: `bin_t` = {u32 size@0; void* data@8}; `bytearray_t` = {ptr@0,
+size@8}.
+
+Диспетчер (0x81450): `mode==0` → `_ex(uint, bin_t& A, bin_t& B,
+bin_t& C)` (аргументы 4/5/6), иначе → онлайн `_get`.
+
+**Онлайн-путь** (0x812d0, разобран полностью):
+- запрос = `bytearray_new(0x1000)`; append: магия `0x64d035467891`
+  (6 Б, LE), uint-аргумент (4 Б), `len(A)||A`, `len(B)||B`; затем
+  `data[8..11] = size - 12` (длина payload после 12-Б заголовка);
+- `get_auth_server_data(host, &PackType, payload, &out_vec, cb)` —
+  сеть к серверу 3u; rc!=0 → **-401**;
+- ответ: `*(u32*)resp != 0x35467891` → **-403**; `resp[4]==0xd1` →
+  успех: `out.size = *(u32*)(resp+12)`, `out.data = memdup(resp+16,
+  out.size)`; `resp[4]==0xc9` → вернуть `resp[5]` (код ошибки сервера);
+  иное → **-403**.
+- **Вывод: в онлайн-режиме `.cig` выдаёт сервер 3u** — формула на
+  сервере.
+
+**Офлайн-путь** (0x7fd50): `f1 = *(void**)g_EstablishKey` →
+`f1(uint, A.data, A.size)`; rc!=0 → **-503**; затем
+`f2 = *(void**)g_CigHash` → `f2(uint, A.data, A.size, void** out,
+uint* out_size)`; ошибка → **-502**. Обращения к глобалам идут только
+через GOT-слоты `0xeaf38`/`0xeafb8` (R_X86_64_GLOB_DAT, readelf);
+прямых ссылок на 0xee6e8/0xee6f0 в коде нет. Импортёров
+`g_CigHash`/`g_EstablishKey` среди `lib/*.so*`, AppRun, libexec/* не
+найдено (nm -D) — регистрация хуков, вероятно, в главном бинарнике
+или через собственную инициализацию libidm; офлайн-режим = «ключ,
+установленный ранее» (g_EstablishKey = established key).
+
+### Прочие находки сессии
+
+- **ArtworkDB извлечён из трассы целиком** (616 Б, `mhfd`) →
+  `/tmp/opencode/replay_pkg/ArtworkDB.bin` — есть точный пакет для
+  replay-эксперимента;
+- декларация 3u (1513 Б) сохранена: `/tmp/opencode/plists/pl_00_line86020.bplist`
+  (+`.xml`); наши артефакты эксперимента: `/tmp/opencode/exp_decl.plist`
+  (1018 Б), `/tmp/opencode/exp_decl.cig`;
+- образцы `.cig`: импорт 1 `01 c4b34ca9ad00688a9ed2d12e5a083633b79e676c`,
+  импорт 2 (трасса) `01 300d1da02e213ef27a21f553d57da9a9854247be` —
+  0x01 + 20 Б; простые хеши (sha1/md5 bplist/XML, HMAC-SHA1(UDID),
+  sha1(UDID||plist), sha1(plist||UDID)) НЕ совпали → формула с ключом
+  (PBKDF2/сервер);
+- svc_probe (lockdownd, ValidatePair/StartService): `com.apple.applefiledelivery`
+  НЕТ (rc=-27), `com.apple.mobilesync` ЕСТЬ, `com.apple.itdbprep` НЕТ,
+  `com.apple.mobile.file_relay` ЕСТЬ;
+- наш эксперимент с фиктивным `.cig` (декларация 1018 Б, pid
+  8900000000000000001, artwork_cache_id=600, mp3 залит, 2,5+ мин,
+  открытие «Музыки»): ноль реакции, файлы не потреблены. `/Airlock*`
+  созданы заново (после ремонта дерева не было). Отличия от пакета 3u:
+  фиктивный `.cig`, нет перезаписи ArtworkDB, меньше полей декларации,
+  один трек вместо трёх.
+
+### Состояние wal (фоновый полл 20:26–20:55, afc_poll раз в минуту)
+
+wal стабильно **1 759 272 Б** весь час (рост остановился ~20:26,
+чекпоинта нет). Устройство простаивает с грязным wal; окно для
+обычного импорта не открывалось. Гейт в main корректно откажет.
+
+### Выводы и следующий шаг
+
+1. Триггер ингеста — **пассивный** (устройство само следит за
+   `/iTunes_Control/Sync/Media`), команда хоста не нужна; реализовывать
+   `send_requesting_sync` для триггера не требуется (это их клиент
+   чтения базы, не триггер).
+2. Наш провал — содержимое пакета: фиктивный `.cig` и/или отсутствие
+   перезаписи ArtworkDB и/или неполная декларация.
+3. Решающий эксперимент — **replay точным пакетом 3u**: их декларация
+   (1513 Б) + их `.cig` + их ArtworkDB + mp3-контент под их 3 pid
+   (F09/UHYT, F50/FXGH, F87/DGHD), в их порядке. Если устройство
+   ингестит — `.cig` не привязан к сессии, и дальше бисекцией
+   выясняем минимальный пакет (замена `.cig` на фиктивный → роль
+   `.cig`; без ArtworkDB → роль ArtworkDB). Если не ингестит — `.cig`
+   динамический (сервер/время), и путь — либо протокол сервера 3u
+   (`get_auth_server_data`), либо офлайн-хуки libidm.

@@ -8,10 +8,6 @@
 
 /* === uiWidgets.c === */
 
-/* Демо-значения диаграммы накопителя (когда данные от устройства недоступны) */
-#define DEMO_TOTAL_GB 128 // «объём накопителя» для демо-данных
-#define DEMO_USED_PCT 47  // «занято» для демо-данных
-
 GtkWidget *makeButton(const char *icon_name, const char *label,
                       const char *css_class, GCallback cb,
                       AppleApplication *self)
@@ -298,6 +294,7 @@ void onRowSelected(GtkListBox *list, GtkListBoxRow *row, AppleApplication *self)
     self->storage_total = 0;
     self->storage_used = 0;
     self->storage_used_frac = 0;
+    self->storage_n_cats = 0;
     gtk_stack_set_visible_child_name(GTK_STACK(self->content_stack), "empty");
     if (self->settings_list)
       gtk_list_box_unselect_all(GTK_LIST_BOX(self->settings_list));
@@ -337,26 +334,28 @@ void onRowSelected(GtkListBox *list, GtkListBoxRow *row, AppleApplication *self)
     adw_action_row_set_subtitle(ADW_ACTION_ROW(self->row_battery), "—");
   }
 
-  // Хранилище: реальные значения, иначе демо (честно помечаем)
+  // Хранилище: реальные значения; если данных нет или они противоречивы —
+  // честно показываем «недоступно» вместо выдуманных чисел
   guint64 total = info->total_capacity;
   guint64 used = info->disk_usage;
-  self->storage_demo = (total == 0 || used > total);
-  if (self->storage_demo) {
-    total = (guint64)DEMO_TOTAL_GB * 1000000000ULL;
-    used = total * DEMO_USED_PCT / 100;
-  }
+  if (used > total)
+    total = 0;
   self->storage_total = total;
   self->storage_used = used;
-  self->storage_used_frac = (double)used / (double)total;
+  self->storage_used_frac = total > 0 ? (double)used / (double)total : 0;
 
   // Шапка: иконка, имя, «модель · всего (свободно)», батарея
   if (self->header_title) {
     adw_window_title_set_title(ADW_WINDOW_TITLE(self->header_title), info->name);
-    char *sub = g_strdup_printf(tr("%s · %s (%s свободно)%s"),
-                                info->product_type ? info->product_type : "—",
-                                g_format_size(total),
-                                g_format_size(total - used),
-                                self->storage_demo ? tr(" (демо)") : "");
+    char *sub;
+    if (total > 0)
+      sub = g_strdup_printf(tr("%s · %s (%s свободно)%s"),
+                            info->product_type ? info->product_type : "—",
+                            g_format_size(total),
+                            g_format_size(total - used),
+                            "");
+    else
+      sub = g_strdup(info->product_type ? info->product_type : "—");
     adw_window_title_set_subtitle(ADW_WINDOW_TITLE(self->header_title), sub);
     g_free(sub);
   }
@@ -391,6 +390,9 @@ void onRowSelected(GtkListBox *list, GtkListBoxRow *row, AppleApplication *self)
 
   // Подгружаем медиатеку этого устройства
   startMusicScan(self, info->udid);
+
+  // Измеряем категории накопителя (музыка, фото) в фоне
+  startStorageScan(self, info->udid);
 }
 
 void onBackupClicked(GtkButton *btn, AppleApplication *self)

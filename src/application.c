@@ -284,6 +284,12 @@ static const TrEntry trTable[] = {
    "Serial number and UDID will be masked."},
   {"Личные данные скрыты.", "Personal data is now hidden."},
   {"Личные данные снова видны.", "Personal data is visible again."},
+  {"Музыка", "Music"},
+  {"Фото", "Photos"},
+  {"Прочее", "Other"},
+  {"Занято", "Used"},
+  {"Свободно", "Free"},
+  {"Данные о накопителе недоступны", "Storage information is not available"},
 };
 
 const char *
@@ -475,6 +481,107 @@ drawSegmentLabel(cairo_t *cr, PangoContext *pctx, double cx, double cy,
   g_object_unref(layout);
 }
 
+/* --- Диаграмма накопителя: категории ---
+
+   iOS не отдаёт размеры категорий (как в «Настройки → Хранилище») ни через
+   lockdown, ни через AFC — там видны только FSTotalBytes/FSFreeBytes.
+   Но сами каталоги медиа-раздела доступны, поэтому категории измеряем
+   рекурсивным обходом AFC (только чтение, в фоновом потоке). Что не
+   удалось измерить (приложения, система и т.д.) — честная категория
+   «Прочее»: занятое место минус измеренные категории. */
+
+// Корни AFC для каждой категории (NULL-терминированные списки каталогов).
+// Новая категория = список корней + строка в таблице + строка в метаданных.
+static const char *const MUSIC_ROOTS[] = { "/iTunes_Control/Music", NULL };
+static const char *const PHOTO_ROOTS[] = { "/DCIM", "/PhotoData", "/MediaAnalysis", NULL };
+static const char *const *const STORAGE_CATS[] = { MUSIC_ROOTS, PHOTO_ROOTS };
+#define STORAGE_CAT_COUNT ((int)G_N_ELEMENTS(STORAGE_CATS))
+
+// Подпись (ключ tr()) и цвет каждой категории — порядок совпадает с STORAGE_CATS
+static const struct {
+  const char *label;
+  GdkRGBA color;
+} STORAGE_CAT_META[] = {
+  { "Музыка", { 0.965, 0.380, 0.318, 1.0 } }, // #f66151
+  { "Фото",   { 0.863, 0.541, 0.867, 1.0 } }, // #dc8add
+};
+G_STATIC_ASSERT(G_N_ELEMENTS(STORAGE_CAT_META) == STORAGE_CAT_COUNT);
+
+// Байты сегмента категории i, зажатые занятым местом; *rest — остаток
+static guint64
+storageCatClamped(const AppleApplication *self, int i, guint64 *rest)
+{
+  guint64 b = self->storage_cats[i].bytes < *rest ? self->storage_cats[i].bytes : *rest;
+  *rest -= b;
+  return b;
+}
+
+// Какой сегмент под курсором (доля 0..1): 0..n_cats-1 — категории,
+// n_cats — «Прочее», n_cats+1 — «Свободно»; -1 — данных нет
+static int
+storageSegAt(const AppleApplication *self, double frac)
+{
+  if (self->storage_total == 0)
+    return -1;
+  guint64 pos = (guint64)(CLAMP(frac, 0.0, 1.0) * (double)self->storage_total);
+  guint64 left = self->storage_used;
+  for (int i = 0; i < self->storage_n_cats; i++) {
+    guint64 b = storageCatClamped(self, i, &left);
+    if (pos < b)
+      return i;
+    pos -= b;
+  }
+  if (pos < left)
+    return self->storage_n_cats; // «Прочее»
+  return self->storage_n_cats + 1; // «Свободно»
+}
+
+// Текст подсказки для сегмента: подпись и точный размер (с числом байт)
+static char *
+storageSegTip(const AppleApplication *self, int seg)
+{
+  const char *label = NULL;
+  guint64 bytes = 0;
+
+  if (seg >= 0 && seg < self->storage_n_cats) {
+    label = tr(STORAGE_CAT_META[seg].label);
+    bytes = self->storage_cats[seg].bytes;
+  } else if (seg == self->storage_n_cats) {
+    guint64 cats = 0;
+    for (int i = 0; i < self->storage_n_cats; i++)
+      cats += self->storage_cats[i].bytes;
+    label = tr("Прочее");
+    bytes = self->storage_used > cats ? self->storage_used - cats : 0;
+  } else if (seg == self->storage_n_cats + 1) {
+    label = tr("Свободно");
+    bytes = self->storage_total - self->storage_used;
+  } else {
+    return NULL;
+  }
+
+  return g_strdup_printf("%s — %s", label,
+                         g_format_size_full(bytes, G_FORMAT_SIZE_LONG_FORMAT));
+}
+
+// Движение мыши над диаграммой: подсказка с точным размером сегмента
+static void
+onStorageMotion(GtkEventControllerMotion *ctrl, double x, double y,
+                gpointer user_data)
+{
+  (void)y;
+
+  AppleApplication *self = APPLE_APPLICATION(user_data);
+  GtkWidget *area = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(ctrl));
+  int w = gtk_widget_get_width(area);
+  if (w <= 0)
+    return;
+
+  int seg = storageSegAt(self, x / (double)w);
+  char *tip = storageSegTip(self, seg);
+  gtk_widget_set_tooltip_text(area, tip); // NULL снимает подсказку
+  g_free(tip);
+}
+
 static void
 storageBarDraw(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer userData)
 {
@@ -488,34 +595,76 @@ storageBarDraw(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointe
   cairo_set_source_rgba(cr, 0.5, 0.5, 0.5, 0.25);
   cairo_fill(cr);
 
-  if (self->storage_total == 0)
-    return;
-
-  double usedW = width * CLAMP(self->storage_used_frac, 0.0, 1.0);
-  cairo_save(cr);
-  roundedRectPath(cr, 0.5, 0.5, width - 1.0, height - 1.0, r);
-  cairo_clip(cr);
-  cairo_rectangle(cr, 0, 0, usedW, height);
-  cairo_set_source_rgba(cr, 0.208, 0.518, 0.894, 1.0);
-  cairo_fill(cr);
-  cairo_restore(cr);
-
   PangoContext *pctx = gtk_widget_get_pango_context(GTK_WIDGET(area));
   GdkRGBA fg;
   gtk_widget_get_color(GTK_WIDGET(area), &fg);
   GdkRGBA white = {1.0, 1.0, 1.0, 1.0};
 
-  char *txt = g_strdup_printf(tr("Занято · %s%s"),
-                              g_format_size(self->storage_used),
-                              self->storage_demo ? tr(" (демо)") : "");
-  drawSegmentLabel(cr, pctx, usedW / 2.0, height / 2.0, txt, &white, usedW - 12);
-  g_free(txt);
+  if (self->storage_total == 0) {
+    // Данных нет — честная подпись вместо демо-значений
+    drawSegmentLabel(cr, pctx, width / 2.0, height / 2.0,
+                     tr("Данные о накопителе недоступны"), &fg, width - 12);
+    return;
+  }
 
-  txt = g_strdup_printf(tr("Свободно · %s"),
-                        g_format_size(self->storage_total - self->storage_used));
-  drawSegmentLabel(cr, pctx, usedW + (width - usedW) / 2.0, height / 2.0,
-                   txt, &fg, width - usedW - 12);
-  g_free(txt);
+  double usedW = width * CLAMP(self->storage_used_frac, 0.0, 1.0);
+
+  // Занятая часть: измеренные категории, затем «Прочее»
+  cairo_save(cr);
+  roundedRectPath(cr, 0.5, 0.5, width - 1.0, height - 1.0, r);
+  cairo_clip(cr);
+  double x = 0;
+  guint64 rest = self->storage_used;
+  for (int i = 0; i < self->storage_n_cats; i++) {
+    guint64 b = storageCatClamped(self, i, &rest);
+    double w = width * (double)b / (double)self->storage_total;
+    if (w > 0) {
+      cairo_rectangle(cr, x, 0, w, height);
+      const GdkRGBA *c = &STORAGE_CAT_META[i].color;
+      cairo_set_source_rgba(cr, c->red, c->green, c->blue, c->alpha);
+      cairo_fill(cr);
+    }
+    x += w;
+  }
+  if (rest > 0) {
+    cairo_rectangle(cr, x, 0, usedW - x, height);
+    cairo_set_source_rgba(cr, 0.208, 0.518, 0.894, 1.0); // #3584e4, Adwaita blue
+    cairo_fill(cr);
+  }
+  cairo_restore(cr);
+
+  // Подписи сегментов: не влезает текст — не рисуем (размер виден в подсказке)
+  double cx = 0;
+  rest = self->storage_used;
+  for (int i = 0; i < self->storage_n_cats; i++) {
+    guint64 b = storageCatClamped(self, i, &rest);
+    double w = width * (double)b / (double)self->storage_total;
+    char *txt = g_strdup_printf("%s · %s", tr(STORAGE_CAT_META[i].label),
+                                g_format_size(b));
+    drawSegmentLabel(cr, pctx, cx + w / 2.0, height / 2.0, txt, &white, w - 12);
+    g_free(txt);
+    cx += w;
+  }
+  if (rest > 0) {
+    double w = usedW - cx;
+    char *txt = g_strdup_printf("%s · %s", tr("Прочее"), g_format_size(rest));
+    drawSegmentLabel(cr, pctx, cx + w / 2.0, height / 2.0, txt, &white, w - 12);
+    g_free(txt);
+  }
+  if (self->storage_n_cats == 0) {
+    // Категории ещё не измерены — обычные «Занято/Свободно»
+    char *txt = g_strdup_printf("%s · %s", tr("Занято"),
+                                g_format_size(self->storage_used));
+    drawSegmentLabel(cr, pctx, usedW / 2.0, height / 2.0, txt, &white, usedW - 12);
+    g_free(txt);
+  }
+  {
+    double w = width - usedW;
+    char *txt = g_strdup_printf("%s · %s", tr("Свободно"),
+                                g_format_size(self->storage_total - self->storage_used));
+    drawSegmentLabel(cr, pctx, usedW + w / 2.0, height / 2.0, txt, &fg, w - 12);
+    g_free(txt);
+  }
 }
 
 typedef struct {
@@ -716,6 +865,100 @@ startMusicScan(AppleApplication *self, const char *udid)
   g_task_run_in_thread(task, musicScanThread);
 
   g_object_unref(task); // только наш ref от g_task_new (см. startScan)
+}
+
+typedef struct {
+  char *udid;
+  guint64 bytes[STORAGE_MAX_CATS];
+} StorageScanCtx;
+
+static void
+storageScanCtxFree(gpointer data)
+{
+  StorageScanCtx *ctx = data;
+  g_free(ctx->udid);
+  g_free(ctx);
+}
+
+// Фоновый поток: измеряем размеры категорий через AFC (только чтение)
+static void
+storageScanThread(GTask *task, gpointer source_object,
+                  gpointer task_data, GCancellable *cancellable)
+{
+  (void)source_object;
+  (void)cancellable;
+
+  StorageScanCtx *ctx = task_data;
+  AfcSession s;
+
+  if (afcSessionOpen(&s, ctx->udid) != 0) {
+    logMessage(tr("Накопитель: не удалось измерить категории (нет подключения)."));
+    g_task_return_boolean(task, FALSE);
+    return;
+  }
+
+  for (int i = 0; i < STORAGE_CAT_COUNT; i++) {
+    guint64 sum = 0;
+    for (const char *const *root = STORAGE_CATS[i]; *root; root++)
+      sum += afcDirSize(s.afc, *root, 8);
+    ctx->bytes[i] = sum;
+  }
+
+  afcSessionClose(&s);
+  g_task_return_boolean(task, TRUE);
+}
+
+// Колбэк завершения измерения категорий (главный поток)
+static void
+onStorageScanFinished(GObject *source_object, GAsyncResult *res, gpointer user_data)
+{
+  (void)user_data;
+
+  AppleApplication *self = APPLE_APPLICATION(source_object);
+  GTask *task = G_TASK(res);
+  StorageScanCtx *ctx = g_task_get_task_data(task);
+
+  if (!g_task_propagate_boolean(task, NULL))
+    return;
+
+  // Пока шло измерение, устройство могли сменить — результаты устарели
+  if (!self->selected || g_strcmp0(self->selected->udid, ctx->udid) != 0)
+    return;
+
+  for (int i = 0; i < STORAGE_CAT_COUNT; i++) {
+    self->storage_cats[i].bytes = ctx->bytes[i];
+    // G_FORMAT_SIZE_LONG_FORMAT добавляет точное число байт в скобках
+    logMessage("%s — %s", tr(STORAGE_CAT_META[i].label),
+               g_format_size_full(ctx->bytes[i], G_FORMAT_SIZE_LONG_FORMAT));
+  }
+  self->storage_n_cats = STORAGE_CAT_COUNT;
+
+  if (self->storage_area)
+    gtk_widget_queue_draw(self->storage_area);
+}
+
+// Запуск измерения категорий накопителя выбранного устройства
+void
+startStorageScan(AppleApplication *self, const char *udid)
+{
+  if (!udid || !self->storage_area)
+    return;
+  if (self->storage_total == 0)
+    return; // размеры накопителя неизвестны — категориям не от чего считать долю
+
+  // Пока идёт измерение, бар показывает «Занято/Свободно»
+  self->storage_n_cats = 0;
+  if (self->storage_area)
+    gtk_widget_queue_draw(self->storage_area);
+
+  StorageScanCtx *ctx = g_new0(StorageScanCtx, 1);
+  ctx->udid = g_strdup(udid);
+
+  GTask *task = g_task_new(G_OBJECT(self), NULL, onStorageScanFinished, NULL);
+  g_task_set_task_data(task, ctx, storageScanCtxFree);
+  g_task_run_in_thread(task, storageScanThread);
+
+  g_object_unref(task);
 }
 
 typedef struct {
@@ -1753,6 +1996,10 @@ apple_application_activate(GApplication *app)
   gtk_widget_set_valign(self->storage_area, GTK_ALIGN_CENTER);
   gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(self->storage_area),
                                  storageBarDraw, self, NULL);
+  // Подсказка с точным размером сегмента под курсором
+  GtkEventController *storage_motion = gtk_event_controller_motion_new();
+  g_signal_connect(storage_motion, "motion", G_CALLBACK(onStorageMotion), self);
+  gtk_widget_add_controller(self->storage_area, storage_motion);
   g_object_add_weak_pointer(G_OBJECT(self->storage_area), (gpointer *)&self->storage_area);
 
   GtkWidget *storage_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);

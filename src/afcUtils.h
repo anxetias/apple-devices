@@ -30,6 +30,10 @@ int afcReadRangeH(AfcFile *f, uint64_t offset, uint32_t len, char *buf,
 int musicPartialDownload(afc_client_t afc, const char *path, guint64 size,
                          const char *tmp_path, guint64 *bytes_out);
 
+/* Рекурсивный размер каталога через AFC (только чтение).
+ * max_depth ограничивает вложенность; 0 — только файлы самого каталога. */
+guint64 afcDirSize(afc_client_t afc, const char *path, int max_depth);
+
 /* Читает теги и обложку из локального файла в трек (TagLib). */
 void readTrackTags(MusicTrack *t, const char *local_path);
 

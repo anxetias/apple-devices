@@ -174,6 +174,49 @@ void afcCollectAudio(afc_client_t afc, const char *dir, GPtrArray *out)
 
 /* --- Открытый AFC-хэндл для частичного чтения --- */
 
+/* Рекурсивный размер каталога через AFC (только чтение). Служебные
+ * каталоги «.»/«..» пропускаются; max_depth ограничивает вложенность. */
+guint64
+afcDirSize(afc_client_t afc, const char *path, int max_depth)
+{
+  guint64 total = 0;
+  char **entries = NULL;
+  if (afc_read_directory(afc, path, &entries) != AFC_E_SUCCESS || !entries)
+    return 0;
+
+  for (char **e = entries; *e && *e[0]; e++) {
+    if (g_strcmp0(*e, ".") == 0 || g_strcmp0(*e, "..") == 0)
+      continue;
+
+    char *full = g_build_filename(path, *e, NULL);
+    char **fi = NULL;
+
+    if (afc_get_file_info(afc, full, &fi) == AFC_E_SUCCESS && fi) {
+      const char *size = NULL;
+      const char *ftype = NULL;
+      for (char **kv = fi; kv[0] && kv[1]; kv += 2) {
+        if (g_strcmp0(kv[0], "st_size") == 0)
+          size = kv[1];
+        else if (g_strcmp0(kv[0], "st_ifmt") == 0)
+          ftype = kv[1];
+      }
+
+      if (ftype && (g_strcmp0(ftype, "S_IFDIR") == 0 ||
+                    g_strcmp0(ftype, "Directory") == 0)) {
+        if (max_depth > 0)
+          total += afcDirSize(afc, full, max_depth - 1);
+      } else if (size) {
+        total += g_ascii_strtoull(size, NULL, 10);
+      }
+      afc_dictionary_free(fi);
+    }
+    g_free(full);
+  }
+
+  afc_dictionary_free(entries);
+  return total;
+}
+
 int afcFileOpenH(AfcFile *f, afc_client_t afc, const char *path)
 {
   f->afc = afc;

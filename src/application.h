@@ -17,6 +17,16 @@ G_DECLARE_FINAL_TYPE(MusicTrack, music_track, MUSIC, TRACK, GObject)
 /* Корень медиатеки на устройстве (через AFC). */
 #define MUSIC_REMOTE_ROOT "/iTunes_Control/Music"
 
+/* --- Диаграмма накопителя --- */
+
+/* Максимум категорий на диаграмме (архитектура позволяет добавить). */
+#define STORAGE_MAX_CATS 8
+
+/* Измеренная категория накопителя: байты; подпись и цвет берутся по индексу. */
+typedef struct {
+  guint64 bytes;
+} StorageCategory;
+
 /* Структура приложения — определена здесь, чтобы модули
  * (deviceScanner, medialib, uiWidgets) могли обращаться к полям. */
 struct _AppleApplication {
@@ -82,7 +92,8 @@ struct _AppleApplication {
   guint64 storage_total;
   guint64 storage_used;
   double storage_used_frac;
-  gboolean storage_demo;
+  StorageCategory storage_cats[STORAGE_MAX_CATS]; // измеренные категории
+  int storage_n_cats; // сколько категорий измерено (0 — «Занято/Свободно»)
 };
 
 /* === Сервисы application.c, используемые модулями === */
@@ -107,6 +118,9 @@ gboolean appHidePersonalData(void);
 
 /* Запуск сканирования медиатеки выбранного устройства. */
 void startMusicScan(AppleApplication *self, const char *udid);
+
+/* Запуск измерения категорий накопителя выбранного устройства. */
+void startStorageScan(AppleApplication *self, const char *udid);
 
 AppleApplication *apple_application_new(void);
 

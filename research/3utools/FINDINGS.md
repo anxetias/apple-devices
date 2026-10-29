@@ -1411,3 +1411,86 @@ get_step_2_data/get_auth_server_data — теперь это ЕДИНСТВЕН�
 Зонды перенесены в проект: `research/3utools/atc_probe.c`,
 `research/3utools/atc_probe2.c` (сборка: gcc + pkg-config
 libimobiledevice-1.0 libplist-2.0 openssl; запуск: `./atc_probe2`).
+
+### Перехват диалога 3u (LD_PRELOAD) и РЕПЛЕЙ GRAPPA (29.10, ночь)
+
+**Хук**: 3u тащит свой `libssl.so.1.1` (libidm линкуется с ним; в
+libidm — СВОЯ статическая копия idevice: `idevice_connection_receive*`
+зывают `SSL_read@OPENSSL_1_1_0` прямо из libidm). LD_PRELOAD-хук
+`ssl_dump.c` (в `traces/capture_20261029/`) перехватывает
+SSL_read/SSL_write(+_ex) и пишет открытый текст в бинарный лог
+(направление + длина + данные). Нюансы: (а) dlsym(RTLD_NEXT) в
+конструкторе слишком рано → ленивая инициализация в хуках; (б) чтения
+приходят ФРАГМЕНТАМИ (SSL_read по 1–3 байта: префикс 1+3, тело 1+385)
+— при разборе склеивать поток по направлениям. Прогон: сеть ВКЛ,
+пользователь сделал импорт (успешно, SyncFinished), дамп 2,98 МБ
+(в осн. TLS веб-UI; atc-сообщения ищутся сканом bplist00).
+
+**Полный УСПЕШНЫЙ диалог** (цикл 2; цикл 1 — 3u получил SyncAllowed,
+не синхронизировался и закрыл сессию своим `SyncFailed
+{ErrorCode:-1, Id:0, Type:0, Session:0}` — так 3u бросает неисполь-
+зуемую сессию; перед этим 6×PowerAssertion):
+
+- устройство (всегда с `Id` (растёт), `Type:0`, `Session`):
+  Capabilities → InstalledAssets → AssetMetrics → SyncAllowed(S=0) →
+  [после RequestingSync] SyncAllowed(S=1) → InstalledAssets(S=1) →
+  **ReadyForSync** → Progress(OverallProgress 0.004) → Progress(0.008)
+  → **AssetManifest** → Pong×4 → **SyncFinished** (успех);
+- хост (БЕЗ Id/Type, только Command/Params/Session):
+  **RequestingSync** → **FinishedSyncingMetadata** → FileProgress×5 →
+  FileComplete → Ping×5 (устройство отвечает Pong).
+
+Структуры (из каптур):
+- `RequestingSync` (396 Б) — **байт-в-байт как наша реплика**, кроме
+  `Params.HostInfo.Grappa`: у 3u — **84-байтовый блоб** (начало
+  `01 01 15 a1 …`), полученный от сервера 3u. Остальные поля идентичны
+  нашим: SyncHostName "ow", Version "11.1.0.126", LibraryID
+  "0000000000000000", Dataclasses/SyncedDataclasses ["Media"],
+  DataclassAnchors {"Media":"1"} (строка), Session=1 (uint). **Полей
+  Id/Type в хост-сообщениях НЕТ** (кроме SyncFailed).
+- `ReadyForSync` (262 Б): `Params.DeviceInfo.Grappa` — **83-байтовый
+  блоб устройства** (начало `01 01 2a …`; при каждом синке НОВЫЙ — в
+  нашем прогоне `01 01 55 77 …`), `Params.DataclassAnchors`:
+  **{"Media":"0"}** — настоящий якорь устройства строка "0" (3u шлёт
+  "1", устройство не возражает).
+- `AssetManifest` (устройство): `Params.AssetManifest.Media[]` =
+  {AssetID:"5041182994606310077", AssetType:"Music", IsDownload:true,
+  Variant:{AssetParts:7}} — устройство ЗАПРАШИВАЕТ файл.
+- `FileProgress` (хост): {AssetID, AssetProgress: real 0→0.37→0.74→1.0,
+  Dataclass:"Media", OverallProgress:1.0}; `FileComplete` (хост):
+  {AssetID, **AssetPath:"/iTunes_Control/Music/F88/HZVJ.mp3"**,
+  Dataclass:"Media"} — **схема бакета раскрыта**: 2-симв. каталог +
+  4-симв. имя из AssetID (сравнить с F09/UHYT, F50/FXGH, F87/DGHD из
+  replay-артефактов).
+- `Ping` (хост) = {Command, Session} → `Pong` (устройство) =
+  {Command, Id, Session, Type}. `Progress` (устройство) =
+  {OverallProgress: real}.
+
+**РЕПЛЕЙ-ЭКСПЕРИМЕНТ (atc_dialog2)**: наш диалог с ручным LE32-
+фреймингом, в RequestingSync — захваченный 84-Б Grappa (вместо
+пустого). РЕЗУЛЬТАТ: **устройство ПРИНЯЛО** — ReadyForSync пришёл
+(свежий device-Grappa), наш FinishedSyncingMetadata принят, устройство
+прислало Progress + **AssetManifest**, затем закрыло связь (мы не
+ответили на AssetManifest — ожидаемо). Для сравнения: пустой Grappa →
+`SyncFailed ErrorCode=4` (код 4 = отказ Grappa/ключа).
+
+**ВЫВОДЫ**:
+1. **Хост-Grappa ПЕРЕИСПОЛЬЗУЕМ**: блоб от сессии 3u принят новой
+   сессией — не привязан к nonce. Сервер 3u нужен только чтобы
+   ДОСТАТЬ блоб (сколько живёт — проверить: перезагрузка устройства,
+   изменение библиотеки, время). Возможно, хватит ОДНОГО прогона 3u
+   на устройство.
+2. Наш диалог работает: пропуск уведомлений → SyncAllowed →
+   RequestingSync → ReadyForSync → FinishedSyncingMetadata — весь
+   путь пройден без единой записи на устройство.
+3. Device-Grappa меняется каждую сессию ⇒ для .cig (если он
+   вычисляется от него) нужен свежий — мы его теперь ПОЛУЧАЕМ в
+   ReadyForSync. Алгоритм .cig (сервер 3u: [K][A=deviceGrappa]
+   [B=декларация] → cig) всё ещё нужен, ЕСЛИ устройство валидирует
+   .cig — эксперимент (старый/нулевой .cig) не проведён.
+4. AssetManifest пришёл и БЕЗ нашей декларации — устройство
+   сверяется со своим состоянием (декларацией от импорта 3u на
+   устройстве).
+5. Полные артефакты: `traces/capture_20261029/` (дамп, каптуры
+   сообщений, блобы Grappa — в git НЕ попадают); код хука и диалога —
+   там же (`ssl_dump.c`, `atc_dialog2.c`).

@@ -621,7 +621,23 @@ apple-devices/
   → AssetMetrics → **SyncAllowed**; на уведомления хост не отвечает
   (3u их пропускает — строк этих Command в libidm нет); без ответа на
   SyncAllowed устройство рвёт связь. Детали — FINDINGS.md, «SSL-путь
-  снят». Следующий шаг — репликация диалога: пропускаем уведомления,
-  на SyncAllowed отвечаем RequestingSync (LE32-фрейминг), ждём
-  ReadyForSync; выяснить — нужен ли `Id` в сообщениях хоста и чем
-  заполнять C/D/E (Dataclasses) в ios_add_media.
+  снят».
+- **Диалог ЗАПУЩЕН и дошёл до ReadyForSync (ночь 29.10)**: перехват
+  успешного импорта 3u через LD_PRELOAD-хук SSL_read/SSL_write
+  (`ssl_dump.c`; 3u тащит свой libssl.so.1.1, libidm — статическая
+  копия idevice) дал ПОЛНЫЙ текст диалога: RequestingSync 3u = наша
+  реплика байт-в-байт, кроме `HostInfo.Grappa` — 84-Б блоб с сервера;
+  ReadyForSync несёт свежий 83-Б Grappa устройства и якорь "0";
+  AssetManifest {AssetID, AssetType:"Music", IsDownload, AssetParts:7};
+  хост отвечает FileProgress×N {AssetProgress real} + FileComplete
+  {AssetPath: **/iTunes_Control/Music/F88/HZVJ.mp3** — схема бакета
+  раскрыта}; Ping→Pong; финал SyncFinished. **РЕПЛЕЙ: устройство
+  приняло захваченный Grappa в нашей реплике** (ReadyForSync +
+  AssetManifest) — блоб переиспользуем, не привязан к сессии; пустой
+  Grappa → SyncFailed ErrorCode=4. Артефакты —
+  `research/3utools/traces/capture_20261029/` (в git не попадают).
+  Следующий шаг: эксперимент с .cig (нулевой/старый против свежего) +
+  ответ на AssetManifest передачей файла через AFC (пути и схема бакета
+  известны) → полный импорт без 3u. Открытые вопросы: живучесть блоба
+  Grappa (перезагрузка/время/изменение библиотеки), источник K для
+  .cig, валидирует ли устройство .cig.

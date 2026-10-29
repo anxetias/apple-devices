@@ -145,8 +145,11 @@ static const TrEntry trTable[] = {
   {"Музыка: импорт «%s» -> %s", "Music: importing \"%s\" -> %s"},
   {"Музыка: не удалось загрузить «%s».", "Music: failed to upload \"%s\"."},
   {"Импортировано файлов: %d", "Files imported: %d"},
-  {"Музыка: файлы загружены, но база «Музыки» не обновлена — треки появятся только после перезагрузки iPhone.",
-   "Music: files uploaded, but the Music database was not updated — tracks will appear only after the iPhone is restarted."},
+  {"Импорт отменён: у устройства незаписанные транзакции в библиотеке — повторите позже",
+   "Import cancelled: the device's library has unwritten transactions — try again later"},
+  {"Импорт не удался — подробности в журнале", "Import failed — see the log for details"},
+  {"Музыка: файлы загружены, но база «Музыки» не обновлена — треки в библиотеке не появятся; подробности в журнале.",
+   "Music: files uploaded, but the Music database was not updated — the tracks will not appear in the library; see the log for details."},
   {"Выберите аудиофайлы для импорта", "Select audio files to import"},
   {"Музыка: экспорт не удался — нет подключения (AFC).", "Music: export failed — no connection (AFC)."},
   {"Музыка: экспорт %s -> %s", "Music: exporting %s -> %s"},
@@ -1023,7 +1026,9 @@ musicImportThread(GTask *task, gpointer source_object,
     logMessage(tr("Музыка: импорт отменён: %s"), wal_err->message);
     g_clear_error(&wal_err);
     afcSessionClose(&s);
-    g_task_return_int(task, -1);
+    /* -2 — безопасный отказ гейта (записей на устройство не было);
+     * onMusicImportFinished показывает по нему дружелюбное сообщение. */
+    g_task_return_int(task, -2);
     return;
   }
 
@@ -1076,7 +1081,15 @@ onMusicImportFinished(GObject *source_object, GAsyncResult *res, gpointer user_d
   self->music_busy = FALSE;
   updateMusicButtons(self);
 
-  char *msg = g_strdup_printf(tr("Импортировано файлов: %d"), done);
+  char *msg;
+  if (done == -2) {
+    /* Отказ гейта wal: подробная причина уже в журнале (musicImportThread). */
+    msg = g_strdup(tr("Импорт отменён: у устройства незаписанные транзакции в библиотеке — повторите позже"));
+  } else if (done < 0) {
+    msg = g_strdup(tr("Импорт не удался — подробности в журнале"));
+  } else {
+    msg = g_strdup_printf(tr("Импортировано файлов: %d"), done);
+  }
   logMessage("%s", msg);
   if (self->toast_overlay)
     adw_toast_overlay_add_toast(ADW_TOAST_OVERLAY(self->toast_overlay), adw_toast_new(msg));
@@ -1087,7 +1100,7 @@ onMusicImportFinished(GObject *source_object, GAsyncResult *res, gpointer user_d
   else if (done > 0 && ctx->db_added == 0)
     logMessage(tr("Музыка: все треки уже есть в медиатеке."));
   else if (done > 0)
-    logMessage(tr("Музыка: файлы загружены, но база «Музыки» не обновлена — треки появятся только после перезагрузки iPhone."));
+    logMessage(tr("Музыка: файлы загружены, но база «Музыки» не обновлена — треки в библиотеке не появятся; подробности в журнале."));
 
   // Обновляем список, чтобы показать импортированное
   if (done > 0 && self->selected && g_strcmp0(self->selected->udid, ctx->udid) == 0)

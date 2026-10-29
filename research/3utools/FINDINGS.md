@@ -1142,3 +1142,154 @@ wal стабильно **1 759 272 Б** весь час (рост останов
 3. Реплика флоу на libimobiledevice (lockdown StartService com.apple.atc
    → property_list_service; AFC; цикл манифеста).
 4. Убрать артефакты replay с устройства (по согласованию).
+
+## Сессия 29.10 (вечер): диалог atc разобран полностью; режим всегда онлайн
+
+### sync_new @0x7eef0 — выбор режима (КЛЮЧЕВОЕ)
+`sync_t` = new(0x20): plist_client@0, afc_client@8, mode(int)@0x10,
+udid(char*)@0x18. Порядок:
+1. `lockdownd_client_handshake(dev, &ldc, 0)`; ошибка → -3.
+2. StartService **`com.apple.atc`** (строка @0xce84e) →
+   `property_list_service_client_new` → sync->plist_client; ошибка → -4/-5.
+3. Если 4-й аргумент (bool) != 0 → StartService `com.apple.afc` →
+   `afc_client_new` → sync->afc_client; ошибка → -7.
+4. **`if (*g_InitHost == NULL) sync->mode = 1;`** — mode=0 (офлайн)
+   остаётся ТОЛЬКО при зарегистрированном g_InitHost.
+5. `udid_25_24(*(idevice), sync->udid)` — idevice_private+0 = char* udid
+   (malloc 0x2c; 25-символьный с дефисом → 24).
+
+### g_InitHost/g_EstablishKey/g_CigHash в поставке НЕ инициализируются
+- В libidm только 4 чтения GOT-слотов (0xeaee0/0xeaf38/0xeafb8), записей
+  нет; прямых ссылок на 0xee6e8/f0/f8 нет вовсе (grep по полному дизасму).
+- Байтовый grep + `nm -D` по ВСЕМ файлам /opt/apps/com.3u.3utools:
+  имена есть только в libidm.so(.1). main 3uTools, libidm_go.so,
+  librxpc.so, libacmr_3u.so, Qt-библиотеки — чисто.
+- `init_dll` @0x62530 (0x4cb) — только пути (g_workdir/g_files/
+  g_Lockdown_Dir, CreateDeepDirectory), g_use_proxy=0, g_language;
+  dlopen/dlsym нет.
+- ⇒ в поставляемом 3uTools mode всегда 1; гипотетический mode=0 упал бы
+  по call *(NULL). Офлайн-cig — API для встраивателей (внутренние сборки
+  3u); **алгоритм .cig в поставке ОТСУТСТВУЕТ**.
+- OpenSSL libidm (SHA1/EVP_sha1/PKCS5_PBKDF2_HMAC) принадлежит
+  calc_buf_sha1_sha256 (0x38ae0), _SHA1 (0x62ce0),
+  lockdownd_gen_pair_cert_for_udid (0x6a730), ios_backup_* — к cig не
+  относится. В libidm есть и вендоренный mobilesync-клиент
+  (mobilesync_start @0x905b0) — стандартный канал, не наш atc-путь.
+- Следствие: в реальном прогоне 19:15 `.cig` вычислил **сервер 3u**.
+
+### Диалог atc (property_list_service, binary plist)
+1. **УСТРОЙСТВО шлёт ПЕРВЫМ** `{"Command":"SyncAllowed"…}` —
+   `get_SyncAllowed_plist` @0x7eab0 (0x113): цикл
+   `property_list_service_receive_plist_with_timeout(*client, &pl,
+   1000 мс, 0)`; Command == "SyncAllowed" (0xce800) → 0; rc=-5 (таймаут
+   приёма) → повтор, пока time()-start < timeout_s и !*abort; иначе -10;
+   иной rc → -1. Сигнатура (client*&, bool* abort, int timeout_s).
+2. Хост → `send_requesting_sync` @0x7f160 (0x268). Сигнатура
+   (client*&, bin_t& A, bin_t& B_out, void*& C, void*& D, void*& E,
+   bool& abort, int timeout). Сначала `get_SyncAllowed_plist` (rc!=0 → 2),
+   затем binary plist:
+   - `Command`: "RequestingSync" (0xce8b1);
+   - `Params.HostInfo`: { `SyncHostName`: "ow" (0xcd90a — ХВОСТ строки
+     "1XzPO/CFd3ow"@0xcd900!), `SyncedDataclasses`: <пллист C>,
+     `Version`: "11.1.0.126" (0xce87b), `Grappa`: <data A —
+     plist_new_data(A.data, A.size)>, `LibraryID`: "0000000000000000"
+     (0xce88d) };
+   - `Params.Dataclasses`: <пллист D>;
+   - `Params.DataclassAnchors`: <пллист E>;
+   - `Session`: 1 (uint).
+   Отправка `property_list_service_send_binary_plist(*client, pl, 0)`.
+3. `get_ReadyForSync_plist` @0x7e950 (0x15d): та же петля, poll 500 мс;
+   Command == "ReadyForSync" (0xce7f3) → *out = plist_copy(pl), 0;
+   Command == "SyncFailed" (0xc5ac7) → -2; таймаут → -10.
+   Затем **B_out = `resp.Params.DeviceInfo.Grappa`** (plist_get_data_val)
+   — двоичные данные УСТРОЙСТВА.
+4. Хост → `send_FinishedSyncingMetadata_media` @0x9bb10 (0x110):
+   `Command`: "FinishedSyncingMetadata" (0xce836);
+   `Params`: { `SyncTypes`: { "Media": 1 (uint) }, `DataclassAnchors`:
+   { "Media": "1" (СТРОКА, 0xc0ebf) } }; `Session`: 1.
+   Ключ "Media" = 0xcfca9 (хвост "/iTunes_Control/Sync/Media").
+   Якорь хоста жёстко строка "1".
+
+### sync_send_requesting_sync @0x80760 (0x178) — диспетчер ключа
+Сигнатура (sync_t*&, const char* url, void*& C, void*& D, void*& E,
+uint& anchor, bin_t& out, bool& abort, vector<string>&,
+int cb(const char*, char**), int timeout).
+- mode==0 → `get_step_2_data_ex(&sync->udid, &anchor, &bin)`; ПРОВАЛ →
+  **`sync->mode = 1`** и падение в онлайн-ветку (авто-fallback).
+- mode==1 → `get_step_2_data(url, &sync->udid, &anchor, &bin, vec, cb, …)`.
+- Затем обе ветки → `send_requesting_sync(*sync->plist_client, &bin (A),
+  &out (B), C, D, E, abort, timeout)`.
+
+### get_step_2_data_ex @0x7edb0 (офлайн, полный)
+fp = *g_InitHost; if (!fp) return -1. Буфер на стеке: [qword 1][qword 1]
+(xmm0 ← 0xcea00), далее 40 байт '0' (0xcea10 + movabs 0x3030…),
+хвост нули; `memcpy_chk(rsp+0x20, udid, strlen(udid), 0x80)` — UDID
+поверх шаблона '0'. Вызов `fp(buf, &anchor, &data(NULL), &len(0))`;
+rc!=0 → -2; out = {memdup(data, len), len}.
+Т.е. `g_InitHost(void* hostbuf {u64 1, u64 1, char udid[]…}, uint*
+anchor, void** data, uint* len)`.
+
+### cig-цепочка
+Диспетчер `get_media_sync_cig` @0x81450 (0x40): (int mode, const char*
+url, uint K, bin_t& A, bin_t& B, bin_t& cig, vector<string>& v);
+mode==0 → `_ex(K, A, B, cig)`, иначе `_get(url, K, A, B, cig, v)`.
+- `_get_media_sync_cig_ex` @0x7fd50: `g_EstablishKey(K, A.data, A.size)`
+  → rc!=0 → -503 (0xfffffe09); `g_CigHash(K, B.data, B.size, &ptr(NULL),
+  &len(0))` → rc!=0 → -502 (0xfffffe0a); cig = {memdup(ptr, len), len}.
+  **A = Grappa УСТРОЙСТВА** (из ReadyForSync), B = декларация.
+- `_get_media_sync_cig` @0x812d0 (онлайн): ba = byte_array_new(0x1000);
+  append [qword LE 0x64d035467891][u32 0] (12 Б), [u32 K], [u32 A.size]
+  [A.data], [u32 B.size][B.data]; затем u32 по смещению 8 = size-12.
+  `get_auth_server_data(url, ba->data, &resp, vec, NULL)` — внутри JSON
+  {"method":"POST" (0xce91e), "url": url, "User-Agent": …}. Ответ:
+  *(u32*)resp != 0x35467891 → -403; resp[4]==0xd1 → успех (len u32 @+12,
+  payload @+16) → cig; resp[4]==0xc9 → код ошибки = resp[5]; иначе -404.
+
+### Контекст вызова в ios_add_media (9d5a3–9d7bd) + вызов из main
+- Сборка аргументов диалога: массив C = [Key("Media")] (plist_new_key!),
+  массив D = [String("Media")], словарь E = {"Media": "1"}.
+- `sync_send_requesting_sync(&sync, url, &C, &D, &E, &anchor (-0x180),
+  &bin (-0x130), &abort (-0x181), &vec (-0xf0), NULL, 120)` —
+  callback = NULL, таймаут 120 с.
+- ArtworkDB (/iTunes_Control/Artwork/ArtworkDB, 0xcfd40) → counter
+  (len>28 → buf[0x1c], иначе 0); `create_Media_Sync_add_plist(&pl, m1,
+  m2, &counter, tracks)`; plist_to_bin → decl.
+- `get_media_sync_cig(sync->mode, url, anchor, A = bin(-0x130) (Grappa
+  устройства), B = decl, &cig (-0x110), vec)`.
+- mkdir "/iTunes_Control/Sync" (0xcfc7f), "/iTunes_Control/Sync/Media"
+  (0xcfc94); write decl → "/iTunes_Control/Sync/Media/
+  Sync_00000000.plist" (0xcf9e8); write cig → "…/Sync_00000000.cig"
+  (0xcfa18); `send_FinishedSyncingMetadata_media(sync)`.
+- **Вызов из main найден**: `CDeviceMusic::importMusic` @a3b0b0 —
+  **7-й (стековый) аргумент ios_add_media = строка
+  `QStaticManager::getUrlAuth(0)`** — это и есть url/X (в ios_add_media
+  rbx = 0x10(%rbp) = стековый аргумент, `(%rbx)` = данные строки).
+  arg1 = *(dev+0x38) (idevice), arg2/3 = *(dev+0xd0)/0xd8, callback =
+  CDeviceMusic::callBackImport. Т.е. ios_add_media имеет 7 параметров
+  (mangled `…PFviifmmPKcS_ES_R…` — 6-й S_ = void*, 7-й = string&).
+- **КОРРЕКЦИЯ прежнего вывода**: «anchor возвращает УСТРОЙСТВО» — НЕВЕРНО,
+  отзываю. В диалоге устройство отдаёт только свой Grappa-блоб
+  (Params.DeviceInfo.Grappa); uint anchor заполняет `get_step_2_data`
+  из ответа СЕРВЕРА (u32 @+12 ответа; подтверждено 0x80733–0x80736).
+  Формат запроса get_step_2_data подтверждён: [dw 0x35467891]
+  [w 0x64d2 @+4][w crc][dw len+4][udid] (0x80650–0x80677).
+
+### Стратегия репликации (следующий шаг)
+1. Диалог воспроизводим на libimobiledevice: lockdown StartService
+   com.apple.atc → property_list_service; ждать "SyncAllowed" → слать
+   RequestingSync → ждать "ReadyForSync" → Params.DeviceInfo.Grappa.
+2. НЕИЗВЕСТНОСТЬ №1 — чем заполнить HostInfo.Grappa хоста (у 3u — ответ
+   сервера get_step_2_data). Кандидаты: (а) пустой блоб — проверить
+   реакцию устройства; (б) блоб из трассы, если fd65/66 его видели;
+   (в) алгоритм из iTunes/MobileDevice.framework (Grappa — Apple-код).
+3. НЕИЗВЕСТНОСТЬ №2 — .cig. Эксперимент-развязка: полный диалог с (а)
+   их старым .cig, (б) нулевым .cig; если реакция одинаковая — .cig не
+   валидируется, сервер не нужен. Если валидируется — запасной путь:
+   говорить с сервером 3u по разобранному протоколу (get_auth_server_data).
+4. Якорь: слать {"Media":"1"} как 3u; при отказе — читать настоящий
+   SyncAnchor устройства (MediaLibrary через lockdown
+   SQLMusicLibraryPostProcessCommands).
+5. Перед экспериментом убрать артефакты replay с устройства (по
+   согласованию): 3 mp3 /Airlock/Media/<pid>, 3 обложки
+   /Airlock/Media/Artwork/<pid>, декларация/.cig, при необходимости
+   ArtworkDB.

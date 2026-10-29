@@ -550,3 +550,51 @@ apple-devices/
   пре-флайт GET_FILE_INFO на `-wal`, проверка локального `-wal` после
   close, контроль размера после заливки, чистка best_artwork_token.
   Валидация гейта: импорт при грязном wal должен отказать.
+
+#### Шаг 5 — провал replay + полный разбор atc-диалога (ветка `3utools-research`)
+
+- **Replay-эксперимент (20:57–21:00) провален**: точный пакет 3u
+  (3 mp3 в `/Airlock/Media/<pid>`, обложки, декларация 1513 Б,
+  `.cig` 21 Б, ArtworkDB) без atc-диалога — ноль реакции устройства
+  (база не изменилась). Декларация без диалога игнорируется.
+- **atc-диалог разобран полностью** (все функции libidm.so, детали и
+  адреса — FINDINGS.md, раздел «Сессия 29.10 (вечер)»):
+  - `sync_new` @0x7eef0: **mode=1 (онлайн) ставится iff
+    `*g_InitHost==NULL`**; StartService `com.apple.atc` →
+    property_list_service; AFC — по 4-му bool-аргументу.
+  - **`g_InitHost`/`g_EstablishKey`/`g_CigHash` в поставке НЕ
+    инициализируются** (байтовый grep + `nm -D` по всем файлам
+    установки; `init_dll` @0x62530 — только пути/прокси, без
+    dlopen/dlsym) ⇒ 3uTools ВСЕГДА онлайн, **`.cig` вычисляет СЕРВЕР
+    3u** (запрос `[qword 0x64d035467891][u32 K][u32 A.size][A]
+    [u32 B.size][B]` → ответ magic 0x35467891, [4]==0xd1 → cig).
+    Офлайн-ветка — API для встраивателей; алгоритма `.cig` в поставке
+    НЕТ (OpenSSL libidm — только backup/pairing, к cig не относится).
+  - Диалог: **УСТРОЙСТВО шлёт ПЕРВЫМ** `{"Command":"SyncAllowed"}`
+    (poll 1000 мс) → хост шлёт binary plist `{Command:
+    "RequestingSync", Params:{HostInfo:{SyncHostName:"ow",
+    SyncedDataclasses:C, Version:"11.1.0.126", Grappa:<A>,
+    LibraryID:"0000000000000000"}, Dataclasses:D,
+    DataclassAnchors:E}, Session:1}` (poll 500 мс) → ждёт
+    `"ReadyForSync"` (**B = resp.Params.DeviceInfo.Grappa** — данные
+    УСТРОЙСТВА; `"SyncFailed"` → отказ).
+  - **КОРРЕКЦИЯ**: прежний вывод «anchor возвращает УСТРОЙСТВО» —
+    НЕВЕРЕН, отозван; anchor заполняет `get_step_2_data` из ответа
+    СЕРВЕРА (u32@+12).
+- Вызов в main найден: `CDeviceMusic::importMusic` @a3b0b0 —
+  7-й стековый аргумент `ios_add_media` = `QStaticManager::getUrlAuth(0)`
+  (url сервера 3u).
+- Якорь хоста в `FinishedSyncingMetadata` жёстко строка `"1"`
+  (`DataclassAnchors:{"Media":"1"}`).
+- **Стратегия репликации** (следующий шаг, детали — FINDINGS.md):
+  1. Диалог на libimobiledevice: StartService `com.apple.atc` →
+     property_list_service; SyncAllowed → RequestingSync →
+     ReadyForSync → Grappa устройства.
+  2. Неизвестность №1 — чем заполнить HostInfo.Grappa хоста
+     (кандидаты: пустой блоб / блоб из трассы / алгоритм Apple).
+  3. Неизвестность №2 — валидирует ли устройство `.cig`:
+     эксперимент с (а) старым `.cig`, (б) нулевым; одинаковая реакция
+     ⇒ сервер не нужен; иначе — запасной путь: сервер 3u по
+     разобранному протоколу.
+  4. Перед экспериментом — убрать артефакты replay с устройства (по
+     согласованию).

@@ -222,6 +222,12 @@ gboolean medialibDeleteTrack(sqlite3 *db, const MedialibTrackRow *t,
       "SELECT artwork_token FROM artwork_token WHERE entity_pid=? AND entity_type=0", pid);
   if (!dbRunN(db, "DELETE FROM artwork_token WHERE entity_pid=? AND entity_type=0", pid, &err))
     goto fail;
+  /* best_artwork_token тоже ссылается на токены item'а — без этой чистки
+   * остаются сироты (наблюдалось: (67108885, 4, 6, '315') после удаления
+   * BxMxC кнопкой). */
+  if (!dbRunN(db, "DELETE FROM best_artwork_token WHERE entity_pid=? AND entity_type=0",
+              pid, &err))
+    goto fail;
 
   if (dbCountN(db, "SELECT COUNT(*) FROM item WHERE album_pid=?", t->album_pid) == 0) {
     if (t->album_order)
@@ -235,6 +241,8 @@ gboolean medialibDeleteTrack(sqlite3 *db, const MedialibTrackRow *t,
     g_ptr_array_unref(alb_tokens);
 
     if (!dbRunN(db, "DELETE FROM artwork_token WHERE entity_pid=? AND entity_type=4",
+                t->album_pid, &err) ||
+        !dbRunN(db, "DELETE FROM best_artwork_token WHERE entity_pid=? AND entity_type=4",
                 t->album_pid, &err) ||
         !dbRunN(db, "DELETE FROM album WHERE album_pid=?", t->album_pid, &err))
       goto fail;
@@ -312,6 +320,31 @@ fail:
   return FALSE;
 }
 
+/* Пре-флайт гейт безопасности: wal устройства должен отсутствовать или
+ * содержать только заголовок (32 Б). Большой wal = у демона есть
+ * некчекпоинченные транзакции: он держит базу открытой и при замене
+ * main откатывает нашу заливку своим старым wal (инцидент 29.10,
+ * research/3utools/FINDINGS.md). */
+static gboolean medialibDeviceWalIsClean(afc_client_t afc, GError **error)
+{
+  char **fi = NULL;
+  const char *wal = "/iTunes_Control/iTunes/MediaLibrary.sqlitedb-wal";
+  if (afc_get_file_info(afc, wal, &fi) != AFC_E_SUCCESS || !fi)
+    return TRUE; /* wal отсутствует — чисто */
+  guint64 size = 0;
+  for (char **kv = fi; kv[0] && kv[1]; kv += 2)
+    if (strcmp(kv[0], "st_size") == 0)
+      size = g_ascii_strtoull(kv[1], NULL, 10);
+  afc_dictionary_free(fi);
+  if (size <= 32)
+    return TRUE; /* только заголовок — кадров нет */
+  g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED,
+              "библиотека устройства содержит незаписанные транзакции "
+              "(wal %llu Б) — замена базы сейчас небезопасна; повторите позже",
+              (unsigned long long)size);
+  return FALSE;
+}
+
 char *medialibDownload(afc_client_t afc, const char *tmpdir, GError **error)
 {
   char *db_path = g_build_filename(tmpdir, "MediaLibrary.sqlitedb", NULL);
@@ -362,6 +395,22 @@ char *medialibBackup(const char *db_path)
 
 gboolean medialibUpload(afc_client_t afc, const char *db_path, GError **error)
 {
+  /* Локальный wal должен исчезнуть при sqlite3_close (sqlite чекпоинтит
+   * и удаляет его при закрытии последнего соединения). Остаточный wal
+   * с кадрами означает, что чекпоинт не удался и main не содержит наших
+   * правок — заливать такой main нельзя (треки молча потеряются). */
+  char *local_wal = g_strconcat(db_path, "-wal", NULL);
+  GStatBuf st;
+  if (g_stat(local_wal, &st) == 0 && st.st_size > 32) {
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                "локальный wal не пуст (%lld Б) — чекпоинт при закрытии базы "
+                "не удался; заливка отменена",
+                (long long)st.st_size);
+    g_free(local_wal);
+    return FALSE;
+  }
+  g_free(local_wal);
+
   afc_remove_path(afc, "/iTunes_Control/iTunes/MediaLibrary.sqlitedb-wal");
   afc_remove_path(afc, "/iTunes_Control/iTunes/MediaLibrary.sqlitedb-shm");
   if (afc_remove_path(afc, "/iTunes_Control/iTunes/MediaLibrary.sqlitedb") != AFC_E_SUCCESS) {
@@ -372,6 +421,35 @@ gboolean medialibUpload(afc_client_t afc, const char *db_path, GError **error)
   if (afcUploadFile(afc, db_path, "/iTunes_Control/iTunes/MediaLibrary.sqlitedb") != 0) {
     g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED,
                 "не удалось загрузить базу на устройство");
+    return FALSE;
+  }
+
+  /* Контроль размера после заливки — дёшево ловит обрыв соединения. */
+  if (g_stat(db_path, &st) != 0) {
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                "не удалось прочитать локальную базу для сверки размера");
+    return FALSE;
+  }
+  guint64 local_size = (guint64)st.st_size;
+  guint64 remote_size = 0;
+  char **fi = NULL;
+  if (afc_get_file_info(afc, "/iTunes_Control/iTunes/MediaLibrary.sqlitedb", &fi) ==
+          AFC_E_SUCCESS &&
+      fi) {
+    for (char **kv = fi; kv[0] && kv[1]; kv += 2)
+      if (strcmp(kv[0], "st_size") == 0)
+        remote_size = g_ascii_strtoull(kv[1], NULL, 10);
+    afc_dictionary_free(fi);
+  } else {
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                "не удалось проверить размер базы на устройстве");
+    return FALSE;
+  }
+  if (remote_size != local_size) {
+    g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                "размер базы на устройстве (%llu Б) не совпадает с локальным "
+                "(%llu Б) — заливка неполная",
+                (unsigned long long)remote_size, (unsigned long long)local_size);
     return FALSE;
   }
   return TRUE;
@@ -402,6 +480,15 @@ int musicCleanMedialib(AfcSession *s, MusicTrack *track)
 
   GError *err = NULL;
   int result = -1;
+
+  /* Не трогаем живую базу при грязном wal устройства (инцидент 29.10). */
+  if (!medialibDeviceWalIsClean(s->afc, &err)) {
+    logMessage(tr("Музыка: удаление отменено: %s"), err->message);
+    g_clear_error(&err);
+    g_free(base_path);
+    return -1;
+  }
+
   char *tmpdir = g_dir_make_tmp("apple-devices-XXXXXX", NULL);
   char *db_path = tmpdir ? medialibDownload(s->afc, tmpdir, &err) : NULL;
   if (!db_path) {
@@ -1334,6 +1421,13 @@ int musicSyncMedialibAdd(afc_client_t afc, GPtrArray *metas)
 
   if (metas->len == 0)
     return 0;
+
+  /* Не трогаем живую базу при грязном wal устройства (инцидент 29.10). */
+  if (!medialibDeviceWalIsClean(afc, &err)) {
+    logMessage(tr("Музыка: импорт отменён: %s"), err->message);
+    g_clear_error(&err);
+    return -1;
+  }
 
   guint no_cover = 0;
   for (guint i = 0; i < metas->len; i++)

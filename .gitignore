@@ -9,3 +9,6 @@ debian/substvars
 
 # Python/tooling caches
 __pycache__/
+
+# Дампы трасс 3uTools (шаг 5, офлайн-эксперимент) — большие, в git не кладём
+research/3utools/traces/

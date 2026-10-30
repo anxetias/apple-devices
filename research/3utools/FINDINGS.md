@@ -1530,3 +1530,107 @@ FinishedSyncingMetadata → устройство запросило **AssetManif
    с декларацией (старый .cig против нулевого).
 4. Код: `traces/capture_20261029/atc_dialog2.c` обновлён (фаза 5 с
    AFC-ответом); свежий device-Grappa — `/tmp/opencode/device_grappa.bin`.
+
+## Сессия 30.10 (вечер): хук libidm — полный триплет step2/cig; офлайн-бруталь бестолку; igip доехал до сервера
+
+### Эксперименты с .cig (atc_dialog2 v4): устройство ВАЛИДИРУЕТ .cig
+- Версия v4 atc-диалога: фаза 3.5 записывает декларацию+`.cig` в
+  `/iTunes_Control/Sync/Media` ДО отправки FinishedSyncingMetadata;
+  фаза 5 отвечает на ВСЕ AssetManifest (не только первый).
+- Проведено 4 эксперимента на pid 8664704158950401262 и свежем
+  8226283613400567790 (файл в `/Airlock/Media/<pid>`): (а) нулевой
+  `.cig`, (б) старый `.cig` чужой сессии, (в) совсем без `.cig` —
+  устройство всякий раз ПОГЛОЩАЛО декларацию (в ответе пришли
+  FileProgress+SyncFinished), но AssetManifest на сам файл НЕ выдавал:
+  файл в Airlock остался нетронутым, библиотека не изменилась.
+- **Вывод: без валидного `.cig` устройство отказывает на этапе выдачи
+  AssetManifest — выдумать `.cig` нельзя, нужен настоящий.**
+- Реплей ТОЧНОЙ пары (декларация 1052 Б + родной `.cig` + файл под
+  pid 1714716416923918233 в Airlock) в НОВОЙ atc-сессии — ОТКЛОНЁН тем
+  же способом ⇒ `.cig` привязан к ключевому материалу atc-сессии.
+- Основание для валидации устройством: устройство НЕ получает anchor K
+  (K приходит СЕРВЕРУ/хосту из step2), но точная пара фейлится в новой
+  сессии ⇒ проверка устройства = g(A_сессии, B, `.cig`), где A —
+  deviceGrappa из ReadyForSync ЭТОЙ сессии. Значит для serverless нет
+  пути, а для серверного клиента — есть: взять A из своей сессии,
+  спросить cig у сервера 3u, отдать устройству.
+
+### strace-грабб свежей пары (3u_trace3.log)
+- Во время живого импорта 3u перехвачены открытыми текстами:
+  декларация 1052 Б (`decl_grab_1.bplist`, pid 1714716416923918233,
+  artwork_cache_id 678 = max+1 тем же алгоритмом что мы) и её `.cig`
+  `01368359e45f63f7928ed998d2c7d04ed0fba89cad` (17 мс между записями).
+- Устройство приняло: трек встал как item 248 `F45/SRBX.mp3`
+  (srbx.mp3 4 672 841 Б). Структура декларации 1:1 с нашей gen_decl.py
+  (update_db_info + insert_track: item-блок 25 полей, item_stats×5,
+  avformat_info, location{kind}, pid).
+- Мелочь: bplist-птотоки фрагментируются между SSL-записями — при
+  извлечении склеивать SSL-поток и парсить по [LE32 len][bplist].
+
+### Диагностика серверного канала
+- `libcurl.so` 3uTools содержит 0 внешних SSL_ символов ⇒ TLS вшит
+  статически (mbedtls/rustls/wolfSSL или конвергентный curl + mbedtls).
+  Хук на libimobiledevice SSL_* для серверного канала СЛЕП —
+  перехватывать надо libidm-функции, что и сделано ниже.
+
+### Хук libidm (cig_hook.so) — он ЖИВЁТ И РАБОТАЕТ
+- `cig_hook.cpp` → `cig_hook.so` (LD_PRELOAD; копия в tools/):
+  перехват `_Z15get_step_2_data...` и `_Z18get_media_sync_cig...` —
+  resolve через dlsym(RTLD_NEXT, mangled), свои символы называются
+  ТОЧНОЫМИ mangled-именами (`nm` diff 1:1 с libidm обязателен;
+  первая версия падала молча из-за asm-метки ≠ nm-имени — обновлять
+  только после nm-проверки).
+- Отладка хука: `hook_loaded.txt` (конструктор), `cig_calls.log`,
+  `hook_{hostgrappa,step2,A,B,cig}_<seq>.bin`.
+- Первый прогон c пойманным триплетом (импорт 1 трека пользователем):
+  - `get_step_2_data(url="https://a2-s.3u.com?pc_vs=9.03.003",
+    udid=00008030001C3128119A402E) → rc=0, anchor K=1822991990
+    (0x6ca8a676), bin_t hostGrappa 84 Б` (hook_hostgrappa_1.bin);
+  - `get_media_sync_cig(mode=1, url=..., K=1822991990, A=83 Б —
+    deviceGrappa сессии, B=1010 Б — наша декларация) → rc=0,
+    cig 21 Б`: `01 2c 0f 00 41 c9167ade80f09543ad2bff0fe27c0da2`
+    (hook_A_2.bin / hook_B_2.bin / hook_cig_2.bin).
+- Значит весь сервер-танец 3u на importMusic: step2 (URL + UDID) →
+  anchor + hostGrappa; cig (K + A + B) → `.cig`. Обе функции на
+  том же URL a2-s.3u.com.
+
+### Офлайн-бруталь f(K,A,B) → cig — НЕ НАЙДЕН
+Три свипа по живому триплету (питонь-скрипты, все неудачные):
+1. sha1/ripemd160 کندые + hmac-sha1: 9 ключей × 12 сообщений — 0.
+2. +sha256-усечения, r160, PBKDF2 (sha1/sha256, итерации 1..10000):
+   K_le/K_be/K_dec/K_hexl/K_hexu/A/A[1:]/A[2:]/A[3:23]/A[:20]/sha1(A)/
+   md5(A)/hostGrappa (и hg[1:]/hg[2:])/udid/производные; сообщения
+   B/B[8:]/A/hg/все 2-комбинации — 0.
+3. Полный фрейм запроса `[magic 12][K_le][le32 A.size][A][le32 B.size][B]`
+   (магия `u64 0x64d035476891` LE + u32 0), XML-представление B
+   (plistlib), семейства sha224/256/384/512, sha3_256, blake2b/s,
+   r160, усечения cig[1:]/cig[4:]/cig[5:]: 28 ключей × 16 сообщений ×
+   9 алгоритмов — 0.
+В сочетании с дизасмом `_get_media_sync_cig` (запрос строится, ответ
+парсится от сервера: magic 0x35467891 + [4]==0xd1 → cig@+16) и
+отсутствием cig-алгоритма в поставке — **cig выдаёт сервер 3u,
+секрет на сервере. Офлайн-крак закрыт.** Рабочий путь — минимальный
+HTTP-клиент a2-s.3u.com по запрятанному протоколу (hostGrappa-реплей
+устройством уже принимался, URL и формат известны).
+
+### Баги и шум этого этапа
+- pkill при zmatched: убивать только `pkill -x 3uTools` / баналным
+  кодом; шаблон с "3uTools" в argv убивает собственный shell цепочки.
+- memscan2: memory-sweep по цепочке предок→strace→3uTools работает
+  (378 rw-областей читаются предком), но q-магия 0x64d035467891
+  найдена лишь в переиспользованном буфере (memscan2_q_0x71e8536a9b1c_0.bin)
+  — свип медленнее жизни буфера; закрыт в пользу хука.
+- Цепочка захвата живёт фоном; после правки .so перезапускать
+  (`pkill -x 3uTools; pkill -x strace` и заново run.sh).
+
+### Артефакты
+- `research/3utools/traces/capture_20261030/`: hook_A_2.bin (83 Б),
+  hook_B_2.bin (1010 Б), hook_cig_2.bin (21 Б),
+  hook_hostgrappa_1.bin (84 Б), cig_calls.log, decl_grab_1.bplist,
+  decl_grab4_1.bplist, decl_test.cig/plist, device_grappa.bin,
+  sess_A_device_grappa.bin, host_grappa.bin, grab_0_*.cig,
+  memscan2_q_*.bin; сырые дампы atc_3u_dump2.bin, 3u_trace3/4/5.log
+  (в git не кладутся — traces gitignored).
+- Исходники инструментария (в git): `research/3utools/tools/`
+  (cig_hook.cpp, ssl_dump.c, atc_dialog2.c, gen_decl.py, afcx.c,
+  afc_watch.c, memscan.c, memscan2.c).

@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 static unsigned char empty_grappa[1] = {0};
 
@@ -311,6 +312,22 @@ int main(int argc, char **argv)
           LOCKDOWN_E_SUCCESS &&
       asvc0) {
     if (afc_client_new(dev, asvc0, &afc) == AFC_E_SUCCESS) {
+      /* server-режим: server3u.py finish ждёт наш device_grappa.bin,
+         делает cig-req и ставит cig_ready — ждём маркер ПОСЛЕ записи A,
+         чтобы залить валидный decl_test.cig */
+      if (access("/tmp/opencode/server_mode", F_OK) == 0) {
+        printf("фаза3.5: server_mode — жду cig_ready до 240 с\n");
+        int wsec = 0;
+        for (; wsec < 480; wsec++) {
+          if (access("/tmp/opencode/cig_ready", F_OK) == 0) {
+            printf("фаза3.5: cig_ready получен через %.1f с\n", wsec * 0.5);
+            break;
+          }
+          usleep(500000);
+        }
+        if (wsec >= 480)
+          printf("фаза3.5: cig_ready НЕ дождались — зальётся старый .cig\n");
+      }
       FILE *df = fopen("/tmp/opencode/decl_test.plist", "rb");
       if (df) {
         fseek(df, 0, SEEK_END);
@@ -488,6 +505,48 @@ int main(int argc, char **argv)
         plist_dict_set_item(fp, "Session", plist_new_uint(1));
         send_msg(conn, fp);
         plist_free(fp);
+        /* копируем файл Airlock → целевой путь через AFC (как 3u) */
+        if (have_file) {
+          uint64_t rh = 0;
+          if (afc_file_open(afc, remote, AFC_FOPEN_RDONLY, &rh) ==
+              AFC_E_SUCCESS) {
+            uint64_t wh = 0;
+            if (afc_file_open(afc, dest, AFC_FOPEN_WRONLY, &wh) ==
+                AFC_E_SUCCESS) {
+              char *chunk = malloc(1 << 17);
+              int ok = 1;
+              for (;;) {
+                uint32_t got = 0;
+                afc_error_t er =
+                    afc_file_read(afc, rh, chunk, 1 << 17, &got);
+                if (er != AFC_E_SUCCESS) {
+                  ok = 0;
+                  break;
+                }
+                if (got == 0)
+                  break;
+                uint32_t sent2 = 0;
+                afc_file_write(afc, wh, chunk, got, &sent2);
+                if (sent2 != got) {
+                  ok = 0;
+                  break;
+                }
+              }
+              free(chunk);
+              uint64_t wsize = 0;
+              afc_file_tell(afc, wh, &wsize);
+              afc_file_close(afc, wh);
+              afc_file_close(afc, rh);
+              printf("фаза5: копирование %s->%s завершено: %llu Б (%s)\n",
+                     remote, dest, (unsigned long long)wsize,
+                     ok ? "ok" : "с ошибкой");
+            } else {
+              afc_file_close(afc, rh);
+              printf("фаза5: открыть для записи %s не удалось\n", dest);
+            }
+          } else
+            printf("фаза5: открыть %s не удалось\n", remote);
+        }
         /* FileProgress 1.0 */
         fp = plist_new_dict();
         fpp = plist_new_dict();

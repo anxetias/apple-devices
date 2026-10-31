@@ -1,2 +1,6 @@
 # Сырые артефакты VM-исследования в git не кладём
 traces/
+# compiled host-side tools
+*.so
+*.o
+host_snapshot_afc

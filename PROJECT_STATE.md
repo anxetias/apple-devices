@@ -430,22 +430,22 @@ apple-devices/
     фаза 4 (FinishedSyncingMetadata), фаза 5 (AssetManifest → FileProgress
     0.0 → копия ТОЛЬКО нашего pid из /Airlock/Media/<pid> → /Music/F%02d/
     (10+processed%80, имя = последние 4 цифры AssetID в буквах A..J) →
-    FileProgress 1.0 → FileComplete; Ping→Pong; SyncFinished→©).
+    FileProgress 1.0 → FileComplete; Ping→Pong; SyncFinished → OK).
   - пакетный прогон sync3uImportBatch: mkdir /Airlock{,/Media,/Media/Artwork}
     → на трек: afcUploadFile + обложка → декларация → attempt×3
     (step2 → atcSyncOne; 104 → пауза 60 с; FAIL → лог); итог ≥0/N, -2
-    если сервер отказыва, -1 если локальные отказы.
+    если сервер отказал, -1 если локальные отказы.
 - Врезка: `src/meson.build` — `sync3u.c` + `dependency('openssl')`;
   приложение собирается, бинарник есть.
 - Врезка в `musicImportThread`: теги всех файлов читаются ЗАРАНЕЕ (slot[]),
   путь 3u — только когда ВСЕ файлы .mp3 И все теги прочитаны; при успехе
   (≥0) `done = imported`, `db_added = imported` (устройство само канонизирует,
-  MediaLibrary.sqlitedb напрямую не пишем); при отказе (−1/−2) — журнал +
+  MediaLibrary.sqlitedb напрямую не пишем); при отказе (-1/-2) — журнал +
   откат на существующий прямой путь (Imported/ + musicSyncMedialibAdd с
   wal-гейтом). Новые строки RU/EN в trTable (4 шт.: выбор пути/откат).
 - Чистка артефактов: мусорные подстроки («satо $», «даталог», «мал пос-детали»,
   «połączenie», «прогорел») найдены grep-ом (CJK/Latin-1/смешанный скрипт)
   и исправлены; повторный grep чист.
 - Е2Е на устройстве НЕ проводился — телефон у пользователя. План теста:
-  2–3 демо-mp3 (с тегами и без), могут быть FLAс/OGG для проверки отката;
+  2–3 демо-mp3 (с тегами и без), могут быть FLAC/OGG для проверки отката;
   треки удаляет пользователь вручную (F55 read-only).

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "medialib.h"
+#include <libimobiledevice/afc.h>
 #include <glib.h>
 
 /* === sync3u.h ===
@@ -18,7 +19,8 @@
  *                                    FileComplete → SyncFinished
  *
  * Файл трека заранее кладётся в /Airlock/Media/<pid> (обложка — в
- * /Airlock/Media/Artwork/<pid>), декларация строится из тегов трека.
+ * /Airlock/Media/Artwork/<pid>), декларация Sync_00000000.plist
+ * строится библиотекой libplist из тегов трека.
  */
 
 /* Итог одного трека (для журнала и диагностики отказов). */
@@ -28,15 +30,16 @@
 
 /* Импорт пакета треков через сервер 3u.
  *
- * udid         — UDID устройства;
+ * udid         — UDID устройства (можно с дефисами);
+ * afc          — открытый AFC-клиент устройства (для заливки файлов);
  * local_paths  — локальные пути файлов (GPtrArray, длина == metas->len);
- * metas        — теги треков (MedialibMeta, прочитаны TagLib-ом).
+ * metas        — теги треков (MedialibMeta; порядок совпадает с путями).
  *
- * Возвращает: >=0 — сколько треков заимпортировано (через *out_ok);
- *              -1 — системная ошибка (нет устройства/связи);
+ * Возвращает: >=0 — сколько треков заимпортировано;
+ *              -1 — системная ошибка (устройство/канал/файлы);
  *              -2 — сервер 3u недоступен или отказывает после всех
  *                   повторов (коллеги могут откатиться на прямой путь).
- * out_ok может быть NULL.
  */
-int sync3uImportBatch(const char *udid, GPtrArray *local_paths,
-                      GPtrArray *metas, int *out_ok, GError **error);
+int sync3uImportBatch(const char *udid, afc_client_t afc,
+                      GPtrArray *local_paths, GPtrArray *metas,
+                      GError **error);

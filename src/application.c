@@ -3,6 +3,7 @@
 #include "medialib.h"
 #include "afcUtils.h"
 #include "uiWidgets.h"
+#include "sync3u.h"
 
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
@@ -150,6 +151,13 @@ static const TrEntry trTable[] = {
   {"Импорт не удался — подробности в журнале", "Import failed — see the log for details"},
   {"Музыка: файлы загружены, но база «Музыки» не обновлена — треки в библиотеке не появятся; подробности в журнале.",
    "Music: files uploaded, but the Music database was not updated — the tracks will not appear in the library; see the log for details."},
+  {"Музыка: импорт через сервер 3u: %u треков", "Music: importing via the 3uTools server: %u track(s)"},
+  {"Музыка: сервер 3u недоступен — откат на прямой путь (Imported/)",
+   "Music: the 3uTools server is unavailable — falling back to the direct path (Imported/)"},
+  {"Музыка: в наборе есть не-mp3 файлы — импорт прямым путём (Imported/)",
+   "Music: non-mp3 files in the selection — importing via the direct path (Imported/)"},
+  {"Музыка: не все теги прочитаны — импорт прямым путём (Imported/)",
+   "Music: not all tags could be read — importing via the direct path (Imported/)"},
   {"Выберите аудиофайлы для импорта", "Select audio files to import"},
   {"Музыка: экспорт не удался — нет подключения (AFC).", "Music: export failed — no connection (AFC)."},
   {"Музыка: экспорт %s -> %s", "Music: exporting %s -> %s"},
@@ -1035,8 +1043,69 @@ musicImportThread(GTask *task, gpointer source_object,
   afc_make_directory(s.afc, MUSIC_REMOTE_ROOT "/Imported");
 
   int done = 0;
+  guint n = ctx->local_paths->len;
   GPtrArray *metas = g_ptr_array_new_with_free_func(medialibMetaFree);
-  for (guint i = 0; i < ctx->local_paths->len; i++) {
+  /* slot[i] — мета файла i, если теги прочитаны (владелец — metas). */
+  MedialibMeta **slot = g_new0(MedialibMeta *, n > 0 ? n : 1);
+
+  /* Путь через сервер 3u работает только с .mp3: проверяем весь набор. */
+  gboolean all_mp3 = n > 0;
+  for (guint i = 0; all_mp3 && i < n; i++) {
+    const char *lp = ctx->local_paths->pdata[i];
+    char *lc = g_ascii_strdown(lp, -1);
+    if (!g_str_has_suffix(lc, ".mp3"))
+      all_mp3 = FALSE;
+    g_free(lc);
+  }
+
+  /* Теги читаем заранее: и для решения о пути 3u, и для записи базы в
+   * обоих путях (location = basename — совпадает с именем заливки). */
+  guint nmeta_fail = 0;
+  for (guint i = 0; i < n; i++) {
+    const char *lp = ctx->local_paths->pdata[i];
+    char *base = g_path_get_basename(lp);
+    MedialibMeta *m = g_new0(MedialibMeta, 1);
+    GError *merr = NULL;
+    if (medialibReadMeta(lp, base, m, &merr)) {
+      slot[i] = m;
+      g_ptr_array_add(metas, m);
+    } else {
+      nmeta_fail++;
+      logMessage(tr("Музыка: не удалось прочитать теги «%s»: %s"), base,
+                 merr->message);
+      g_clear_error(&merr);
+    }
+    g_free(base);
+  }
+
+  if (n > 0) {
+    /* — Попытка пути через сервер 3u: все файлы .mp3 и все теги читаны. */
+    if (all_mp3 && (guint)metas->len == n) {
+      logMessage(tr("Музыка: импорт через сервер 3u: %u треков"), n);
+      GError *s3uerr = NULL;
+      int imported = sync3uImportBatch(ctx->udid, s.afc, ctx->local_paths,
+                                       metas, &s3uerr);
+      if (imported >= 0) {
+        /* Устройство само канонизирует файлы в свою базу (atc-синх). */
+        ctx->db_added = imported;
+        g_free(slot);
+        g_ptr_array_unref(metas);
+        afcSessionClose(&s);
+        g_task_return_int(task, imported);
+        return;
+      }
+      logMessage(tr("Музыка: сервер 3u недоступен — откат на прямой путь (Imported/)"));
+      g_clear_error(&s3uerr);
+    } else if (!all_mp3) {
+      logMessage(tr("Музыка: в наборе есть не-mp3 файлы — импорт прямым путём (Imported/)"));
+    } else {
+      logMessage(tr("Музыка: не все теги прочитаны — импорт прямым путём (Imported/)"));
+    }
+  }
+
+  /* — Прямой путь: заливка в Imported/ + запись MediaLibrary.sqlitedb. — */
+  GPtrArray *db_metas = g_ptr_array_new(); /* без free: владелец — metas */
+  for (guint i = 0; i < n; i++) {
     const char *lp = ctx->local_paths->pdata[i];
     char *base = g_path_get_basename(lp);
     char *remote = g_build_filename(MUSIC_REMOTE_ROOT, "Imported", base, NULL);
@@ -1044,15 +1113,8 @@ musicImportThread(GTask *task, gpointer source_object,
     logMessage(tr("Музыка: импорт «%s» -> %s"), base, remote);
     if (afcUploadFile(s.afc, lp, remote) == 0) {
       done++;
-      MedialibMeta *m = g_new0(MedialibMeta, 1);
-      GError *merr = NULL;
-      if (medialibReadMeta(lp, base, m, &merr)) {
-        g_ptr_array_add(metas, m);
-      } else {
-        logMessage(tr("Музыка: не удалось прочитать теги «%s»: %s"), base, merr->message);
-        medialibMetaFree(m);
-        g_clear_error(&merr);
-      }
+      if (slot[i])
+        g_ptr_array_add(db_metas, slot[i]);
     } else {
       logMessage(tr("Музыка: не удалось загрузить «%s»."), base);
     }
@@ -1061,7 +1123,10 @@ musicImportThread(GTask *task, gpointer source_object,
     g_free(remote);
   }
 
-  ctx->db_added = metas->len > 0 ? musicSyncMedialibAdd(s.afc, metas) : 0;
+  ctx->db_added = db_metas->len > 0 ? musicSyncMedialibAdd(s.afc, db_metas) : 0;
+  g_ptr_array_unref(db_metas);
+
+  g_free(slot);
   g_ptr_array_unref(metas);
 
   afcSessionClose(&s);

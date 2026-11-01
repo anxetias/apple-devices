@@ -1264,12 +1264,11 @@ static gint64 s3uNextPidTrack(void)
 
 int sync3uImportBatch(const char *udid, afc_client_t afc,
                       GPtrArray *local_paths, GPtrArray *metas,
-                      GError **error)
+                      GArray *out_failed, GError **error)
 {
   char ud[25];
   size_t udLen = 0;
   int imported = 0;
-  gboolean sawServerRefusal = FALSE;
 
   if (!udid || !afc || !local_paths || !metas ||
       local_paths->len != metas->len) {
@@ -1290,6 +1289,7 @@ int sync3uImportBatch(const char *udid, afc_client_t afc,
     MedialibMeta *m = g_ptr_array_index(metas, i);
     const char *lp = g_ptr_array_index(local_paths, i);
     char *base = g_path_get_basename(lp);
+    guint fi = i; /* индекс трека для out_failed */
     gint64 pid = s3uNextPidTrack();
     char pidStr[24];
     snprintf(pidStr, sizeof(pidStr), "%lld", (long long)pid);
@@ -1300,6 +1300,8 @@ int sync3uImportBatch(const char *udid, afc_client_t afc,
     if (afcUploadFile(afc, lp, remoteAir) != 0) {
       logMessage(tr("sync3u: заливка «%s» в Airlock не удалась — трек пропущен"),
                  base);
+      if (out_failed)
+        g_array_append_val(out_failed, fi);
       g_free(base);
       continue;
     }
@@ -1323,6 +1325,8 @@ int sync3uImportBatch(const char *udid, afc_client_t afc,
       logMessage(tr("sync3u: декларация «%s» не собралась: %s"), base,
                  derr->message);
       g_error_free(derr);
+      if (out_failed)
+        g_array_append_val(out_failed, fi);
       g_free(base);
       continue;
     }
@@ -1338,7 +1342,6 @@ int sync3uImportBatch(const char *udid, afc_client_t afc,
       if (s3uStep2(ud, udLen, &K, &hg, &hgLen, &aerr) != 0) {
         logMessage(tr("sync3u: step2 не удался: %s"),
                    aerr && aerr->message ? aerr->message : "?");
-        sawServerRefusal = TRUE;
         g_clear_error(&aerr);
         break;
       }
@@ -1353,7 +1356,6 @@ int sync3uImportBatch(const char *udid, afc_client_t afc,
       }
       if (outcome == SYNC3U_IMPORT_RETRY) {
         /* отказ 104 — рецепт: пауза 60 с и полный повтор цикла */
-        sawServerRefusal = TRUE;
         logMessage(tr("sync3u: сервер отказал (104) — пауза %d с"),
                    S3U_RETRY_PAUSE_S);
         g_clear_error(&aerr);
@@ -1367,16 +1369,13 @@ int sync3uImportBatch(const char *udid, afc_client_t afc,
       g_clear_error(&aerr);
       break;
     }
+    /* Трек не внесён (failure после попыток или RETRY-исчерпание) —
+     * сообщаем вызывающему индекс, внешний цикл решает: повтор или отказ. */
+    if (outcome != SYNC3U_IMPORT_OK && out_failed)
+      g_array_append_val(out_failed, fi);
     free(decl);
     g_free(base);
   }
 
-  if (imported > 0)
-    return imported;
-  if (sawServerRefusal) {
-    s3uErr(error, 72, tr("сервер 3u недоступен или отказал во всех попытках"));
-    return -2;
-  }
-  s3uErr(error, 73, tr("atc-синхронизация на устройстве не завершилась"));
-  return -1;
+  return imported;
 }

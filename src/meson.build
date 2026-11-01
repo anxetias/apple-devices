@@ -6,6 +6,7 @@ app_sources = files(
   'afcUtils.c',
   'uiWidgets.c',
   'sync3u.c',
+  'transcode.c',
 )
 
 # SQLite (amalgamation) — для правки базы медиатеки iPhone (MediaLibrary.sqlitedb).

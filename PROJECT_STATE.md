@@ -411,3 +411,41 @@ apple-devices/
   (реплика atc_dialog2.c), builder декларации (gen_decl.py → plist),
   sync3uImportBatch с RETRY×3/пауза 60 с, врезка в musicImportThread
   (fallback на прямой путь записи в базу), сборка, E2E.
+
+#### Шаг 6 — интеграция, порция 2 (01.11): модуль дописан, собран, врезан
+
+- `src/sync3u.c` дописан до 1380 строк и **собирается чисто**
+  (-Wall -Wextra -Wpedantic, 0 warning-ов в нашем коде):
+  - HTTPS-клиент OpenSSL (dial+TLS+POST, chunked, `Connection: close`);
+  - step2 (0xd2 → K + hostGrappa 84 Б, dense-UDID без дефисов);
+  - cig (0xd0, K+A+B; отказ `[4]=0xC9` err@5; 104 = повторяемый);
+  - генератор декларации 1:1 с gen_decl.py (libplist, plist_new_unix_date
+    вместо deprecation-ного plist_new_date; `plist_err_t`; disc_number=0
+    как в проверенном рецепте;обложка не обязательна);
+  - atc-диалог (com.apple.atc) с ручным LE32-фреймингом + bplist: фаза 1
+    (SyncAllowed), фаза 2 (RequestingSync: Grappa=hostGrappa, LibraryID
+    «0000000000000000», DataclassAnchors{Media:"1"}, Version «11.1.0.126»),
+    фаза 3 (ReadyForSync → DeviceInfo.Grappa = A), фаза 3.5 (AFC-заливка
+    Sync_00000000.plist + .plist.cig в /iTunes_Control/Sync/Media),
+    фаза 4 (FinishedSyncingMetadata), фаза 5 (AssetManifest → FileProgress
+    0.0 → копия ТОЛЬКО нашего pid из /Airlock/Media/<pid> → /Music/F%02d/
+    (10+processed%80, имя = последние 4 цифры AssetID в буквах A..J) →
+    FileProgress 1.0 → FileComplete; Ping→Pong; SyncFinished→©).
+  - пакетный прогон sync3uImportBatch: mkdir /Airlock{,/Media,/Media/Artwork}
+    → на трек: afcUploadFile + обложка → декларация → attempt×3
+    (step2 → atcSyncOne; 104 → пауза 60 с; FAIL → лог); итог ≥0/N, -2
+    если сервер отказыва, -1 если локальные отказы.
+- Врезка: `src/meson.build` — `sync3u.c` + `dependency('openssl')`;
+  приложение собирается, бинарник есть.
+- Врезка в `musicImportThread`: теги всех файлов читаются ЗАРАНЕЕ (slot[]),
+  путь 3u — только когда ВСЕ файлы .mp3 И все теги прочитаны; при успехе
+  (≥0) `done = imported`, `db_added = imported` (устройство само канонизирует,
+  MediaLibrary.sqlitedb напрямую не пишем); при отказе (−1/−2) — журнал +
+  откат на существующий прямой путь (Imported/ + musicSyncMedialibAdd с
+  wal-гейтом). Новые строки RU/EN в trTable (4 шт.: выбор пути/откат).
+- Чистка артефактов: мусорные подстроки («satо $», «даталог», «мал пос-детали»,
+  «połączenie», «прогорел») найдены grep-ом (CJK/Latin-1/смешанный скрипт)
+  и исправлены; повторный grep чист.
+- Е2Е на устройстве НЕ проводился — телефон у пользователя. План теста:
+  2–3 демо-mp3 (с тегами и без), могут быть FLAс/OGG для проверки отката;
+  треки удаляет пользователь вручную (F55 read-only).

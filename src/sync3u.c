@@ -56,8 +56,10 @@
 #define ATC_PHASE3_BUDGET_S  120.0
 #define ATC_PHASE5_BUDGET_S  300.0
 
-/* Повтор cig-запроса при отказе сервера 104. */
-#define S3U_CIG_MAX_ATTEMPTS 3
+/* Повтор cig-запроса при отказе сервера 104. По живой статистике
+ * первых прогонов сервер отказывает ~50% попыток; в рецепте v12 было
+ * «до 5 попыток» — трёх иногда не хватает (трек терялся при 2×104+1). */
+#define S3U_CIG_MAX_ATTEMPTS 5
 #define S3U_RETRY_PAUSE_S    60
 
 /* Навигационные уведомления libplist-канала atc. */
@@ -897,21 +899,23 @@ static void atcHandleManifest(idevice_connection_t conn, afc_client_t afc,
     long fileSize = 0;
     gboolean haveFile = s3uAfcFileInfo(afc, remoteAir, &fileSize);
 
-    /* Имя назначения: последние 4 цифры AssetID (с заворотом) буквы
-     * A..J; корзина F%02d = 10 + (порядковый номер записи % 80).
-     * F00 не используем — там файлы пользователя. */
+    /* Имя назначения: последние 8 цифр AssetID (с заворотом) буквы
+     * A..J — 4 букв (как в прогоне v12) сталкиваются на pids с равными
+     * хвостами (оба «0000» → обе копии в один AHHH.mp3, перезапись).
+     * Корзина F%02d = 10 + (порядковый номер записи % 80). F00 не
+     * используем — там файлы пользователя. */
     size_t L = strlen(assetId);
     if (L > 0) {
       char bucket[8];
       snprintf(bucket, sizeof(bucket), "F%02d",
                10 + (int)((*processed) % 80));
       const char *letters = "ABCDEFGHIJ";
-      char nm[5];
-      for (int k = 0; k < 4; k++) {
+      char nm[9];
+      for (int k = 0; k < 8; k++) {
         char c = assetId[(L - 1 + (size_t)k) % L];
         nm[k] = (c >= '0' && c <= '9') ? letters[c - '0'] : 'X';
       }
-      nm[4] = 0;
+      nm[8] = 0;
       if (ours && haveFile) {
         char dirbuf[64];
         snprintf(dirbuf, sizeof(dirbuf), "/iTunes_Control/Music/%s", bucket);

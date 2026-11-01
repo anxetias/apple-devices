@@ -103,8 +103,9 @@ static unsigned char *s3uFrameBuild(int code, const unsigned char *area,
       *outLen = 0;
     return NULL;
   }
-  memset(f, 0, 8);
-  f[0] = 0x91; f[1] = 0x78; f[2] = 0x46; f[3] = 0x35; /* u64 LE 0x35467891 */
+  /* Wire: 4 байта magic (хвостовой u32 0x35467891 по сети НЕ уходит —
+   * подтверждено хуком curl_easy_setopt и python-клиентом server3u.py). */
+  f[0] = 0x91; f[1] = 0x78; f[2] = 0x46; f[3] = 0x35;
   f[4] = (unsigned char)code;
   f[5] = 0x64;
   unsigned crc = crc16Xmodem(area, alen);

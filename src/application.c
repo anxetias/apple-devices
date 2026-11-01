@@ -1027,18 +1027,10 @@ musicImportThread(GTask *task, gpointer source_object,
     return;
   }
 
-  /* Гейт до заливки файлов: при грязном wal устройства фаза базы всё
-   * равно будет отменена — не создаём файлы-сироты в Imported/. */
-  GError *wal_err = NULL;
-  if (!medialibDeviceWalIsClean(s.afc, &wal_err)) {
-    logMessage(tr("Музыка: импорт отменён: %s"), wal_err->message);
-    g_clear_error(&wal_err);
-    afcSessionClose(&s);
-    /* -2 — безопасный отказ гейта (записей на устройство не было);
-     * onMusicImportFinished показывает по нему дружелюбное сообщение. */
-    g_task_return_int(task, -2);
-    return;
-  }
+  /* wal-гейт НЕ ставим перед пути 3u: он пишет базу САМО устройство
+   * (atc-синх), наша замена MediaLibrary.sqlitedb к нему не имеет
+   * отношения. Гейт остаётся только на откатном прямом пути (ниже),
+   * где мы скачиваем базу, правим её и заливаем обратно. */
 
   afc_make_directory(s.afc, MUSIC_REMOTE_ROOT "/Imported");
 
@@ -1103,7 +1095,22 @@ musicImportThread(GTask *task, gpointer source_object,
     }
   }
 
-  /* — Прямой путь: заливка в Imported/ + запись MediaLibrary.sqlitedb. — */
+  /* — Прямой путь: заливка в Imported/ + запись MediaLibrary.sqlitedb. —
+   * Здесь и только здесь wal-гейт: мы сами заменяем базу, при незаписанных
+   * транзакциях устройства это небезопасно; файлы-сироты не создаём. */
+  GError *wal_err = NULL;
+  if (!medialibDeviceWalIsClean(s.afc, &wal_err)) {
+    logMessage(tr("Музыка: импорт отменён: %s"), wal_err->message);
+    g_clear_error(&wal_err);
+    g_free(slot);
+    g_ptr_array_unref(metas);
+    afcSessionClose(&s);
+    /* -2 — безопасный отказ гейта (записей на устройство не было);
+     * onMusicImportFinished показывает по нему дружелюбное сообщение. */
+    g_task_return_int(task, -2);
+    return;
+  }
+  afc_make_directory(s.afc, MUSIC_REMOTE_ROOT "/Imported");
   GPtrArray *db_metas = g_ptr_array_new(); /* без free: владелец — metas */
   for (guint i = 0; i < n; i++) {
     const char *lp = ctx->local_paths->pdata[i];

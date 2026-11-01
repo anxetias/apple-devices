@@ -506,16 +506,25 @@ static int s3uRequestCig(guint32 k, const unsigned char *a, size_t aLen,
   free(frame);
   if (!resp)
     return S3U_CIG_ERROR;
-  if (respLen < 16 || memcmp(resp, "\x91\x78\x46\x35", 4) != 0) {
+  if (respLen < 6 || memcmp(resp, "\x91\x78\x46\x35", 4) != 0) {
     g_set_error(error, s3uQuark(), 32,
                 tr("cig: странный ответ сервера (%zu Б)"), respLen);
     free(resp);
     return S3U_CIG_ERROR;
   }
-  if (resp[4] == 0xC9) { /* отказ сервера (0x64-байтовая ошибка @5) */
+  if (resp[4] == 0xC9) { /* отказ сервера: код ошибки @5 (104 = повтор) */
+    logMessage(tr("sync3u: cig: отказ сервера, err=%u (12-байтовая форма)"),
+               (unsigned)resp[5]);
     *errCode = resp[5];
     free(resp);
     return S3U_CIG_REFUSAL;
+  }
+  if (resp[4] == 0xD1 && respLen < 16) {
+    /* 0xD1 без тела — протоколный отказ всей формы ответа. */
+    g_set_error(error, s3uQuark(), 36,
+                tr("cig: обрезанный 0xD1 (%zu Б)"), respLen);
+    free(resp);
+    return S3U_CIG_ERROR;
   }
   if (resp[4] != 0xD1) { /* не 0xD1 — неизвестный отказ формы */
     g_set_error(error, s3uQuark(), 33,

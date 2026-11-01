@@ -168,7 +168,7 @@ apple-devices/
 #### Шаг 1 — Модуляризация и рефакторинг (ЗАВЕРШЁН)
 
 - Создан `src/deviceScanner.h/c` — DeviceInfo GObject, иконки устройств, plist helpers, поток сканирования USB, события usbmuxd, восстановление выделения.
-- Создан `src/medialib.h/c` — MusicTrack GObject, вся работа с MediaLibrary.sqlitedb (SQL helpers, sort_map, ensure_* сущностей, вставка/удаление треков, artwork,自我исправление путей).
+- Создан `src/medialib.h/c` — MusicTrack GObject, вся работа с MediaLibrary.sqlitedb (SQL helpers, sort_map, ensure_* сущностей, вставка/удаление треков, artwork, самовосстановление путей).
 - Создан `src/afcUtils.h/c` — AfcSession, AFC скачивание/загрузка, умное частичное чтение тегов (MP3/M4A/FLAC), readTrackTags.
 - Создан `src/uiWidgets.h/c` — виджеты UI: makeButton, makeStubPage, createSidebarRow, createMusicRow, навигация, фильтрация/сортировка, заглушки, настройки.
 - `src/application.h` — перенесено определение структуры `AppleApplication`, типы DeviceInfo/MusicTrack через G_DECLARE_FINAL_TYPE.
@@ -560,7 +560,7 @@ apple-devices/
 
 - Копия main (после шага 6, `faeb614` → `4ee85e4`) для варианта
   «импорт музыки только через сервер 3uTools»: реорганизация в
-  src/application.c,变更 не задел прочие модули.
+  src/application.c; изменения не задел прочих модулей.
 - musicImportThread переписан: убран wal-гейт и весь прямой путь
   (mkdir Imported/, цикл afcUploadFile→Imported/, db_metas,
   musicSyncMedialibAdd, слот-массив); остались: afcSessionOpen,

@@ -7,7 +7,7 @@ mkdir -p /tmp/opencode/s3u_ut
 cd /tmp/opencode/s3u_ut || exit 2
 gcc -w -O2 -o /tmp/opencode/s3u_e2e /tmp/opencode/s3u_e2e.c \
   -I"$SRC/src" -I"$SRC/vendor/sqlite" \
-  "$SRC/src/sync3u.c" "$SRC/src/medialib.c" "$SRC/src/afcUtils.c" \
+  "$SRC/src/sync3u.c" "$SRC/src/medialib.c" "$SRC/src/afcUtils.c" "$SRC/src/transcode.c" \
   "$SRC/vendor/sqlite/sqlite3.c" \
   $(pkg-config --cflags gtk4 libadwaita-1 glib-2.0 libplist-2.0 \
     libimobiledevice-1.0 openssl taglib_c) \
@@ -18,3 +18,8 @@ echo "харнесс собран"
 #   "audio/x-raw,rate=44100,channels=1" ! audioconvert ! \
 #   lamemp3enc bitrate=128 target=bitrate ! filesink location=raw.mp3
 # затем settags (компилируется из e2e_settags.c) на demo1/demo2.
+# Хост-тест конвертации: trans_test.c (flac/ogg -> mp3, теги/обложка):
+# gcc -w -O2 -o /tmp/opencode/trans_test /tmp/opencode/trans_test.c \
+#   -I"$SRC/src" -I"$SRC/vendor/sqlite" \
+#   "$SRC/src/transcode.c" "$SRC/src/medialib.c" "$SRC/src/afcUtils.c" \
+#   "$SRC/vendor/sqlite/sqlite3.c" те же pkg-config...

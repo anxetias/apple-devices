@@ -1634,3 +1634,120 @@ HTTP-клиент a2-s.3u.com по запрятанному протоколу (
 - Исходники инструментария (в git): `research/3utools/tools/`
   (cig_hook.cpp, ssl_dump.c, atc_dialog2.c, gen_decl.py, afcx.c,
   afc_watch.c, memscan.c, memscan2.c).
+
+## Сессия 30.10 (поздний вечер) – 01.11: curl-хук дал wire-тело 1:1; glue-клиент — E2E импорт end-to-end; DB проверена
+
+### curl-хук: точное тело POST поймано и сверено байт-в-байт
+- cig_hook.cpp расширен хуками `curl_easy_setopt` (opt 10002 URL, 10015 RD?POSTFIELDS,
+  10018 UA, 10135 куки) и `curl_slist_append`. Живой прогон 3uTools под strace
+  дал дампы `hook_curl_10015_23/27.bin` — реальные тела на проводе.
+- Сверка: **wire-тело = наша сборка 1:1**:
+  frame = `[u64 LE 0x35467891][код @4][0x64 @5][crc16-XMODEM(area) LE u16 @6]
+           [u32 area_len LE @8][area]`;
+  POST-тело = 12+area (хвостовой u32 record'а в памяти в POST не передаётся);
+  POSTFIELDSIZE = 12+area_len.
+- CRC: slot @6 интерпретируется как LE u16; cig 0xc7d7, step2 0x5e35 — оба
+  совпадают с нашим crc16-XMODEM(area). Коды запросов: [4]=0xd2 (step2) /
+  0xd0 (cig),
+  [5]=0x64 фикс.
+- Ответы: step2 (`0xcb` на [4]=? — канал имеет коды: req 0xd2 → resp при
+  успехе `[8]=0x92 [12]=K u32 [16]=84 [20..103]=hostGrappa 84 Б`;
+  cig: req 0xd0 → resp `[8]=0x25 [12]=21 [16..36]=cig 21 Б`).
+- Отказ сервера: HTTP 200 + `[4]=0xc9 [5]=0x68` (=104). 111 (`0x6f`) —
+  только на старых формах (ранний вариант POST с хвостовым u32).
+- Заголовки: UA = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+  (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36` (opt 10018); slist
+  содержит ТОЛЬКО `Expect:` (100-continue); Content-Type не задаётся; куки
+  (opt 10135) = очистка пустой строкой + Netscape
+  `a2-s.3u.com FALSE / FALSE 0 asi 0|1` — наши куки на исход не влияют.
+- URL обоих POST: `https://a2-s.3u.com?pc_vs=9.03.003`.
+
+### Glue-клиент: server3u.py + atc_dialog4 (маркеры-фазы)
+- `server3u.py prep`  : step2 (UDID) → `/tmp/opencode/host_grappa.bin` (84 Б)
+                        + `/tmp/opencode/K.txt`.
+- `atc_dialog4` (сборка atc_dialog2.c):
+  * фаза 2 — RequestingSync с hostGrappa из файла (рабочий эксперимент_CONF);
+  * фаза 3 — ждёт ReadyForSync, пишет `device_grappa.bin` (A, 83 Б);
+  * фаза 3.5 — если есть `/tmp/opencode/server_mode`: ждёт маркер `cig_ready`
+    (до 240 с), затем через AFC кладёт
+    `/iTunes_Control/Sync/Media/Sync_00000000.plist` (декларация B)
+    и `.cig` (для 3uTools — `decl_test.cig`);
+  * фаза 4 — FinishedSyncingMetadata;
+  * фаза 5 — AssetManifest: на каждую запись Media:
+    - если `/Airlock/Media/<AssetID>` есть: FileProgress 0.0 → AFC-копия
+      Airlock → `/iTunes_Control/Music/F%02d/<4буквы>.<ext>` (куски 128 КБ) →
+      FileProgress 1.0 → FileComplete;
+    - если файла нет: FileProgress/FileComplete без копии (устройство
+      помечает файл недоступным);
+    Ping → Pong; SyncFinished → конец.
+- `server3u.py finish`: ждёт `device_grappa.bin` (83 Б), читает `K.txt` +
+  `decl_test.plist` (B), cig-req (K,A,B) → `decl_test.cig` + маркер `cig_ready`.
+
+### Прогон end-to-end (шаблон, повторяемый)
+```
+1. cd /tmp/opencode && rm -f device_grappa.bin K.txt cig_ready decl_test.cig host_grappa.bin
+2. python3 gen_decl.py <PID> '<Title>' none
+3. afcx put <track> '/Airlock/Media/<PID>'        # файл В Airlock ЗАРАНЕЕ
+4. python3 server3u.py prep
+5. (setsid ./atc_dialog4 <UDID> > /tmp/opencode/atc_vN.log 2>&1 < /dev/null &)
+6. sleep 10
+7. python3 server3u.py finish                     # при 104 — повторить цикл с шага 1
+```
+- **E2E в этом цикле: УСПЕШНО** (v12): pid 7773123456789013, title 'SRBX B2',
+  srbx.mp3 4 672 841 Б. AssetManifest включил наш pid (11 записей). Фаза 5
+  скопировала 4 672 841 Б → `/iTunes_Control/Music/F17/DHHH.mp3` (+PULL
+  сходится), завершание — **SyncFinished**. Всё БЕЗ запуска 3uTools.
+- Дедуп на устройстве: pid 7773123456789012 (из раннего прогона) уже в DB —
+  повторные декларации устройство НЕ манифестирует; новый pid — манифестирует
+  сразу. Поэтому каждый тест — новый pid.
+
+### Статистика cig: 4/12, отказы err=104
+- Успехи (K, hostGrappa из step2): `0xdbf1d3f1`, `0x362095d6`, `0xf9eea9fb`,
+  `0x5b521b11` (4/12). Отказы (тип 104): `d90dd9af`, `91f59540`, `904b5b01`,
+  `d7aaa55b`, `d85917d6`, `5193566c`, `c04e8993` + один ранний (K не сохранён).
+- Опровергнутые гипотезы:
+  * время жизни K / rate-limit: 104 и после 4-минутной паузы;
+  * живой 3uTools: 104 и после `pkill -x 3uTools`;
+  * кэш A: deviceGrappa каждый раз свежий (`01 01 67…`, `01 01 f3…` и т.д.);
+  * куки asi (не влияют), форма фрейма ([5]=0x64, CRC LE подтверждены
+    wire-дампом), POST без хвостового u32.
+- Причина 104 **НЕ установлена** (единственный активный открытый вопрос).
+  Практический обход: RETRY-цикл (повторить prep→finish 1–4 раза) — успех
+  получался во всех сериях. Клиентская рекомендация: до 5 повторов с паузой 60 с.
+
+### Проверка DB устройства: треки в библиотеке (30.10 вечер)
+- `afcx get` MediaLibrary.sqlitedb (+‑wal) → sqlite: item_extra содержит
+  (258, 'SRBX', 'CHHH.mp3') и (259, 'SRBX B2', 'DHHH.mp3') — оба
+  пид-кандидата `7773123456789012/9013` **канонизированы устройством**.
+  Полный импорт end-to-end подтверждён третьим независимо (файлы + DB).
+
+### Судьба библиотеки (01.11 перепроверка + пояснение пользователя)
+- Снимок `traces/dev_before_AMDS/` (31.10 20:15, ДО входа девайса в VM):
+  item_extra = 204 записи, включая 258/259 (наши тестовые).
+- 01.11: item_extra = 55 записей; 258/259 отсутствуют. **Пользователь
+  подтвердил: тестовые треки удалил вручную (01.11)** — гипотеза
+  «пересборка библиотеки чужим sync'ом» ОТЗЫВАЕТСЯ.
+- Оставшееся наблюдение: наши треки — полноправные элементы библиотеки:
+  видны в музыкальном приложении, удаляются пользователем штатно (сирот
+  не образуется) — важный прогноз для шага 6. Потерю трека при ручной
+  чистке не считать провалом импорта.
+
+### Итог этапа
+- **serverless-путь (без сервера 3u) закрыт окончательно**: cig вычисляет
+  сервер 3u, секрет офлайн недоступен (брут-офлайн пуст, три свипа).
+- **Минимальный клиентский путь встал**: собственный HTTP-клиент
+  a2-s.3u.com (`server3u.py`; прототип для C — libcurl) + собственная
+  atc-фаза (`atc_dialog2.c` → `atc_dialog4`) = полный импорт без GUI
+  3uTools. RETRY решает实业有限公司 err=104.
+- Следующий шаг (6-й, интеграция): минимальный C-клиент (libcurl) в
+  приложении — step2 → hostGrappa → своя atc-фаза → cig (retry) →
+  декларация + файл на устройство.
+
+### Артефакты обновление (gitignored)
+- `traces/capture_20261030/`: `cig_wire_body.bin` (1102 Б), `hook_curl_10015_23/27.bin`,
+  `hook_authreq_full_1/4.bin` + `hook_authresp_full_1/4.bin` (финальный хук),
+  `atc_server_run*.log`, `atc_v11.log`, `atc_v12.log`, `device_grappa.bin`,
+  `decl_test.plist/.cig`, `host_grappa.bin`, `3u_trace9.log`,
+  `atc_3u_dump2.bin` (14 МБ), логи прогонов glue-серии (v2–v12).
+- Повторная проверка DB 01.11: копии `MediaLibrary.sqlitedb(.wal)` —
+  состояние «после VM-окна» (55 item'ов).

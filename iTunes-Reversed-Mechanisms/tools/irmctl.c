@@ -525,6 +525,30 @@ static int atc_read_frames_ext(int fd, int tls, int max, uint32_t cap,
 			atc_summary(d, depth);
 			printf("\n");
 		}
+		/* Готовность телефона: Params.DeviceInfo.Grappa как чистые
+		 * байты (для локальной проверки подписи §11.4; XML-рендер
+		 * b64 может резаться). */
+		const irm_bp_node *cmd = irm_bp_dict_get(d, "Command");
+		size_t cmd_n = 0;
+		const char *cmd_s =
+			cmd ? irm_bp_string_ptr(cmd, &cmd_n) : NULL;
+		if (cmd_s && cmd_n == strlen("ReadyForSync") &&
+		    strncmp(cmd_s, "ReadyForSync", cmd_n) == 0) {
+			const irm_bp_node *pr = irm_bp_dict_get(d, "Params");
+			const irm_bp_node *di =
+				pr ? irm_bp_dict_get(pr, "DeviceInfo") : NULL;
+			const irm_bp_node *gr =
+				di ? irm_bp_dict_get(di, "Grappa") : NULL;
+			size_t gn = 0;
+			const uint8_t *gb = (const uint8_t *)
+				(gr ? irm_bp_data_ptr(gr, &gn) : NULL);
+			if (gb) {
+				printf("  GRAPPA_REPLY(%zu):", gn);
+				for (size_t i = 0; i < gn; i++)
+					printf(" %02x", gb[i]);
+				printf("\n");
+			}
+		}
 		irm_bp_free(d);
 	}
 	return got;

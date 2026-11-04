@@ -247,6 +247,22 @@ int main(void)
 		free(xml);
 	}
 
+	/* --- 6) data-узлы всех остатков %3 (b64-рендер/обратное чтение). */
+	{
+		uint8_t buf[83];
+		for (size_t i = 0; i < sizeof buf; i++)
+			buf[i] = (uint8_t)(i * 7 + 3);
+		const size_t lens[] = { 0, 1, 2, 3, 4, 5, 6, 8, 83 };
+		for (size_t t = 0; t < sizeof lens / sizeof lens[0]; t++) {
+			irm_bp_node *d = irm_bp_data(buf, lens[t]);
+			CHECK(d != NULL);
+			char what[32];
+			snprintf(what, sizeof what, "data-%zu", lens[t]);
+			round_trip(d, what);
+			irm_bp_free(d);
+		}
+	}
+
 	printf(g_fail ? "test_xmlw: FAIL\n" : "test_xmlw: OK\n");
 	return g_fail;
 }

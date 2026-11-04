@@ -616,18 +616,19 @@ static int wb_b64(struct wbuf *w, const uint8_t *d, size_t n)
 			return -1;
 		i += 3;
 	}
-	if (i < n) {
-		uint32_t rem = d[i];
-		char q[4] = { 0, 0, '=', '=' };
-		q[1] = B64TAB[(rem & 0xFC) >> 2];
-		if (i + 1 < n) {
-			rem = (rem << 8) | d[i + 1];
-			q[2] = B64TAB[(rem & 0x0F0) >> 4];
-		}
-		if (wb_put(w, q, 4) != 0)
-			return -1;
+	if (i == n)
+		return 0;
+	if (i + 1 == n) {
+		uint32_t v = (uint32_t)d[i] << 16;
+		char q[4] = { B64TAB[(v >> 18) & 0x3F],
+			      B64TAB[(v >> 12) & 0x3F], '=', '=' };
+		return wb_put(w, q, 4);
 	}
-	return 0;
+	/* остаток 2 байта */
+	uint32_t v = ((uint32_t)d[i] << 16) | ((uint32_t)d[i + 1] << 8);
+	char q[4] = { B64TAB[(v >> 18) & 0x3F], B64TAB[(v >> 12) & 0x3F],
+		      B64TAB[(v >> 6) & 0x3F], '=' };
+	return wb_put(w, q, 4);
 }
 
 /* cf-escape текст: & < > → entities (UTF-8 идёт как есть). */

@@ -1,0 +1,163 @@
+device: id=1 udid=00008030-001C3128119A402E
+pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+  HostID=9FE71F9B-7227-EC1F-8EFE-8F97239F5964 SystemBUID=4635971B-16F9-00A3-310A-B4F85FA2114B
+checkin Type: com.apple.mobile.lockdown
+session: TLS поднят на lockconn
+lockdown ProductVersion (через TLS): 27.2
+[com.apple.atc]
+  StartService: port=53725 EnableServiceSSL=1
+  канал: TLS (lbD-комбо HostCert+HostKey)
+  кадр 1: len=184 magic=bplist00
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>Capabilities</string>
+	<key>Params</key>
+	<dict>
+		<key>GrappaSupportInfo</key>
+		<dict>
+			<key>version</key>
+			<integer>1</integer>
+			<key>deviceType</key>
+			<integer>0</integer>
+			<key>protocolVersion</key>
+			<integer>1</integer>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>9</integer>
+</dict>
+</plist>
+
+  кадр 2: len=146 magic=bplist00
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>InstalledAssets</string>
+	<key>Params</key>
+	<dict>
+		<key>Application</key>
+		<dict>
+			<key>_Deleted</key>
+			<array/>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>10</integer>
+</dict>
+</plist>
+
+  кадр 3: len=727 magic=bplist00
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>AssetMetrics</string>
+	<key>Params</key>
+	<dict>
+		<key>Ringtone</key>
+		<dict>
+			<key>_Count</key>
+			<integer>0</integer>
+			<key>_PhysicalSize</key>
+			<integer>0</integer>
+		</dict>
+		<key>Photo</key>
+		<dict>
+			<key>Photo</key>
+			<dict>
+				<key>_PurgeableSize</key>
+				<integer>0</integer>
+				<key>_PhysicalSize</key>
+				<integer>0</integer>
+				<key>_Count</key>
+				<integer>0</integer>
+			</dict>
+			<key>CameraRoll</key>
+			<dict>
+				<key>_PurgeableSize</key>
+				<integer>691975501</integer>
+				<key>_PhysicalSize</key>
+				<integer>1305540514</integer>
+				<key>_Count</key>
+				<integer>896</integer>
+			</dict>
+		</dict>
+		<key>Book</key>
+		<dict>
+			<key>_Count</key>
+			<integer>0</integer>
+			<key>_PhysicalSize</key>
+			<integer>69632</integer>
+		</dict>
+		<key>UserData</key>
+		<dict>
+			<key>_PurgeableSize</key>
+			<integer>2208235520</integer>
+			<key>_Count</key>
+			<integer>16240</integer>
+			<key>_PhysicalSize</key>
+			<integer>19136167936</integer>
+		</dict>
+		<key>_PhysicalSize</key>
+		<integer>117014011904</integer>
+		<key>_PurgeableSize</key>
+		<integer>5478741153</integer>
+		<key>_FreeSize</key>
+		<integer>72353746944</integer>
+		<key>Media</key>
+		<dict>
+			<key>Music</key>
+			<dict>
+				<key>_PhysicalSize</key>
+				<integer>38715392</integer>
+				<key>_Count</key>
+				<integer>3</integer>
+			</dict>
+		</dict>
+		<key>Application</key>
+		<dict>
+			<key>_PurgeableSize</key>
+			<integer>0</integer>
+			<key>_Count</key>
+			<integer>36</integer>
+			<key>_PhysicalSize</key>
+			<integer>10061012992</integer>
+		</dict>
+		<key>Logs</key>
+		<dict>
+			<key>_Count</key>
+			<integer>360</integer>
+			<key>_PhysicalSize</key>
+			<integer>38469632</integer>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>11</integer>
+</dict>
+</plist>
+
+[com.apple.atc2]
+  StartService: port=53727 EnableServiceSSL=1
+  канал: TLS (lbD-комбо HostCert+HostKey)
+  ошибка чтения заголовка кадра

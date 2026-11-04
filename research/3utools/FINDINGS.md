@@ -1965,3 +1965,59 @@ HTTP-клиент a2-s.3u.com по запрятанному протоколу (
 - Артефакты: `tools/atc-probe-run3-2026-11-04.log`,
   `tools/ideviceinfo-mux.strace-2026-11-04` (тут же); вести в E11
   (`iTunes-Reversed-Mechanisms/docs/evidence/E11-atc-probe.md`).
+
+#### 04.11 поздний вечер: клиентская сторона ATC из дизасма + live atc-talk
+
+- Клиент ATC — **AMPDevicesAgent**, класс-обработчик «Dulcimer»
+  (media-library; magic handlerData==0x64756c63 «dulc»), сам
+  AirTrafficControl.framework в корпусе только PLT-заглушками
+  (`_ATHostConnection*`) — wire-сериализация RequestingSync осталась
+  за рамками декомпа.
+- Полный клиентский API (экспорт из корпуса):
+  `ATHostConnection{Create,CreateWithCallbacks,Invalidate,Release,Retain,
+  GetCurrentSessionNumber,GetGrappaSessionId,SendHostInfo,SendMessage,
+  SendPing,SendStatusMessage,SendSyncFailed,SendSyncRequest,
+  SendMetadataSyncFinished,SendFileErrorWithParams,SendFileProgress,
+  SendAssetCompleted,SendAssetCompletedWithMetadata,SendPowerAssertion}`
+  + `ATCFMessage{Create,GetName,GetParam}` + Wakeup-Advertiser.
+- Машина состояний (strings-enum): **Idle → RequestingSync →
+  ReadyForSync → SyncingMetadata → FinishedSyncingMetadata →
+  TransferringAssets → Finished** (+ Canceled).
+- **RequestingSync** = `SendSyncRequest(conn, dataclasses[], anchors,
+  hostInfo)`; бит-маска dataclasses: **1=Media, 2=Ringtone, 8=Book,
+  0x10=Application, 0x20=Keybag, 0x40=Photo, 0x80=Data** (музыка —
+  `Media`!); **anchors — dict {ИмяDataclass: «<uint32 десятичной
+  СТРОКОЙ>»}** (FUN_10034c182: `"%u"`-формат, assert anchor!=0); третий
+  аргумент — словарь HostInfo (те же Params, что у приветствия).
+  После отправки — цикл ожидания ReadyForSync.
+- Серверный **ReadyForSync обязан нести `Params.DataclassAnchors`**
+  (валидатор FUN_10033e758: «missing DataclassAnchors in ReadyForSync») —
+  агент МЕРЖИТ их в свои три storage-структуры; значит анкеры
+  ходят в обе стороны.
+- **FinishedSyncingMetadata** (хост→сервер): Params = `SyncTypes`
+  + `DataclassAnchors` + `PurgeDataBytes`; типы синка enum:
+  **ATSyncNoSync / ATSyncDeltaSync / ATSyncResetSync / ATSyncPrepOnly**.
+- Операции метаданных (будущий шаг 9): insert/update/upload/delete_**
+  track/playlist/album/artist + underscore-имена полей трека
+  (bit_rate, date_modified, total_time_ms, …) — strings 47200+;
+  метаданные едут side-файлами **`.cig`** с подписью Grappa
+  (session id + 0x20B) — только сайдфайлы, НЕ wire-кадры.
+- **Live atc-talk run1–3** (read-only, строгая последовательность):
+  приветствие Capabilities → InstalledAssets → AssetMetrics;
+  наш **HostInfo (Params из FUN_1003335d2, read-only заглушки) принят
+  без замечаний** → **SyncAllowed** (ManualSync/AutoSync/PurgeAllowed/
+  AppRemovalAllowed/**AppInstallationAllowed**=true,
+  EducationModeEnabled/DataProtected=false,
+  DisabledAssetTypes=[Photo,Movie,TVEpisode,HomeVideo],
+  SupportsFavorites=true); наш **Ping→Pong**; сервер пингует и
+  закрывает неактивную сессию **IdleExit**; Id-счётчик сервера
+  глобален по atcd (13→20→33 через run1→3), клиентский независим
+  (1=HostInfo, 2=Ping).
+- Починен ли EOF-флейк tls в irm_tls_read: SSL_ERROR_SYSCALL+EAGAIN →
+  не ошибка, а «дожать poll» (Sra E11 run2: сервер не закрывал канал).
+- Arтефакты: `tools/atc-talk-run{1,2,3}-2026-11-04.log` (тут же);
+  полный факт-документ — `iTunes-Reversed-Mechanisms/docs/evidence/
+  E12-atc-client-protocol.md` (клиентская схема, R-вопросы).
+- Открыто: точные wire-имена Params у RequestingSync (R1; снятие
+  AirTrafficControl.framework или осторожная live-проба), atc2 (Q4),
+  критерий шага 9 — Music._Count инкремент (Q3).

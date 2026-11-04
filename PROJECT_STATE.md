@@ -965,3 +965,53 @@ apple-devices/
 - **Дальше (9g — кандидаты)**: пакетный insert (несколько треков за одну
   сессию), ancillary-only кадр с FileError{16} (живая проверка ветки),
   Reset-синк, повторная вставка/idempotence.
+
+##### Шаг 9g: ПАКЕТНЫЙ insert — один конверт на N треков (LIVE ПРИМЕНЕНО, SyncFinished)
+
+- **Эталон (rustunes, CONFIRMED)**: `batch.rs` — ОДИН конверт
+  `[update_db_info, insert_track × N]`, один revision/timestamp;
+  MAX_OPERATIONS=500 → **499 вставок** с update_db_info; ops ≤ 4 МиБ;
+  `ancillary.rs` — audio_batch: PIDs попарно различны и вне каталога,
+  MAX_MANIFEST_ASSETS=1024; `session.rs` — MAX_FRAMES=1024, FileError
+  СТРОГО после всех FileComplete, «Native completions are not ordered
+  by manifest position».
+- **Код** (`tools/irmctl.c`): `IRMA_ATC_BATCH_N=1..499` (default 1,
+  reject вне диапазона); массив `tpids[batch_n]` + буферы
+  `own_ids[batch_n][24]` (dec-строки в ПОРЯДКЕ МАНИФЕСТА) +
+  `titles[batch_n][80]`; builder insert_track получил `number`
+  (track_number 1..N); `atc_manifest_parse` переписан под пакет
+  (строгий own-набор, бэклог-классификация примечей); (j)-цикл до
+  **512** кадров; frees в close-блоке. Сборка -Wall -Wextra чисто,
+  юниты 5/5, скан мусорных символов чист.
+- **Live-прогоны (якерь 2 → 6, 4 мутационные сессии)**:
+  1. stage-only N=4: ops **3962 Б** + .cig 21 Б, grappa PASS.
+  2. run1: FSFM применил вставку ДО файлов (якерь 3; item появились,
+     телефон переписал item_pid внутренними 62..65) → молчание ~30 s →
+     Ping×2 → **IdleExit** (никаких FileComplete не ушли).
+  3. run2: манифест = **4 own + бэклог-аудио=4 (run1!) + artwork 8699…**
+     — старая строгая политика СТОП (якерь 4 применился на FSFM).
+  4. run3: бэклог-политика — 12 FileComplete (4 own + 8 бэклог);
+     ancillary-баг (failed на аудио-записи вместо continue) → FileError
+     не ушёл → снова Ping×2 + IdleExit (якерь 5).
+  5. run4: манифест = 4 own + бэклог-аудио=**0** + ancillary=1 →
+     FileError{16} ПОСЛЕ всех FileComplete → **SyncFinished**
+     (якерь 6), файлы 2691 Б на постоянных путях.
+- **Факты пакета** (детально в `docs/evidence/E16-atc-insert-batch.md`):
+  - телефон применяет метаданные при потреблении staging на FSFM
+    ДО получения файлов (файлы могут прийти позже);
+  - AssetManifest = ЕДИНЫЙ whitelist желаний: own пакета + весь
+    пока-не-донесённый аудио-бэклог + artwork-пожелания;
+  - FileComplete снимает бэклог-желание навсегда; FileError{16} НЕ
+    снимает artwork-желание (приходит в каждом манифесте, вечный
+    отказ телефон согласен принимать);
+  - БЕЗ решения по ancillary телефон не завершает (Ping×2 → IdleExit);
+  - FileComplete можно в любом порядке, но own_ids приходят в порядке
+    манифеста — сверять ИДЕНТИФИКАТОРЫ (membership), не позицией.
+- **Пост-верификация**: якерь = A+1 после SyncFinished: SyncAnchor=6 по
+  `music-id`; музыкальный UI покажет новые треки
+  (визуальное подтверждение пользователя, как в 9f).
+- **Трейсы**: `atc-insert-batch-stage/run1..run4` +
+  `music-id-batch-verify` `-2026-11-04d.log` →
+  `research/3utools/tools/` (3utools-research); FINDINGS §9g.
+- **Дальше**: GTK4-приложение для теста заливки музыки (обертка
+  atc-insert/atc-sync в GUI) — отдельная порция; Reset-синк, idempotence.

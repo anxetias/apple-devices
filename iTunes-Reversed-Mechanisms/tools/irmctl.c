@@ -2586,6 +2586,7 @@ struct atc_insert_data {
 	uint32_t total_time_ms; /* 9f: 100 (файл 4410 сэмплов @44100) */
 	uint64_t samples;       /* duration = сэмплов на канал */
 	uint32_t sample_rate;
+	uint32_t number;     /* item.track_number (1..N в пакете, 9g) */
 };
 
 /* {operation:"update_db_info", pid:<db_pid s64>, db_info:{primary_container_pid}}.
@@ -2670,7 +2671,8 @@ static irm_bp_node *atc_op_insert_track(const struct atc_insert_data *t)
 	    irm_bp_dict_set(item, "genre", irm_bp_string(t->genre)) != 0 ||
 	    irm_bp_dict_set(item, "total_time_ms",
 			    irm_bp_uint(t->total_time_ms)) != 0 ||
-	    irm_bp_dict_set(item, "track_number", irm_bp_uint(1)) != 0 ||
+	    irm_bp_dict_set(item, "track_number", irm_bp_uint(t->number)) !=
+		    0 ||
 	    irm_bp_dict_set(item, "is_song", irm_bp_bool(1)) != 0 ||
 	    irm_bp_dict_set(item, "remember_bookmark", irm_bp_bool(0)) != 0 ||
 	    irm_bp_dict_set(item, "artwork_checksum", irm_bp_uint(0)) != 0)
@@ -2929,14 +2931,25 @@ static int atc_permanent_path(irm_afc_t *afc, int64_t track_pid, char *out,
 	return -1;
 }
 
-/* Разбор AssetManifest из Params (строгая политика 9f):
- *   - own-записи СТРОГО одна, с битом аудио (AssetParts & 1) и равным
- *     нашему track PID (dec-строка, signed);
- *   - чужая запись допускается ТОЛЬКО ancillary-only: IsDownload=true,
- *     AssetType="Music", БЕЗ бита 1 (artwork/genius/lyrics) — в список
- *     на FileError{16};
- *   - любая иная запись → -1 (СТОП: никаких отправок).
- * 0 — успех: own_id (dec) + список foreign (malloc-строки). */
+/* Разбор AssetManifest (политика 9f/9g + бэклог-факт):
+ *   - собственные записи обязаны покрыть РОВНО весь пакет: их набор
+ *     совпадает с tpids[0..tn) (dec-строки, signed), каждая запись
+ *     ровно одна, бит аудио (AssetParts & 1) обязателен;
+ *   - ПРОЧИЕ записи телефон кладёт В ЕДИНЫЙ whitelist (жёлтые желания,
+ *     CONFIRMED 9g-бэктрек): пока файл не донесён, запрос live ВЕЧНО
+ *     (FileError{16} в 9f НЕ отменил желание artwork → запрос
+ *     повторился в run2). Классификация прочих:
+ *       · parts & 1 (audio) → БЭКЛОГ-аудио: донести файл (та же
+ *         фикс-фаза upload → rename bare → read-back → FileComplete;
+ *         телефон не сверяет метаданные файла — фикстура валидна);
+ *       · БЕЗ бита 1, IsDownload=true, AssetType="Music" → ancillary
+ *         (artwork/genius/lyrics) → FileError{16} ПОСЛЕ ВСЕХ
+ *         FileComplete;
+ *       · всё прочее → СТОП без отправок.
+ * 0 — успех: own_ids[tn][24] заполнены dec-строками в ПОРЯДКЕ
+ *     МАНИФЕСТА (FileComplete можно в любом порядке — rustunes
+ *     CONFIRMED), *foreign_n — число прочих записей (rec->parts
+ *     решает: аудио-доставка или FileError). */
 struct atc_rec {
 	char asset_id[40];
 	uint64_t parts;
@@ -2944,14 +2957,25 @@ struct atc_rec {
 	char type[16];
 };
 
-static int atc_manifest_parse(const irm_bp_node *frame, int64_t track_pid,
-			      char own_id[24], struct atc_rec **foreigns,
+static int atc_manifest_parse(const irm_bp_node *frame,
+			      const uint64_t *tpids, size_t tn,
+			      char own_ids[tn][24], struct atc_rec **foreigns,
 			      size_t *foreign_n)
 {
+	int rc = -1;
+	size_t own_c = 0;
 	*foreign_n = 0;
-	own_id[0] = 0;
-	char expect[24];
-	snprintf(expect, sizeof expect, "%lld", (long long)track_pid);
+	if (tn == 0)
+		return -1;
+	char (*expect)[24] = malloc(tn * sizeof *expect);
+	unsigned char *seen = calloc(tn, 1);
+	if (!expect || !seen) {
+		fprintf(stderr, "atc-insert: память\n");
+		goto out;
+	}
+	for (size_t i = 0; i < tn; i++)
+		snprintf(expect[i], sizeof expect[i], "%llu",
+			 (unsigned long long)tpids[i]);
 	const irm_bp_node *params = irm_bp_dict_get(frame, "Params");
 	const irm_bp_node *manifest =
 		params ? irm_bp_dict_get(params, "AssetManifest") : NULL;
@@ -2962,10 +2986,9 @@ static int atc_manifest_parse(const irm_bp_node *frame, int64_t track_pid,
 	if (!media || irm_bp_type_of(media) != IRM_BP_ARRAY) {
 		fprintf(stderr, "atc-insert: манифест без Params.AssetManifest"
 				".Media — СТОП\n");
-		return -1;
+		goto out;
 	}
 	size_t n = irm_bp_array_len(media);
-	int own_seen = 0;
 	for (size_t i = 0; i < n; i++) {
 		const irm_bp_node *e = irm_bp_array_get(media, i);
 		const char *sid = e ? str_of(e, "AssetID") : NULL;
@@ -2973,7 +2996,7 @@ static int atc_manifest_parse(const irm_bp_node *frame, int64_t track_pid,
 			fprintf(stderr, "atc-insert: запись %zu без AssetID — "
 					"СТОП\n",
 				i);
-			return -1;
+			goto out;
 		}
 		const irm_bp_node *var =
 			e ? irm_bp_dict_get(e, "Variant") : NULL;
@@ -2983,7 +3006,7 @@ static int atc_manifest_parse(const irm_bp_node *frame, int64_t track_pid,
 			fprintf(stderr, "atc-insert: запись %s без Variant."
 					"AssetParts — СТОП\n",
 				sid);
-			return -1;
+			goto out;
 		}
 		uint64_t parts = irm_bp_uint_value(pv);
 		int dl = 0;
@@ -2995,26 +3018,35 @@ static int atc_manifest_parse(const irm_bp_node *frame, int64_t track_pid,
 				     : 0;
 		}
 		const char *typ = str_of(e, "AssetType");
-		if (strcmp(sid, expect) == 0) {
-			if (own_seen || !(parts & 1u)) {
+		/* свой ли это? */
+		size_t hit = tn; /* > tn-1 = не найден */
+		for (size_t j = 0; j < tn; j++) {
+			if (strcmp(sid, expect[j]) == 0) {
+				hit = j;
+				break;
+			}
+		}
+		if (hit < tn) {
+			if (!(parts & 1u) || seen[hit]) {
 				fprintf(stderr, "atc-insert: own-запись %s "
 						"дублирована/без аудио-бита "
 						"(parts=%llu) — СТОП\n",
 					sid, (unsigned long long)parts);
-				return -1;
+				goto out;
 			}
-			own_seen = 1;
-			snprintf(own_id, 24, "%s", sid);
+			seen[hit] = 1;
+			own_c++;
+			snprintf(own_ids[own_c - 1], 24, "%s", sid);
 			continue;
 		}
-		/* чужая: только reviewed ancillary-only. */
-		if (!(parts & 1u) && dl && typ &&
-		    strcmp(typ, "Music") == 0) {
+		/* чужая: либо бэклог-аудио, либо ancillary — обе классы
+		 * допустимы (rec->parts далее решает способ ответа). */
+		if (typ && strcmp(typ, "Music") == 0 && dl) {
 			struct atc_rec *rec = (struct atc_rec *)realloc(
 				*foreigns, (*foreign_n + 1) * sizeof **foreigns);
 			if (!rec) {
 				fprintf(stderr, "atc-insert: память\n");
-				return -1;
+				goto out;
 			}
 			*foreigns = rec;
 			struct atc_rec *r = &rec[*foreign_n];
@@ -3030,15 +3062,19 @@ static int atc_manifest_parse(const irm_bp_node *frame, int64_t track_pid,
 				"(type=%s parts=%llu dl=%d) — СТОП без "
 				"отправок\n",
 			sid, dash(typ), (unsigned long long)parts, dl);
-		return -1;
+		goto out;
 	}
-	if (!own_seen) {
-		fprintf(stderr, "atc-insert: манифест без собственного "
-				"ассета %s — СТОП\n",
-			expect);
-		return -1;
+	if (own_c != tn) {
+		fprintf(stderr, "atc-insert: манифест не покрывает пакет: "
+				"own=%zu/%zu — СТОП\n",
+			own_c, tn);
+		goto out;
 	}
-	return 0;
+	rc = 0;
+out:
+	free(expect);
+	free(seen);
+	return rc;
 }
 
 /* FileComplete (§12.4): {AssetID, Dataclass:"Media", AssetPath}. */
@@ -3274,14 +3310,38 @@ static int cmd_atc_insert(const char *path, const char *selector)
 	irm_bp_node *ops_root = NULL;
 	uint64_t *taken = NULL;
 	size_t takenn = 0;
+	uint64_t *tpids = NULL;    /* трековые PIDs пакета (c) */
+	char (*own_ids)[24] = NULL; /* own AssetID в порядке манифеста */
+	char (*titles)[80] = NULL;  /* заголовки per track (d) */
+	unsigned batch_n = 1;       /* вставок в пакете (1..499, 9g) */
 	struct atc_rec *foreigns = NULL;
 	size_t fgn = 0;
 	int64_t db_pid = 0, container = 0; /* каталог db_info (b) */
 	uint32_t anchor_a = 0;            /* якерь A из DB-копии */
-	uint64_t tk = 0, al = 0, ar = 0;  /* свежие PIDs (c) */
+	uint64_t al = 0, ar = 0;          /* свежие PIDs альбома/артиста (c) */
 	char anch[16] = "", anch_next[16] = ""; /* RS=A, FSFM=A+1 */
 	char scratch[512];
 	snprintf(scratch, sizeof scratch, "/tmp/opencode/%s-music", udid);
+
+	/* (o) размер пакета: один конверт [update_db_info, insert_track × N],
+	 * лимиты rustunes: MAX_OPERATIONS=500 (с update_db_info → 499
+	 * вставок), ops ≤ 4 МиБ (batch.rs). */
+	{
+		const char *e = getenv("IRMA_ATC_BATCH_N");
+		if (e && *e) {
+			char *end = NULL;
+			long v = strtol(e, &end, 10);
+			if (!end || end == e || *end || v < 1 || v > 499) {
+				fprintf(stderr, "atc-insert: "
+						"IRMA_ATC_BATCH_N=%s вне "
+						"1..499\n",
+					e);
+				goto close;
+			}
+			batch_n = (unsigned)v;
+		}
+	}
+	printf("batch: %u вставка(ок) в одном конверте\n", batch_n);
 
 	/* (p) фикстура (валидный ALAC; берём из env; обязательно). */
 	if (!fixt || !*fixt) {
@@ -3511,30 +3571,62 @@ static int cmd_atc_insert(const char *path, const char *selector)
 		printf("PID-набор: %zu значений\n", takenn);
 		sqlite3_close(db);
 
-		/* (c) свежие PIDs. */
-		if (atc_pid_fresh(&tk, taken, takenn) != 0 ||
-		    atc_pid_fresh(&al, taken, takenn) != 0 ||
-		    atc_pid_fresh(&ar, taken, takenn) != 0 ||
-		    tk == al || tk == ar || al == ar) {
+		/* (c) свежие PIDs: batch_n трековых + 1 альбом + 1 артист;
+		 * все попарно различны и без коллизий с каталогом. */
+		tpids = (uint64_t *)malloc((size_t)batch_n * sizeof *tpids);
+		own_ids = (char (*)[24])malloc((size_t)batch_n *
+					       sizeof *own_ids);
+		titles = (char (*)[80])malloc((size_t)batch_n *
+					      sizeof *titles);
+		if (!tpids || !own_ids || !titles) {
+			fprintf(stderr, "atc-insert: память\n");
+			goto close;
+		}
+		if (atc_pid_fresh(&al, taken, takenn) != 0 ||
+		    atc_pid_fresh(&ar, taken, takenn) != 0 || al == ar) {
 			fprintf(stderr, "atc-insert: свежие PIDs не вышли\n");
 			goto close;
 		}
-		struct atc_insert_data td = {
-			.title = "IRM Tone",
-			.artist = "IRM",
-			.album = "IRM Tones",
-			.genre = "Test",
-			.track_pid = (int64_t)tk,
-			.album_pid = (int64_t)al,
-			.artist_pid = (int64_t)ar,
-			.total_time_ms = 100,
-			.samples = 4410,
-			.sample_rate = 44100,
-		};
-		printf("PIDs: track=%lld album=%lld artist=%lld\n",
-		       (long long)tk, (long long)al, (long long)ar);
+		for (unsigned i = 0; i < batch_n; i++) {
+			for (int t = 0; t < 128; t++) {
+				if (atc_pid_fresh(&tpids[i], taken, takenn) !=
+				    0)
+					break;
+				/* попарная различность внутри пакета
+				 * и с альбомом/артистом (audio_batch:
+				 * "must be distinct" — ancillary.rs). */
+				int ok = (tpids[i] != al && tpids[i] != ar);
+				for (unsigned j = 0; ok && j < i; j++)
+					ok = (tpids[j] != tpids[i]);
+				if (ok)
+					break;
+				tpids[i] = 0;
+			}
+			if (tpids[i] == 0) {
+				fprintf(stderr, "atc-insert: свежие PIDs не "
+						"вышли (трек %u)\n",
+					i + 1);
+				goto close;
+			}
+		}
+		for (unsigned i = 0; i < batch_n; i++) {
+			if (batch_n == 1)
+				snprintf(titles[i], sizeof titles[i],
+					 "IRM Tone");
+			else
+				snprintf(titles[i], sizeof titles[i],
+					 "IRM Tone %u", i + 1);
+		}
+		printf("PIDs: album=%lld artist=%lld; треков %u:",
+		       (long long)al, (long long)ar, batch_n);
+		for (unsigned i = 0; i < batch_n; i++)
+			printf(" %llu", (unsigned long long)tpids[i]);
+		printf("\n");
 
-		/* (d) конверт операций (порядок ключей 1:1 alac.rs). */
+		/* (d) конверт операций (порядок ключей 1:1 alac.rs):
+		 * ОДИН конверт на пакет [update_db_info, insert_track × N],
+		 * один revision/timestamp (rustunes insert_batch:
+		 * "single operations session"). */
 		ops_root = irm_bp_dict();
 		if (!ops_root) {
 			fprintf(stderr, "atc-insert: конверт: нет памяти\n");
@@ -3550,11 +3642,9 @@ static int cmd_atc_insert(const char *path, const char *selector)
 			irm_bp_node *arr = irm_bp_array();
 			irm_bp_node *ops1 = atc_op_update_db_info(db_pid,
 								  container);
-			irm_bp_node *ops2 = atc_op_insert_track(&td);
-			if (!arr || !ops1 || !ops2) {
+			if (!arr || !ops1) {
 				/* set/add ниже не звали → владение наше */
 				irm_bp_free(ops1);
-				irm_bp_free(ops2);
 				irm_bp_free(arr);
 				fprintf(stderr, "atc-insert: сборка ops не "
 						"удалась\n");
@@ -3564,7 +3654,6 @@ static int cmd_atc_insert(const char *path, const char *selector)
 			    0) {
 				/* set освободил arr сам */
 				irm_bp_free(ops1);
-				irm_bp_free(ops2);
 				fprintf(stderr, "atc-insert: сборка ops не "
 						"удалась\n");
 				goto close;
@@ -3573,19 +3662,37 @@ static int cmd_atc_insert(const char *path, const char *selector)
 			if (irm_bp_array_add(arr, ops1) != 0) {
 				/* add при неудаче НЕ освобождает val */
 				irm_bp_free(ops1);
-				irm_bp_free(ops2);
 				fprintf(stderr, "atc-insert: сборка ops не "
 						"удалась\n");
 				goto close;
 			}
 			ops1 = NULL; /* arr владеет */
-			if (irm_bp_array_add(arr, ops2) != 0) {
-				irm_bp_free(ops2);
-				fprintf(stderr, "atc-insert: сборка ops не "
-						"удалась\n");
-				goto close;
+			for (unsigned i = 0; i < batch_n; i++) {
+				struct atc_insert_data td = {
+					.title = titles[i],
+					.artist = "IRM",
+					.album = "IRM Tones",
+					.genre = "Test",
+					.track_pid = (int64_t)tpids[i],
+					.album_pid = (int64_t)al,
+					.artist_pid = (int64_t)ar,
+					.total_time_ms = 100,
+					.samples = 4410,
+					.sample_rate = 44100,
+					.number = batch_n == 1 ? 1 : i + 1,
+				};
+				irm_bp_node *opi = atc_op_insert_track(&td);
+				if (!opi || irm_bp_array_add(arr, opi) != 0) {
+					/* add при неудаче НЕ освобождает */
+					irm_bp_free(opi);
+					fprintf(stderr, "atc-insert: сборка "
+							"ops: вставка %u не "
+							"вышла\n",
+						i + 1);
+					goto close;
+				}
+				/* arr владеет opi */
 			}
-			ops2 = NULL; /* arr владеет */
 		}
 		/* timestamp = CFDate (сек от 2001-01-01T00:00:00Z). */
 		if (irm_bp_dict_set(ops_root, "timestamp",
@@ -3789,13 +3896,13 @@ static int cmd_atc_insert(const char *path, const char *selector)
 	}
 
 	/* (j) терминал: телеметрия пропускается; AssetManifest → строго
-	 * политика (own-ассет загрузить + FileComplete; чужие ancillary →
-	 * FileError 16; иначе СТОП); телефонный Ping → Pong; SyncFinished
-	 * (Session=2) = успех. */
+	 * политика (свои ассеты — РОВНО весь пакет — загрузить в ПОРЯДКЕ
+	 * МАНИФЕСТА каждый ровно раз + FileComplete; чужие ancillary →
+	 * FileError 16 ПОСЛЕ всех FileComplete; иначе СТОП); телефонный
+	 * Ping → Pong; SyncFinished (Session=2) = успех. */
 	{
 		int done = 0, failed = 0, got_manifest = 0;
-		char own_id[24] = { 0 };
-		for (int k = 1; k <= 96 && !done; k++) {
+		for (int k = 1; k <= 512 && !done; k++) {
 			uint8_t lb[4];
 			if (svc_read_full_t(afd, atl, lb, sizeof lb, 20) !=
 			    0) {
@@ -3900,9 +4007,10 @@ static int cmd_atc_insert(const char *path, const char *selector)
 				} else {
 					free(foreigns);
 					foreigns = NULL;
+					fgn = 0;
 					if (atc_manifest_parse(
-						    d, (int64_t)tk, own_id,
-						    &foreigns,
+						    d, tpids, batch_n,
+						    own_ids, &foreigns,
 						    &fgn) != 0) {
 						fprintf(stderr, "atc-insert: "
 								"манифест "
@@ -3912,27 +4020,107 @@ static int cmd_atc_insert(const char *path, const char *selector)
 						failed = 1;
 					} else {
 						got_manifest = 1;
-						printf("манифест: own=%s "
-						       "чужых=%zu — "
-						       "загружаем свой\n",
-						       own_id, fgn);
-						/* Собственный ассет: */
-						if (atc_own_asset(
-							    afc, afd, atl,
-							    (int64_t)tk,
-							    own_id, fix,
-							    fixn) != 0)
-							failed = 1;
-						/* Отказы ЗАВЕДОМО ПОСЛЕ */
-						for (size_t i = 0; i < fgn && !failed;
-						     i++)
+						{
+							size_t ba = 0,
+							       anc = 0;
+							for (size_t i = 0;
+							     i < fgn; i++)
+								if (foreigns[i]
+									    .parts &
+								    1u)
+									ba++;
+								else
+									anc++;
+							printf("манифест: own (%u),"
+							       " в порядке манифеста:",
+							       batch_n);
+							for (unsigned i = 0;
+							     i < batch_n; i++)
+								printf(" %s",
+								       own_ids[i]);
+							printf("; бэклог-аудио=%zu"
+							       " ancillary=%zu\n",
+							       ba,
+							       anc);
+						}
+						/* Свои ассеты: каждый ровно один раз, в порядке
+						 * манифеста (FileComplete можно в любом порядке —
+						 * session.rs: "Native completions are not
+						 * ordered by manifest position"); ЛЮБАЯ ошибка
+						 * upload → НИКАКИХ FileError: отказы строго
+						 * после всех FileComplete. */
+						for (unsigned i = 0;
+						     i < batch_n && !failed;
+						     i++) {
+							uint64_t pid_i =
+							    strtoull(own_ids[i], NULL, 10);
+							/* membership-проверка
+							 * (не по позиции!):
+							 * own_ids в ПОРЯДКЕ
+							 * МАНИФЕСТА, tpids — в
+							 * порядке генерации;
+							 * parse уже сверил
+							 * наборы. */
+							int hitp = 0;
+							for (unsigned j = 0;
+							     j < batch_n;
+							     j++)
+								if (pid_i ==
+								    tpids[j]) {
+									hitp = 1;
+									break;
+								}
+							if (!hitp ||
+							    atc_own_asset(afc, afd, atl,
+							                  (int64_t)pid_i,
+							                  own_ids[i], fix,
+							                  fixn) != 0)
+								failed = 1;
+						}
+						/* БЭКЛОГ-аудио (записи вне
+						 * пакета с битом 1): донести
+						 * файл и FileComplete —
+						 * телефон копит желания, пока
+						 * файл не донесён (CONFIRMED
+						 * 9g). Файл невалидируем —
+						 * метаданные симметричны. */
+						for (size_t i = 0;
+						     i < fgn && !failed;
+						     i++) {
+							if (!(foreigns[i].parts &
+							      1u))
+								continue; /* ancillary ниже */
+							uint64_t pid_f =
+							    strtoull(
+								    foreigns[i].asset_id,
+								    NULL,
+								    10);
+							if (!pid_f ||
+							    atc_own_asset(afc, afd, atl,
+							                  (int64_t)pid_f,
+							                  foreigns[i].asset_id,
+							                  fix,
+							                  fixn) != 0)
+								failed = 1;
+						}
+						/* Отказы ancillary ЗАВЕДОМО
+						 * ПОСЛЕ ВСЕХ FileComplete
+						 * (пакета и бэклога).
+						 * Аудио-бэклог здесь
+						 * пропуск (он уже
+						 * донесён выше). */
+						for (size_t i = 0;
+						     i < fgn && !failed;
+						     i++) {
+							if (foreigns[i].parts &
+								    1u)
+								continue;
 							if (atc_file_error(
 								    afd, atl,
-								    foreigns
-									    [i]
-									    .asset_id) !=
+								    foreigns[i].asset_id) !=
 							    0)
 								failed = 1;
+						}
 					}
 				}
 			} else {
@@ -3958,6 +4146,9 @@ close:
 	free(ops_bytes);
 	free(fix);
 	free(taken);
+	free(tpids);
+	free(own_ids);
+	free(titles);
 	free(foreigns);
 	/* cig — стек-буфер, не free. */
 	irm_afc_free(afc);
@@ -4129,12 +4320,16 @@ static void usage(FILE *f)
 		"                                   FSFM пустой → SyncFinished; якерь НЕ\n"
 		"                                   растёт; env IRMA_ATC_LIBID/ANCHOR/\n"
 		"                                   VERSION/SERVICE\n"
-		"  irmctl [-s SOCKET] atc-insert     РЕАЛЬНЫЙ Delta с треком (шаг 9f):\n"
+		"  irmctl [-s SOCKET] atc-insert     РЕАЛЬНЫЙ Delta (9f/9g, пакет):\n"
 		"                                   grappa-.cig → staging ops+cig →\n"
 		"                                   FSFM A+1 → AssetManifest → upload\n"
-		"                                   own-ассета + FileComplete/FileError\n"
-		"                                   → SyncFinished; env IRMA_ATC_FIXTURE\n"
-		"                                   (обязателен, .m4a ALAC),\n"
+		"                                   каждого own-ассета (в порядке\n"
+		"                                   манифеста) + FileComplete/\n"
+		"                                   FileError → SyncFinished; env\n"
+		"                                   IRMA_ATC_FIXTURE (обязателен, .m4a\n"
+		"                                   ALAC), IRMA_ATC_BATCH_N=1..499\n"
+		"                                   (вставок в ОДНОМ конверте; ops ≤4\n"
+		"                                   МиБ, якерь A+1 на пакет),\n"
 		"                                   IRMA_ATC_STAGE_ONLY=1 (без записей на\n"
 		"                                   телефон), IRMA_ATC_LIBID/ANCHOR/\n"
 		"                                   VERSION/SERVICE\n"

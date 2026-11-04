@@ -149,14 +149,41 @@ void irm_mux_close(int fd)
 		close(fd);
 }
 
+/* Порядок байта PortNumber в Connect-кадре (E01b §3/§10):
+ *   Linux-usbmuxd (live 04.11, strace libusbmuxd): ждёт порт в СЕТЕВОМ
+ *   порядке — 62078 := htons(62078) = 0x7EF2 = 32498; сырой 0xF27E даёт
+ *   Result=3 на обоих «свапнутых» пробных значениях пробника.
+ *   macOS-демон принимает значение КАК ЕСТЬ. */
+static uint16_t wire_port_of(uint16_t port)
+{
+#if defined(__linux__)
+	return (uint16_t)(((port & 0xFFu) << 8) | ((port >> 8) & 0xFFu));
+#else
+	return port;
+#endif
+}
+
+/* имя процесса для ProgName (как у demux-кадра ideviceinfo, E01b §10). */
+static const char *progname(void)
+{
+#if defined(__linux__) && !defined(getprogname)
+	return program_invocation_short_name; /* <errno.h>, см. _GNU_SOURCE */
+#elif defined(__APPLE__) || defined(__BSD__)
+	return getprogname();
+#else
+	return "libirm";
+#endif
+}
+
 /* Туннель к сервису: mux Connect (E01b §3) — тот же кадр, что у lockdown-а,
- * только PortNumber = порт сервиса из StartService (ЗНАЧЕНИЕ КАК ЕСТЬ, Q14).
- * TODO(портирование, не проверяно live): Linux-демон может ждать порт в
- * сетевом порядке (как у libimobiledevice htons) — сверить при первом
- * реальном Connect против macOS-факта E01b §3, до того Connect не звать. */
+ * только PortNumber = порт сервиса из StartService. Live-факты Linux
+ * (E01b §10, strace libusbmuxd 2.1.1 04.11): демона ждёт ПЛЮС поля
+ * ClientVersionString/ProgName/kLibUSBMuxVersion=3, PortNumber=htons(port),
+ * запросы — XML-телом (irm_mux_send уже так шлёт). */
 int irm_mux_connect(const char *path, uint32_t device_id, uint16_t port,
 		    int timeout_sec)
 {
+	uint16_t wport = wire_port_of(port);
 	int fd = irm_mux_open(path, timeout_sec);
 	if (fd < 0)
 		return -1;
@@ -164,7 +191,11 @@ int irm_mux_connect(const char *path, uint32_t device_id, uint16_t port,
 	if (!req ||
 	    irm_bp_dict_set(req, "MessageType", irm_bp_string("Connect")) != 0 ||
 	    irm_bp_dict_set(req, "DeviceID", irm_bp_uint(device_id)) != 0 ||
-	    irm_bp_dict_set(req, "PortNumber", irm_bp_uint(port)) != 0) {
+	    irm_bp_dict_set(req, "PortNumber", irm_bp_uint(wport)) != 0 ||
+	    irm_bp_dict_set(req, "ClientVersionString",
+			    irm_bp_string("libirm 0.1")) != 0 ||
+	    irm_bp_dict_set(req, "ProgName", irm_bp_string(progname())) != 0 ||
+	    irm_bp_dict_set(req, "kLibUSBMuxVersion", irm_bp_uint(3)) != 0) {
 		irm_bp_free(req);
 		set_err("%s", "oom");
 		irm_mux_close(fd);

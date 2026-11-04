@@ -24,6 +24,7 @@
 
 #include <stdint.h>
 #include "libirm/bplist.h"
+#include "libirm/pairing.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -81,6 +82,15 @@ irm_bp_node *irm_lk_get_value(irm_lk_t *lk, const char *domain, const char *key)
  * (включая строку Error от устройства). */
 int       irm_lk_start_service(irm_lk_t *lk, const char *service,
 			       uint16_t *port_out, int *ssl_out);
+
+/* StartSession + TLS-апгрейд (E04 §3; live 04.11: ответ несёт
+ * EnableSessionSSL=true — TLS начинается на ТОМ ЖЕ lockconn-сокете).
+ * pair — пейр-рекорд (irm_pair_load); порядок клиентских сертификатов:
+ *   1) lbD-стиль: HostCertificate + HostPrivateKey, pin DeviceCertificate;
+ *   2) Apple-стиль (E04 §2): DeviceCertificate + RootPrivateKey.
+ * Пиннинг — SHA-256 DER peer == SHA-256 DER из рекорда (E04 §4).
+ * 0 — сессия открыта, канал в TLS; -1 — причина в irm_lk_error(). */
+int       irm_lk_start_session(irm_lk_t *lk, const irm_pair_t *pair);
 
 const char *irm_lk_error(void);
 

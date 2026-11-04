@@ -2,6 +2,7 @@
  * Форматы и семантика — E02 §2-4 (MobileDevice.framework), заголовок — lockdown.h. */
 #include "libirm/lockdown.h"
 #include "libirm/mux.h"
+#include "libirm/tls.h"
 #include "libirm/xmlplist.h"
 
 #include <errno.h>
@@ -13,15 +14,16 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#if defined(__APPLE__) || defined(__BSD__)
 #include <stdlib.h> /* getprogname() в POSIX-наборе BSD/mac */
 /* Портирование на Linux (apple-devices): glibc не имеет BSD getprogname(),
  * но имеет эквивалент program_invocation_short_name() из <errno.h>. */
 #if defined(__linux__) && !defined(getprogname)
 #include <errno.h>
 #define getprogname() program_invocation_short_name
+#define IRM_HAVE_GETPROGNAME 1
 #endif
 
+#if defined(__APPLE__) || defined(__BSD__)
 #define IRM_HAVE_GETPROGNAME 1
 #endif
 
@@ -52,6 +54,8 @@ struct irm_lk {
 	int fd;              /* сырой туннель к lockdown-у (владение) */
 	uint32_t device_id;  /* mux DeviceID (StartService→Connect на сервис) */
 	char label[64];
+	int tls;             /* 1 = fd обёрнут в TLS (session-TLS после StartSession) */
+	int timeout_sec;     /* SO_RCVTIMEO-аналог для TLS-цикла (0 = без лимита) */
 };
 
 /* ------------------------------------------------------------------ */
@@ -117,6 +121,23 @@ static void apply_rcvtimeo(int fd, int timeout_sec)
 	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
 }
 
+/* Единая точка записи: при session-TLS — через irm_tls_write_full (тот же
+ * BE32-фрейминг, но внутри TLS), иначе сырой fd. */
+static int lk_wr(irm_lk_t *lk, const uint8_t *b, size_t n)
+{
+	return lk->tls ? irm_tls_write_full(lk->fd, b, n)
+		       : write_full(lk->fd, b, n);
+}
+
+/* Единая точка чтения; контракт read_full (0/-1 EOF/-2 таймаут/-3 errno). */
+static int lk_rd(irm_lk_t *lk, uint8_t *b, size_t n)
+{
+	if (!lk->tls)
+		return read_full(lk->fd, b, n);
+	int rc = irm_tls_read_full(lk->fd, b, n, lk->timeout_sec);
+	return rc == 0 ? 0 : (rc == -2 ? -2 : -1);
+}
+
 /* ------------------------------------------------------------------ */
 /* Open/close                                                          */
 /* ------------------------------------------------------------------ */
@@ -136,6 +157,8 @@ irm_lk_t *irm_lk_attach_fd(int fd, int timeout_sec)
 	lk->fd = fd;
 	lk->device_id = 0;
 	lk->label[0] = 0;
+	lk->tls = 0;
+	lk->timeout_sec = timeout_sec > 0 ? timeout_sec : 0;
 	apply_rcvtimeo(fd, timeout_sec);
 #if defined(IRM_HAVE_GETPROGNAME)
 	const char *pn = getprogname();
@@ -151,45 +174,14 @@ irm_lk_t *irm_lk_open(const char *mux_path, uint32_t device_id, uint16_t port,
 		      int timeout_sec)
 {
 	g_err[0] = 0;
-	int fd = irm_mux_open(mux_path, timeout_sec);
+	/* mux v1 Connect: {"MessageType":"Connect","DeviceID":SInt32,
+	 * "PortNumber":SInt16} → Result==0. Порядок байт порта и доп-поля
+	 * кадра (ClientVersionString/ProgName/kLibUSBMuxVersion) —
+	 * внутри irm_mux_connect (E01b §3/§10). */
+	int fd = irm_mux_connect(mux_path ? mux_path : IRM_MUX_DEFAULT_SOCKET,
+				 device_id, port, timeout_sec);
 	if (fd < 0) {
-		set_err("mux open: %s", irm_mux_error());
-		return NULL;
-	}
-
-	/* mux v1 Connect: {"MessageType":"Connect","DeviceID":SInt32,
-	 * "PortNumber":SInt16} → {MessageType:"Result", Number:код}; 0 = ок
-	 * (E01b §2-3: «нет такого DeviceID» = 2). */
-	/* mux v1 Connect: {"MessageType":"Connect","DeviceID":SInt32,
-	 * "PortNumber":SInt16} → {MessageType:"Result", Number:код}; 0 = ок
-	 * (E01b §2-3: «нет такого DeviceID» = 2). */
-	irm_bp_node *req = irm_bp_dict();
-	irm_bp_dict_set(req, "MessageType", irm_bp_string("Connect"));
-	irm_bp_dict_set(req, "DeviceID", irm_bp_uint(device_id));
-	irm_bp_dict_set(req, "PortNumber", irm_bp_uint(port));
-	uint32_t tag = irm_mux_tag_next();
-	if (irm_mux_send(fd, tag, req) != 0) {
-		set_err("mux send Connect: %s", irm_mux_error());
-		irm_bp_free(req);
-		irm_mux_close(fd);
-		return NULL;
-	}
-	irm_bp_free(req);
-
-	irm_bp_node *resp = irm_mux_recv(fd, NULL);
-	if (!resp) {
-		set_err("mux recv Result: %s", irm_mux_error());
-		irm_mux_close(fd);
-		return NULL;
-	}
-	uint64_t code = 1;
-	irm_bp_node *num = irm_bp_dict_get(resp, "Number");
-	if (num)
-		code = irm_bp_uint_value(num);
-	irm_bp_free(resp);
-	if (code != 0) {
-		set_err("mux Connect Result=%llu", (unsigned long long)code);
-		irm_mux_close(fd);
+		set_err("mux Connect: %s", irm_mux_error());
 		return NULL;
 	}
 
@@ -206,8 +198,11 @@ void irm_lk_close(irm_lk_t *lk)
 {
 	if (!lk)
 		return;
-	if (lk->fd >= 0)
+	if (lk->fd >= 0) {
+		if (lk->tls)
+			irm_tls_disarm(lk->fd); /* SSL_*flare до close */
 		close(lk->fd);
+	}
 	free(lk);
 }
 
@@ -259,12 +254,12 @@ int irm_lk_send(irm_lk_t *lk, const irm_bp_node *dict)
 
 	uint8_t hdr[4];
 	put_be32(hdr, (uint32_t)plen);
-	int rc = write_full(lk->fd, hdr, sizeof hdr);
+	int rc = lk_wr(lk, hdr, sizeof hdr);
 	if (rc == 0)
-		rc = write_full(lk->fd, payload, plen);
+		rc = lk_wr(lk, payload, plen);
 	free(payload);
 	if (rc != 0) {
-		set_err("send: %s", strerror(errno));
+		set_err("send: %s", lk->tls ? irm_tls_error() : strerror(errno));
 		return -1;
 	}
 	return 0;
@@ -278,11 +273,12 @@ irm_bp_node *irm_lk_recv(irm_lk_t *lk)
 		return NULL;
 	}
 	uint8_t hdr[4];
-	int rc = read_full(lk->fd, hdr, sizeof hdr);
+	int rc = lk_rd(lk, hdr, sizeof hdr);
 	if (rc != 0) {
 		set_err("recv hdr: %s",
 			rc == -2 ? "timeout (kAMDTimeOutError 0xe800000c)"
-			: rc == -1 ? "EOF (kAMDReadError 0xe8000004)"
+			: rc == -1 ? (lk->tls ? (irm_tls_error() && *irm_tls_error() ? irm_tls_error() : "EOF (TLS-канал)")
+					      : "EOF (kAMDReadError 0xe8000004)")
 				   : strerror(errno));
 		return NULL;
 	}
@@ -298,7 +294,7 @@ irm_bp_node *irm_lk_recv(irm_lk_t *lk)
 		size_t to_read = len;
 		while (to_read > 0) {
 			size_t chunk = to_read < sizeof drain ? to_read : sizeof drain;
-			if (read_full(lk->fd, drain, chunk) != 0)
+			if (lk_rd(lk, drain, chunk) != 0)
 				break;
 			to_read -= chunk;
 		}
@@ -310,11 +306,12 @@ irm_bp_node *irm_lk_recv(irm_lk_t *lk)
 		set_err("%s", strerror(ENOMEM));
 		return NULL;
 	}
-	rc = read_full(lk->fd, buf, len);
+	rc = lk_rd(lk, buf, len);
 	if (rc != 0) {
 		set_err("recv body: %s",
 			rc == -2 ? "timeout (kAMDTimeOutError 0xe800000c)"
-			: rc == -1 ? "EOF (kAMDReadError 0xe8000004)"
+			: rc == -1 ? (lk->tls ? (irm_tls_error() && *irm_tls_error() ? irm_tls_error() : "EOF (TLS-канал)")
+					      : "EOF (kAMDReadError 0xe8000004)")
 				   : strerror(errno));
 		free(buf);
 		return NULL;
@@ -484,5 +481,93 @@ int irm_lk_start_service(irm_lk_t *lk, const char *service,
 		*ssl_out = irm_bp_bool_value(irm_bp_dict_get(resp, "EnableServiceSSL"));
 	irm_bp_free(resp);
 	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* StartSession + session-TLS (E04 §2-4, §6)                           */
+/* ------------------------------------------------------------------ */
+
+/* Клиентская пара для handshake: вариант lbD (libimobiledevice-стиль) и
+ * вариант Apple (E04 §2 — имена полей исторические). */
+static int start_session_tls(irm_lk_t *lk, const irm_pair_t *p)
+{
+	struct cand {
+		const uint8_t *cert, *key, *pin;
+		size_t cn, kn, pn;
+		const char *name;
+	} cand[2] = {
+		{ p->host_cert, p->host_key, p->device_cert,
+		  p->host_cert_n, p->host_key_n, p->device_cert_n,
+		  "HostCertificate+HostPrivateKey (pin DeviceCertificate)" },
+		{ p->device_cert, p->root_key, p->device_cert,
+		  p->device_cert_n, p->root_key_n, p->device_cert_n,
+		  "DeviceCertificate+RootPrivateKey (E04 §2, Apple)" },
+	};
+	char last[128] = "";
+	for (int i = 0; i < 2; i++) {
+		if (!cand[i].cert || !cand[i].key)
+			continue;
+		if (irm_tls_wrap_fd(lk->fd, cand[i].cert, cand[i].cn,
+				    cand[i].key, cand[i].kn,
+				    cand[i].pin, cand[i].pn,
+				    10) == 0) {
+			lk->tls = 1;
+			return 0;
+		}
+		snprintf(last, sizeof last, "%.*s",
+			 (int)sizeof last - 1, irm_tls_error());
+		set_err("TLS %s: %s", cand[i].name, last);
+	}
+	if (!last[0])
+		set_err("%s", "TLS: в рекорде нет пригодной пары серт+ключ");
+	return -1;
+}
+
+int irm_lk_start_session(irm_lk_t *lk, const irm_pair_t *pair)
+{
+	g_err[0] = 0;
+	if (!lk || !pair) {
+		set_err("%s", "start_session: args");
+		return -1;
+	}
+	if (lk->tls) {
+		set_err("%s", "start_session: TLS уже активен");
+		return -1;
+	}
+	irm_bp_node *req = NULL;
+	if (irm_lk_make_request(lk, "StartSession", &req) != 0)
+		return -1;
+	/* E02 §: StartSession (+ HostID, SystemBUID) — значения СТРОКИ. */
+	if (irm_bp_dict_set(req, "HostID", irm_bp_string(pair->host_id)) != 0 ||
+	    irm_bp_dict_set(req, "SystemBUID",
+			    irm_bp_string(pair->sys_buid)) != 0) {
+		irm_bp_free(req);
+		set_err("%s", "oom");
+		return -1;
+	}
+	irm_bp_node *resp = send_recv(lk, req);
+	if (!resp)
+		return -1;
+
+	irm_bp_node *err = irm_bp_dict_get(resp, "Error");
+	if (irm_bp_type_of(err) == IRM_BP_STRING) {
+		size_t elen = 0;
+		const char *es = irm_bp_string_ptr(err, &elen);
+		set_err("lockdown: %.*s", (int)(elen > 128 ? 128 : elen), es);
+		irm_bp_free(resp);
+		return -1;
+	}
+
+	int enssl = irm_bp_bool_value(irm_bp_dict_get(resp, "EnableSessionSSL"));
+	irm_bp_free(resp);
+	if (!enssl) {
+		/* Модель E04 §6: старые iOS отвечают SessionID без TLS —
+		 * канал остаётся сырым, но сессия для нас не проверена live. */
+		set_err("%s", "start_session: EnableSessionSSL не пришёл");
+		return -1;
+	}
+	/* Live-факт 04.11 (strace ideviceinfo): апгрейд — на ТОМ ЖЕ
+	 * lockconn-сокете сразу после ответа StartSession. */
+	return start_session_tls(lk, pair);
 }
 

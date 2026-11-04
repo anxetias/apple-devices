@@ -32,7 +32,10 @@ int  irm_mux_open(const char *path, int timeout_sec);
 
 /* Туннель к сервису устройства: Connect {DeviceID, PortNumber:SInt16} →
  * Result==0 → fd становится сырым туннелем (протокол — слой сервиса:
- * lockdown-фрейминг bplist/DL-XML/AFC-raw). Порт НЕ переставляется (Q14). */
+ * lockdown-фрейминг bplist/DL-XML/AFC-raw).
+ * Порядок порта (E01b §3/§10): Linux-usbmuxd ждёт htons(port) (live 04.11),
+ * macOS — значение КАК ЕСТЬ; кадр дополняется ClientVersionString/ProgName/
+ * kLibUSBMuxVersion=3 (наблюдение strace libusbmuxd). */
 int  irm_mux_connect(const char *path, uint32_t device_id, uint16_t port,
 		     int timeout_sec);
 

@@ -11,10 +11,17 @@
 #include "libirm/bplist.h"
 #include "libirm/lockdown.h"
 #include "libirm/mux.h"
+#include "libirm/pairing.h"
+#include "libirm/tls.h"
+#include "libirm/xmlplist.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
 
 static const char *str_of(const irm_bp_node *d, const char *key)
 {
@@ -88,6 +95,11 @@ static int select_device(const char *path, const char *selector,
 			const irm_bp_node *p =
 				d ? irm_bp_dict_get(d, "Properties") : NULL;
 			const char *u = p ? str_of(p, "UDID") : NULL;
+			/* Linux-usbmuxd кладёт UDID в SerialNumber
+			 * (E01b §10: Properties {SerialNumber: <UDID>,
+			 * UDID-ключа нет}); mac — в UDID. */
+			if (!u)
+				u = p ? str_of(p, "SerialNumber") : NULL;
 			if (u && strstr(u, selector)) {
 				picked = i;
 				ok = 1;
@@ -101,10 +113,11 @@ static int select_device(const char *path, const char *selector,
 	if (ok) {
 		const irm_bp_node *d = irm_bp_array_get(dl, picked);
 		if (d && irm_bp_type_of(d) == IRM_BP_DICT) {
-			const irm_bp_node *p =
-				irm_bp_dict_get(d, "Properties");
+			const irm_bp_node *p = irm_bp_dict_get(d, "Properties");
 			*device_id_out = (uint32_t)uint_of(d, "DeviceID");
 			const char *u = p ? str_of(p, "UDID") : NULL;
+			if (!u)
+				u = p ? str_of(p, "SerialNumber") : NULL;
 			snprintf(udid_buf, bufsz, "%s", u ? u : "-");
 			rc = 0;
 		} else {
@@ -189,6 +202,189 @@ static int find_device(const char *path, const char *selector,
 	return select_device(path, selector, device_id_out, udid_buf, bufsz);
 }
 
+/* ================================================================ */
+/* atc-probe: пара → StartSession+TLS → StartService(atc/atc2) →     */
+/* новый mux-туннель → TLS сервиса → кадры сервера (обследования      */
+/* протокола ATC для дорожки музыки; результат — в E11).             */
+/* ================================================================ */
+
+/* Ровно n байт из сервиса: 0 — ок; -1 — errno, -2 — таймаут, -3 — EOF. */
+static int svc_read_full(int fd, int tls, uint8_t *b, size_t n)
+{
+	if (tls)
+		return irm_tls_read_full(fd, b, n, 6) == 0 ? 0 : -1;
+	size_t got = 0;
+	while (got < n) {
+		ssize_t r = read(fd, b + got, n - got);
+		if (r < 0) {
+			if (errno == EINTR)
+				continue;
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				return -2; /* SO_RCVTIMEO */
+			return -1;
+		}
+		if (r == 0)
+			return -3;
+		got += (size_t)r;
+	}
+	return 0;
+}
+
+/* TLS сервиса: той же парой (lbD-стиль → Apple-стиль, E04 §2).
+ * Возврат 1 = lbD, 2 = Apple, 0 = не поднялся (текст на stderr). */
+static int svc_tls_start(int fd, const irm_pair_t *p)
+{
+	if (irm_tls_wrap_fd(fd, p->host_cert, p->host_cert_n,
+			    p->host_key, p->host_key_n, p->device_cert,
+			    p->device_cert_n, 10) == 0)
+		return 1;
+	char first[128];
+	snprintf(first, sizeof first, "%s",
+		 irm_tls_error() ? irm_tls_error() : "?");
+	if (p->device_cert && p->root_key &&
+	    irm_tls_wrap_fd(fd, p->device_cert, p->device_cert_n,
+			    p->root_key, p->root_key_n, p->device_cert,
+			    p->device_cert_n, 10) == 0)
+		return 2;
+	fprintf(stderr, "atc-probe: TLS сервиса: [%s] затем [%s]\n", first,
+		irm_tls_error() && *irm_tls_error() ? irm_tls_error() : "?");
+	return 0;
+}
+
+/* Один сервис: StartService → подключение → (TLS) → первые байты. */
+static void probe_service(irm_lk_t *lk, const irm_pair_t *pair,
+			  const char *path, uint32_t device_id,
+			  const char *svc)
+{
+	uint16_t port = 0;
+	int ssl = 0;
+	printf("[%s]\n", svc);
+	if (irm_lk_start_service(lk, svc, &port, &ssl) != 0) {
+		printf("  StartService: %s\n", irm_lk_error());
+		return;
+	}
+	printf("  StartService: port=%u EnableServiceSSL=%d\n", port, ssl);
+	if (!port) {
+		printf("  порт не получен — нет туннеля\n");
+		return;
+	}
+	int fd = irm_mux_connect(path, device_id, port, 5);
+	if (fd < 0) {
+		printf("  Connect: %s\n", irm_mux_error());
+		return;
+	}
+	int tls = ssl ? svc_tls_start(fd, pair) : 0;
+	printf("  канал: %s\n",
+	       tls == 1 ? "TLS (lbD-комбо HostCert+HostKey)"
+	       : tls == 2 ? "TLS (Apple-комбо DeviceCert+RootKey)"
+	       : ssl ? "TLS не поднялся, читаю сырой fd"
+		     : "сырой (EnableServiceSSL=false)");
+
+	/* ATC-фрейминг (факт E11, 04.11): [LE32 len][bplist00 payload];
+	 * сервер САМ открывает обмен (два приветственных кадра 184/146 B). */
+	for (int k = 1; k <= 3; k++) {
+		uint8_t lb[4] = { 0, 0, 0, 0 };
+		int rc = svc_read_full(fd, tls, lb, sizeof lb);
+		if (rc != 0) {
+			printf("%s\n",
+			       rc == -3 ? "  обмен закрыт (EOF) — кадров больше нет" :
+			       rc == -2 ? "  тишина — сервер ждёт от клиента" :
+					  "  ошибка чтения заголовка кадра");
+			break;
+		}
+		uint32_t len = (uint32_t)lb[0] | ((uint32_t)lb[1] << 8) |
+			       ((uint32_t)lb[2] << 16) | ((uint32_t)lb[3] << 24);
+		printf("  кадр %d: len=%u", k, len);
+		if (len < 8 || len > (1u << 20)) {
+			printf(" — вне разумных границ, стоп\n");
+			break;
+		}
+		uint8_t *body = (uint8_t *)malloc(len);
+		if (!body)
+			break;
+		if (svc_read_full(fd, tls, body, len) != 0) {
+			printf(" — тело недочитано\n");
+			free(body);
+			break;
+		}
+		printf(" magic=%.8s\n", (const char *)body);
+		irm_bp_node *d =
+			(memcmp(body, "bplist00", 8) == 0)
+				? irm_bp_read(body, len)
+			: (memcmp(body, "<?xml", 5) == 0)
+				? irm_xml_read(body, len)
+				: NULL;
+		free(body);
+		if (!d || irm_bp_type_of(d) != IRM_BP_DICT) {
+			printf("  (не plist-dict — фрагмент протокола?)\n");
+			irm_bp_free(d);
+			break;
+		}
+		uint8_t *xm = NULL;
+		size_t xn = 0;
+		if (irm_xml_write(d, &xm, &xn) == 0) {
+			printf("  dump:\n");
+			fwrite(xm, 1, xn, stdout);
+			printf("\n");
+			free(xm);
+		}
+		irm_bp_free(d);
+	}
+	if (tls)
+		irm_tls_disarm(fd);
+	irm_mux_close(fd);
+}
+
+static int cmd_atc_probe(const char *path, const char *selector)
+{
+	uint32_t device_id = 0;
+	char udid[128] = "-";
+	if (find_device(path, selector, &device_id, udid, sizeof udid) != 0)
+		return 1;
+	printf("device: id=%u udid=%s\n", device_id, udid);
+
+	irm_pair_t *pair = NULL;
+	if (irm_pair_load(udid, &pair) != 0) {
+		fprintf(stderr, "atc-probe: %s\n", irm_pair_error());
+		return 1;
+	}
+	printf("pair: %s\n  HostID=%s SystemBUID=%s\n", pair->src,
+	       pair->host_id, pair->sys_buid);
+
+	irm_lk_t *lk = irm_lk_open(path, device_id, IRM_LK_DEFAULT_PORT, 5);
+	if (!lk) {
+		fprintf(stderr, "atc-probe: lockdown: %s\n", irm_lk_error());
+		irm_pair_free(pair);
+		return 1;
+	}
+
+	irm_bp_node *qt = irm_lk_query_type(lk);
+	printf("checkin Type: %s\n", dash(qt ? str_of(qt, "Type") : NULL));
+	irm_bp_free(qt);
+
+	if (irm_lk_start_session(lk, pair) != 0) {
+		fprintf(stderr, "atc-probe: session: %s\n", irm_lk_error());
+		irm_lk_close(lk);
+		irm_pair_free(pair);
+		return 1;
+	}
+	printf("session: TLS поднят на lockconn\n");
+
+	/* GetValue сквозь TLS — проверка обеих сторон канала. */
+	irm_bp_node *v = irm_lk_get_value(lk, NULL, "ProductVersion");
+	printf("lockdown ProductVersion (через TLS): %s\n",
+	       v ? dash(str_of(v, "Value")) : (irm_lk_error()[0] ?
+					       irm_lk_error() : "-"));
+	irm_bp_free(v);
+
+	probe_service(lk, pair, path, device_id, "com.apple.atc");
+	probe_service(lk, pair, path, device_id, "com.apple.atc2");
+
+	irm_lk_close(lk);
+	irm_pair_free(pair);
+	return 0;
+}
+
 static void print_get_value(irm_lk_t *lk, const char *domain, const char *key)
 {
 	irm_bp_node *resp = irm_lk_get_value(lk, domain, key);
@@ -262,7 +458,9 @@ static void usage(FILE *f)
 	fprintf(f,
 		"irmctl — управление iPhone (libirm)\n"
 		"  irmctl [-s SOCKET] list          список устройств\n"
-		"  irmctl [-s SOCKET] info [UDID|i] lockdown-инфо + сервисы\n");
+		"  irmctl [-s SOCKET] info [UDID|i] lockdown-инфо + сервисы\n"
+		"  irmctl [-s SOCKET] atc-probe     пара→StartSession+TLS→atc/atc2\n"
+		"                                   (обследование ATC, шаг 8+)\n");
 }
 
 int main(int argc, char **argv)
@@ -290,6 +488,8 @@ int main(int argc, char **argv)
 		return cmd_list(path ? path : IRM_MUX_DEFAULT_SOCKET);
 	if (strcmp(cmd, "info") == 0)
 		return cmd_info(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
+	if (strcmp(cmd, "atc-probe") == 0)
+		return cmd_atc_probe(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
 	usage(stderr);
 	return 2;
 }

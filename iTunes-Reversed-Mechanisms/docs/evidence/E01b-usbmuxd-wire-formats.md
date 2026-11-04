@@ -169,10 +169,16 @@ Window management и seq/ack правила — классические TCP-lik
 - `ListDevices` XML (ver=1) → DeviceList с 1 устройством (USB), tag эхом,
   `ver=1 msg=8` — кадр **полностью совпадает с §1** на стороне демона.
 - Запросы: телом = XML (навсегда для Linux); mac-демон E01b §9 бplist — также
-  принимает; выбранному нами варианту «запросы XML» CF-план demona прикажет
-  читать и XML (PlistStrings/CFPropertyList читает оба)].
-- **PortNumber (Connect) НЕ проверяли**: у mac — на "ЗНАЧЕНИЕ КАК ЕСТЬ" (§3
-  Q14). У Linux это подозрение на сеть (ntohs?), проверить при первом
-  желанном Connect; до того — Connect не звать.
+  принимает; выбранному нами варианту «запросы XML» CF-план демона прикажет
+  читать и XML (CFPropertyList читает оба).
+- **PortNumber (Connect) — УТОЧНЕНО live 04.11** (strace libusbmuxd 2.1.1
+  на ideviceinfo): демона ждёт порт в **сетевом порядке** —
+  `PortNumber = htons(62078) = 32498 = 0x7EF2`, ответ `Result Number=0`.
+  Сырое значение 0xF27E/62078 и «косой свап» 0x8EF2 давали `Result=3`
+  (naš пробник muxprobe3.py). В кадре Connect присутствуют
+  `ClientVersionString` ("libusbmuxd 2.1.1"), `ProgName`, `kLibUSBMuxVersion`
+  (3) — у нас теперь так же (irm_mux_connect). Реализация: wire_port_of().
+- Connected-туннель: после Result=0 fd стал каналом к порту 62078 — TLS
+  (после StartSession) и StartService работают через него (E11).
 - Реализация: `libirm/src/mux.c` (irm_mux_send → XML; recv → bplist/XML/
   легаси-diff), `tests/test_mux` (живой демо-пробник), `tools/irmctl.c list`.

@@ -155,12 +155,14 @@ static uint8_t *take_text(struct xctx *c, size_t *out_len)
 		else if (elen >= 1 && ent[0] == '#') {
 			uint32_t v = 0;
 			int hex = elen >= 2 && (ent[1] == 'x' || ent[1] == 'X');
-			for (size_t i = hex ? 2 : 1; i < elen; i++) {
+			for (size_t i = hex ? 2u : 1u; i < elen; i++) {
 				uint8_t d = (uint8_t)ent[i];
-				v = v * (hex ? 16 : 10) +
-				    (d >= '0' && d <= '9' ? d - '0' :
-				     hex && d >= 'a' && d <= 'f' ? d - 'a' + 10 :
-				     hex && d >= 'A' && d <= 'F' ? d - 'A' + 10 :
+				v = v * (hex ? 16u : 10u) +
+				    (d >= '0' && d <= '9' ? (uint32_t)(d - '0') :
+				     hex && d >= 'a' && d <= 'f' ?
+					     (uint32_t)(d - 'a' + 10) :
+				     hex && d >= 'A' && d <= 'F' ?
+					     (uint32_t)(d - 'A' + 10) :
 				     99u);
 			}
 			if (v > 0x10FFFF) {
@@ -190,6 +192,9 @@ static uint8_t *take_text(struct xctx *c, size_t *out_len)
 		}
 	}
 	*out_len = o;
+	out[o] = '\0'; /* Портирование (Linux): гарантия NUL-терминатора —
+	                * ключи dict'ов и strtoll/strtod строятся из этой
+	                * строки как из C-строки (см. irm_bp_string_bytes). */
 	/* text из [start..c->off) — out уже указатель на декодирование; текст мог
 	 * обрезаться из-за фиктивного начала... */
 	(void)start;

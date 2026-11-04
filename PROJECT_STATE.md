@@ -674,3 +674,39 @@ apple-devices/
 - Юнит-итог: **5/6 OK** (bplist/xml/lockdown/mux/dl); красный только
   `test_xmlw` (round-trip «nested-dict») — следующая сессия.
 - Коммит `af79e7cd` запушен (пуши флейкают по SSH/gcr — ретрай помогает).
+
+##### Шаг 9: pair + TLS + StartSession + ATC-probe (04.11, тот же день)
+
+- Итог в одну строку: **полный живой TLS-путь пройден own-libirm'ом без
+  libimobiledevice**: пар-рекорд → StartSession → session-TLS на lockconn →
+  StartService(atc) → собственный фреймовый reader. Всё зелёное на
+  iPhone12,1 / iOS 27.2 (лог `atc-probe-run3.log`, копия в traces/tools).
+- Фундамент: `libirm/src/tls.c` (OpenSSL-клиент: client handshake +
+  pinning SHA-256 DER peer, E04 §3–6; включается
+  `-DIRM_OPENSSL=1` + pkg-config openssl) и `libirm/src/pairing.c` (чистый
+  POSIX-разбор `/var/lib/lockdown/<UDID>.plist`: HostID/SystemBUID +
+  5 PEM-полей). lockdown.c: `irm_lk_start_session(lk, pair)` (E02: HostID +
+  SystemBUID СТРОКАМИ; ответ EnableSessionSSL=true → wrap ТОГО ЖЕ fd);
+  I/O через единые `lk_wr/lk_rd` (plain↔TLS под флагом).
+- mux: `irm_mux_connect` дополнена полями демона (ClientVersionString/
+  ProgName/kLibUSBMuxVersion=3) и Linux-фактом **PortNumber=htons(port)**
+  (strace libusbmuxd: 32498=0x7EF2 при 62078; Result=0; сырой/«косой-свап»
+  варианты давали Result=3 — поправлено в E01b §10).
+- Живая эмпирика (E11 `docs/evidence/E11-atc-probe.md`):
+  1) StartService БЕЗ сессии → `SessionInactive` на все сервисы;
+     QueryType до сессии — единственный plain-обмен, который принимают.
+  2) StartSession+TLS: клиент = HostCertificate+HostPrivateKey (lbD-стиль)
+     сработал с ПЕРВОЙ попытки (Apple-комбо DeviceCertificate+RootPrivateKey
+     не понадобилось); GetValue ProductVersion через TLS → `27.2`.
+  3) **ATC framing = [LE32 len][bplist00 payload]**, и сервер САМ открывает
+     обмен: приветственная серия Capabilities → InstalledAssets →
+     AssetMetrics (Id-счётчик 9→10→11; Session=0, Type=0). В AssetMetrics
+     `Music{_Count:3,_PhysicalSize:38715392}` — сходится с трёмя треками
+     шага 7; № и счётчики Phone.GetProhibited не путаются.
+  4) `com.apple.atc2`: StartService/TLS ок, но сервер сразу закрывает
+     канал (без приветствия) — поведение иное, Q4.
+- Юнит-набор: **6/6 OK** (test_bplist/xml/xmlw/lockdown/mux-LIVE/dl);
+  `-Wall -Wextra` чисто; xmlw-фикс: NUL-терминатор в `take_text` +
+  unsigned-касты `&#NN;`-ветки xmlplist.
+- Коммиты: подпроект-ветка `music-mac-style` (HEAD — см. строку «Пуши»),
+  FINDINGS/тrace-артефакты — в ветке `3utools-research`.

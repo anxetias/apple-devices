@@ -954,7 +954,9 @@ apple-devices/
   **Пост-верификация**: `MLSyncClientSyncAnchor = 2` в DB (якерь вырос
   ровно на 1; фоновой рост LastSyncedRevision 8491→8496 — независим);
   F31/BOYY.m4a существует (2691Б S_IFREG nlink=1); /Airlock/Media пуста
-  (телефон сам забрал); staging пуст (потреблён).
+  (телефон сам забрал); staging пуст (потреблён). Визуальное подтверждение
+  пользователя: иконка синка на телефоне во время сессии; трек «IRM Tone»
+  появился в Music (UI-уровень).
 - Юниты 5/5 OK; сборка чисто (-Wall -Wextra, grappa в LIB_SRCS).
 - Артефакты: traces `atc-insert-stage-2026-11-04d.log`,
   `atc-insert-run1-2026-11-04d.log`, `atc-insert-verify-2026-11-04d.log`,

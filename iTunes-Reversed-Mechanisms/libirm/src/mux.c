@@ -150,7 +150,10 @@ void irm_mux_close(int fd)
 }
 
 /* Туннель к сервису: mux Connect (E01b §3) — тот же кадр, что у lockdown-а,
- * только PortNumber = порт сервиса из StartService (ЗНАЧЕНИЕ КАК ЕСТЬ, Q14). */
+ * только PortNumber = порт сервиса из StartService (ЗНАЧЕНИЕ КАК ЕСТЬ, Q14).
+ * TODO(портирование, не проверяно live): Linux-демон может ждать порт в
+ * сетевом порядке (как у libimobiledevice htons) — сверить при первом
+ * реальном Connect против macOS-факта E01b §3, до того Connect не звать. */
 int irm_mux_connect(const char *path, uint32_t device_id, uint16_t port,
 		    int timeout_sec)
 {
@@ -206,10 +209,15 @@ int irm_mux_send(int fd, uint32_t tag, const irm_bp_node *payload)
 		set_err("%s", "fork payload must be dict");
 		return -1;
 	}
+	/* Тело запроса — XML plist (E01b §1: mac-демон принимает bplist00,
+	 * но ЛИНУКС-демон (usbmuxd, /usr/sbin) при header.version==1 читает
+	 * ТОЛЬКО XML; bplist-тело при ver=1 он молчит и кадр не отвечает —
+	 * промерено live 04.11. mac-демон — CF-Plaist (XML+bplist умеет оба)). */
+	int rc = 0;
 	uint8_t *body = NULL;
 	size_t bn = 0;
-	if (irm_bp_write(payload, &body, &bn) != 0) {
-		set_err("%s", "payload bplist encode failed");
+	if (irm_xml_write(payload, &body, &bn) != 0) {
+		set_err("%s", "payload XML encode failed");
 		return -1;
 	}
 	uint8_t hdr[16];
@@ -217,8 +225,8 @@ int irm_mux_send(int fd, uint32_t tag, const irm_bp_node *payload)
 	put_le32(hdr + 4, 1);                   /* version */
 	put_le32(hdr + 8, 8);                   /* msg */
 	put_le32(hdr + 12, tag);
-	int rc = write_full(fd, hdr, sizeof hdr) |
-	         (bn ? write_full(fd, body, bn) : 0);
+	rc = write_full(fd, hdr, sizeof hdr) |
+	     (bn ? write_full(fd, body, bn) : 0);
 	free(body);
 	if (rc != 0) {
 		set_err("send: %s", strerror(errno));
@@ -247,6 +255,18 @@ irm_bp_node *irm_mux_recv(int fd, uint32_t *tag)
 	}
 	if (totallen > IRM_MUX_FRAME_MAX) {
 		set_err("%s", "frame too big");
+		return NULL;
+	}
+	if (ver == 0 && get_le32(hdr + 8) == 1) {
+		/* Легаси-ответ демона (Linux: неверно выбрали version):
+		 * ver=0 msg=1 RESULT + LE u32 код тела. */
+		uint8_t rb[4];
+		size_t rbn = totallen - sizeof hdr;
+		if (read_full(fd, rb, rbn ? (rbn < 4 ? rbn : 4) : 0) != 0) {
+			set_err("%s", "legacy result: чтение тела");
+			return NULL;
+		}
+		set_err("muxd legacy Result=%u (ver=0: тело запроса не подошло на этой версии)", get_le32(rb));
 		return NULL;
 	}
 	if (ver != 1) {

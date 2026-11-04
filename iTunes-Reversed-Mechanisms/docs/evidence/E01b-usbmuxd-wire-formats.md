@@ -150,3 +150,29 @@ Window management и seq/ack правила — классические TCP-lik
 - Пустой `DeviceList` — штатный ответ без подключённых устройств (0 устройств).
 - Реализация: `libirm/src/mux.c` (кадры) + `libirm/src/xmlplist.c` (XML→IRM_BP_*)
   `tests/test_mux`/`tests/test_xml`; smoke = `make smoke` (`irmctl list`).
+
+## 10. Live-факты системного демона Linux (2026-11-04, `/usr/sbin/usbmuxd --user usbmuxd --systemd`)
+
+Против той же кадровой формы, что и §9 (`[LE u32 totallen][LE u32 ver][LE u32 msg=8][LE u32 tag]`):
+
+- **header.version == 1 принимает ТОЛЬКО XML-тело** (`<?xml…` plist). Тело
+  `bplist00` при ver=1 демон **молчит** (не отвечает, соединение не закрывает) —
+  именно потому, что и вошёл в код как «все spečné ответы NULL» в `irm_mux_recv`.
+- **header.version == 2 демон ведёт как легаси**: отвечает кадром
+  `ver=0 msg=1 (RESULT)` + тело LE `u32` код (пробник видел `06 00 00 00 =
+  6`) — это НЕ plist, и наш клиент должен это diffать (серую диагностическую
+  ветку добавил в `irm_mux_recv`).
+- **Helloworld для Linux-демона НЕ нужен**: `ListDevices` XML → `{DeviceList:[…]}`;
+  hello при этом в ответ даёт `Result Number=1` (семуantics не раскрыта —
+  возможно «неизвестный MessageType»; бplist-hello при ver=1 — молчание).
+  Вывод: hello не слать (на mac тоже не нужен — §9).
+- `ListDevices` XML (ver=1) → DeviceList с 1 устройством (USB), tag эхом,
+  `ver=1 msg=8` — кадр **полностью совпадает с §1** на стороне демона.
+- Запросы: телом = XML (навсегда для Linux); mac-демон E01b §9 бplist — также
+  принимает; выбранному нами варианту «запросы XML» CF-план demona прикажет
+  читать и XML (PlistStrings/CFPropertyList читает оба)].
+- **PortNumber (Connect) НЕ проверяли**: у mac — на "ЗНАЧЕНИЕ КАК ЕСТЬ" (§3
+  Q14). У Linux это подозрение на сеть (ntohs?), проверить при первом
+  желанном Connect; до того — Connect не звать.
+- Реализация: `libirm/src/mux.c` (irm_mux_send → XML; recv → bplist/XML/
+  легаси-diff), `tests/test_mux` (живой демо-пробник), `tools/irmctl.c list`.

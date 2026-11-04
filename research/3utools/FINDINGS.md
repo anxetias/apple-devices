@@ -1738,7 +1738,7 @@ HTTP-клиент a2-s.3u.com по запрятанному протоколу (
 - **Минимальный клиентский путь встал**: собственный HTTP-клиент
   a2-s.3u.com (`server3u.py`; прототип для C — libcurl) + собственная
   atc-фаза (`atc_dialog2.c` → `atc_dialog4`) = полный импорт без GUI
-  3uTools. RETRY решает实业有限公司 err=104.
+  3uTools. RETRY решает err=104.
 - Следующий шаг (6-й, интеграция): минимальный C-клиент (libcurl) в
   приложении — step2 → hostGrappa → своя atc-фаза → cig (retry) →
   декларация + файл на устройство.
@@ -2350,3 +2350,90 @@ HTTP-клиент a2-s.3u.com по запрятанному протоколу (
 - фрагментация файла > 1 блока при выгрузке уже покрыта
   (`irm_afc_write_full` чанками ≤1 МиБ);
 - валидация повторного SyncFinished/повторного insert (idempotence).
+
+## Сессия 04.11 продолжение (9g): пакетный insert — один конверт на N треков (live)
+
+### 9g.1 Код
+
+- `tools/irmctl.c`: `IRMA_ATC_BATCH_N=1..499` (лимиты rustunes batch.rs:
+  MAX_OPERATIONS=500 с update_db_info → 499 вставок; ops ≤ 4 МиБ);
+  builder `atc_op_insert_track` получил `number` (item.track_number 1..N);
+  `atc_manifest_parse` переписан под пакет: строгий набор own (ровно
+  весь пакет), прочие записи классифицируе по `AssetParts` (аудио-бэклог
+  либо ancillary) — см. 9g.3.
+- Эталон пакета: `crates/music-protocol/src/protocol/batch.rs`
+  (combine: ОДИН конверт `[update_db_info, insert_track × N]`, один
+  revision/timestamp), `ancillary.rs` (audio_batch: PIDs попарно
+  различны и без коллизий с каталогом; MAX_MANIFEST_ASSETS=1024),
+  `session.rs` («Native completions are not ordered by manifest
+  position» и FileError СТРОГО после всех FileComplete; MAX_FRAMES=1024;
+  «8-track batch. Каждое Ping и Pong считаются в кадровую границу»).
+
+### 9g.2 Live-факты (iPhone12,1/iOS 27.2, USB; якерь до = 2)
+
+- STAGE_ONLY N=4: ops-конверт **3962 Б** (одна стадия-сессия ops+cig =
+  Sync_00000000.plist + .plist.cig 21 Б), grappa-подпись PASS;
+  PIDs: 4 трековых попарно различны + 1 альбом + 1 артист
+  (`atc-insert-batch-stage-2026-11-04d.log`).
+- run1 (N=4, полный прогон): FSFM применён — якерь 2→**3**,
+  Revision 8496→8580 → телефон применил вставку метаданных при
+  потреблении staging УЖЕ на FSFM, ДО получения файлов; альбом «IRM
+  Tones» появился в DB, item_pid телефон ПЕРЕПИСАЛ СВОИМИ внутренними
+  (62..65) — mmap-миграция PIDs (наши PIDs живут только в wire-слое).
+- run1: мы ошибочно не грузили файлы после манифеста (защита
+  `pid_i != tpids[i]` сравнивала по ПОЗИЦИИ: own_ids приходят в ПОРЯДКЕ
+  МАНИФЕСТА, tpids — в порядке генерации). Телефон молча ждал ~30 s,
+  послал Ping×2 → **IdleExit** и закрыл простаивающую сессию.
+- run2 (второй пакет N=4): AssetManifest НЕСЁТ БЭКЛОГ желаний:
+  4 новых own + 4 pending audio run1 (parts=1 Music) + artwork
+  8699068841132158781 (parts=4, 9f-трека). FileError{16} в 9f НЕ
+  отменил artwork-желание → запрос живёт вечно. Строгая политика
+  «ровно пакет» отвергла манифест (СТОП корректен, якерь 3→4 применился).
+- run3 (policy-фикс): бэклог-аудио донесено 12 FileComplete (4 own
+  пакета + 8 бэклога run1+run2). Ancillary-цикл был с багом (ставил
+  failed=1 на аудио-записи вместо continue) → FileError не отправлен →
+  телефон НИКАКОГО решения по artwork не получил → again Ping×2 +
+  IdleExit. Синтетический А/Б: без FileError по ancillary телефон НЕ
+  завершает сессию.
+- run4 (полный фикс): манифест = 4 own + бэклог-аудио=**0** (FileComplete
+  СНИМАЕТ pending-желание) + ancillary=1 (artwork, повторно) →
+  FileError{16} ПОСЛЕ всех FileComplete → **SyncFinished (Session=2)**.
+- Пост-верификация: якерь **2→6** (4 мутационные сессии: run1..run4),
+  item 61..77 (17 треков: 1 от 9f + по 4 от run1..run4),
+  файлы 2691 Б на постоянных путях (F04/HXRQ, F01/GVHK и др.),
+  `/Airlock/Media` пуста (только внутренние подкаталоги телефона),
+  `/iTunes_Control/Sync/Media` пуста.
+
+### 9g.3 Политика манифеста (итог 9g)
+
+Манифест = ЕДИНЫЙ whitelist желаний телефона: собственные записи
+пакета + ВСЕ пока-не-донесённые аудио + artwork-пожелания. Каждую
+запись Media:
+- `AssetParts & 1` (audio) → донести файл (upload → rename bare →
+  read-back → FileComplete); для записей ВНЕ пакета (бэклог) — та же
+  процедура, FileComplete снимает желание навсегда;
+- БЕЗ бита 1, IsDownload=true, AssetType=Music → FileError{16}
+  СТРОГО ПОСЛЕ всех FileComplete (без решения телефон бесконечно
+  ждёт и уходит в IdleExit);
+- прочее → СТОП без отправок.
+
+### 9g.4 Логи (research/3utools/tools/, серия `-2026-11-04d`)
+
+- `atc-insert-batch-stage-2026-11-04d.log` — STAGE_ONLY N=4;
+- `atc-insert-batch-run1-2026-11-04d.log` — полный (IdleExit после
+  молчания; якерь применился на FSFM);
+- `atc-insert-batch-run2-2026-11-04d.log` — бэклог в манифесте (СТОП);
+- `atc-insert-batch-run3-2026-11-04d.log` — 12 FileComplete (бэклог
+  донесён), ancillary-баг → IdleExit;
+- `atc-insert-batch-run4-2026-11-04d.log` — SyncFinished;
+- `music-id-batch-verify-2026-11-04d.log` — якерь 6, Revision 8631.
+- Факт-документ: `docs/evidence/E16-atc-insert-batch.md` (apple-devices,
+  ветка music-mac-style).
+
+### 9g.5 Что дальше
+
+- E16-документ + коммиты (см. PROJECT_STATE);
+- GTK4-приложение для теста заливки музыки (обертка atc-insert/atc-sync
+  в GUI; библиотека libirm; отдельная порция работы ПОСЛЕ пакета);
+- ROT-reset синк, ancillary-only сессия, idempotence повторов — по мере
+  надобности для GUI-прототипа.

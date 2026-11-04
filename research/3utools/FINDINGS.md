@@ -1899,3 +1899,22 @@ HTTP-клиент a2-s.3u.com по запрятанному протоколу (
 - Наблюдение: в /Airlock/Media появился ЧУЖИЙ файл ~9,1 МБ
   (7773566599676005) — не от наших инструментов; вероятный 3uTools
   на стороне владельца; не тронут.
+
+#### 04.11: подпроект IRM (реверс друга) импортирован в apple-devices
+
+- Ветка **`music-mac-style`** (база `music-3u-only`): материалы друга
+  `iTunes-Reversed-Mechanisms` — 26 MD (00–12 + evidence E01–E10), 33 205
+  дизасм-`.c`, ядро `libirm` (bplist/xmlplist/mux/lockdown/devicelink),
+  `irmctl`, 6 юнитов; добавлены `PORTING.md` (сборка/порт на Linux) и
+  `meson.build`-заготовка. Коммит `25a7637`.
+- Не импортировано (блобы/сырьё): `.o/.a`/бинари/`.DS_Store`/влож. `.git`,
+  индексы+журнал генератора (~34 МБ), `bplist.sample.bin` (генерится тестом).
+  Оригиналы: `~/Загрузки/iTunes-Reversed-Mechanisms.zip`.
+- Порт на Linux: `-D_GNU_SOURCE` в Makefile (glibc при `-std=c11` прячет
+  gmtime_r), `getprogname()`→`program_invocation_short_name`, NUL-терминатор
+  STRING-узлов bplist (на Linux за "2" шёл мусор кучи; починило
+  test_lockdown и test_dl). Юниты OK: bplist/xml/lockdown/dl; red:
+  test_xmlw (round-trip nested-dict), test_mux (LIVE против Linux-usbmuxd —
+  DIFF с E01b-Mac-спеками; только локальный демон, до устройства не дошло).
+- Связь с 3u-путём: параллельный путь синка «как на маке» (механика B/C из
+  docs/07: AppleMobileSync/ATC); телефон сегодня не трогался.

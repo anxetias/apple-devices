@@ -208,11 +208,16 @@ static int find_device(const char *path, const char *selector,
 /* протокола ATC для дорожки музыки; результат — в E11).             */
 /* ================================================================ */
 
-/* Ровно n байт из сервиса: 0 — ок; -1 — errno, -2 — таймаут, -3 — EOF. */
+/* Ровно n байт из сервиса: 0 — ок; -2 — таймаут; -3 — EOF/ошибка канала
+ * (для TLS деталей — irm_tls_error()). */
 static int svc_read_full(int fd, int tls, uint8_t *b, size_t n)
 {
-	if (tls)
-		return irm_tls_read_full(fd, b, n, 6) == 0 ? 0 : -1;
+	if (tls) {
+		int rc = irm_tls_read_full(fd, b, n, 12);
+		if (rc == 0)
+			return 0;
+		return rc == -2 ? -2 : -3;
+	}
 	size_t got = 0;
 	while (got < n) {
 		ssize_t r = read(fd, b + got, n - got);
@@ -333,6 +338,286 @@ static void probe_service(irm_lk_t *lk, const irm_pair_t *pair,
 	if (tls)
 		irm_tls_disarm(fd);
 	irm_mux_close(fd);
+}
+
+/* Читает до max кадров [LE32 len][bplist00] из канала сервиса; печатает
+ * дампы (XML) каждого dict-кадра; осторожно с мусором — стоп по границам. */
+static void atc_read_frames(int fd, int tls, int max)
+{
+	for (int k = 1; k <= max; k++) {
+		uint8_t lb[4] = { 0, 0, 0, 0 };
+		int rc = svc_read_full(fd, tls, lb, sizeof lb);
+		if (rc != 0) {
+			printf("%s\n",
+			       rc == -3 ? "  обмен закрыт (EOF) — кадров больше нет" :
+			       rc == -2 ? "  тишина — сервер ждёт от клиента" :
+					  "  ошибка чтения заголовка кадра");
+			break;
+		}
+		uint32_t len = (uint32_t)lb[0] | ((uint32_t)lb[1] << 8) |
+			       ((uint32_t)lb[2] << 16) | ((uint32_t)lb[3] << 24);
+		printf("  кадр %d: len=%u", k, len);
+		if (len < 8 || len > (1u << 20)) {
+			printf(" — вне разумных границ, стоп\n");
+			break;
+		}
+		uint8_t *body = (uint8_t *)malloc(len);
+		if (!body)
+			break;
+		if (svc_read_full(fd, tls, body, len) != 0) {
+			printf(" — тело недочитано\n");
+			free(body);
+			break;
+		}
+		printf(" magic=%.8s\n", (const char *)body);
+		irm_bp_node *d =
+			(memcmp(body, "bplist00", 8) == 0)
+				? irm_bp_read(body, len)
+			: (memcmp(body, "<?xml", 5) == 0)
+				? irm_xml_read(body, len)
+				: NULL;
+		free(body);
+		if (!d || irm_bp_type_of(d) != IRM_BP_DICT) {
+			printf("  (не plist-dict — фрагмент протокола?)\n");
+			irm_bp_free(d);
+			break;
+		}
+		uint8_t *xm = NULL;
+		size_t xn = 0;
+		if (irm_xml_write(d, &xm, &xn) == 0) {
+			printf("  dump:\n");
+			fwrite(xm, 1, xn, stdout);
+			printf("\n");
+			free(xm);
+		}
+		irm_bp_free(d);
+	}
+}
+
+/* ================================================================ */
+/* atc-talk: реальная клиентская последовательность ATC — HostInfo   */
+/* (+ Ping) в ответ на server-first приветствие; read-only, E12.     */
+/* ================================================================ */
+
+static int raw_write_full(int fd, const uint8_t *b, size_t n)
+{
+	size_t sent = 0;
+	while (sent < n) {
+		ssize_t w = write(fd, b + sent, n - sent);
+		if (w < 0) {
+			if (errno == EINTR)
+				continue;
+			return -1;
+		}
+		if (w == 0)
+			return -1;
+		sent += (size_t)w;
+	}
+	return 0;
+}
+
+/* ATC-кадр: [LE32 len][bplist00 payload]; len — только payload (E11). */
+static int atc_frame_write(int fd, int tls, const irm_bp_node *d)
+{
+	uint8_t *payload = NULL;
+	size_t plen = 0;
+	if (irm_bp_write(d, &payload, &plen) != 0)
+		return -1;
+	uint8_t hdr[4];
+	hdr[0] = (uint8_t)(plen & 0xFF);
+	hdr[1] = (uint8_t)((plen >> 8) & 0xFF);
+	hdr[2] = (uint8_t)((plen >> 16) & 0xFF);
+	hdr[3] = (uint8_t)((plen >> 24) & 0xFF);
+	int rc = tls ? irm_tls_write_full(fd, hdr, sizeof hdr)
+		     : raw_write_full(fd, hdr, sizeof hdr);
+	if (rc == 0 && tls)
+		rc = irm_tls_write_full(fd, payload, plen);
+	else if (rc == 0)
+		rc = raw_write_full(fd, payload, plen);
+	free(payload);
+	return rc;
+}
+
+/* Конверт ATCFMessage (формат-факт E11): пять ключей; Type/Session у
+ * клиентов константы u64=0 (сервер 04.11 слал ровно так). */
+static irm_bp_node *atc_msg(const char *command, uint64_t id,
+			    irm_bp_node *params /* переходит владением */)
+{
+	irm_bp_node *d = irm_bp_dict();
+	if (!d || irm_bp_dict_set(d, "Command", irm_bp_string(command)) != 0 ||
+	    (params &&
+	     irm_bp_dict_set(d, "Params", params) != 0) ||
+	    irm_bp_dict_set(d, "Type", irm_bp_uint(0)) != 0 ||
+	    irm_bp_dict_set(d, "Session", irm_bp_uint(0)) != 0 ||
+	    irm_bp_dict_set(d, "Id", irm_bp_uint(id)) != 0) {
+		irm_bp_free(d);
+		irm_bp_free(params);
+		return NULL;
+	}
+	if (!params && irm_bp_dict_set(d, "Params", irm_bp_dict()) != 0) {
+		irm_bp_free(d);
+		return NULL;
+	}
+	return d;
+}
+
+/* Params из FUN_1003335d2 (HostInfo агента): Type=«iTunes», Version,
+ * MacOSVersion, SyncHostName, LibraryID, SyncedDataclasses, SyncedAssetTypes,
+ * Wakeable. Значения — стартовые заглушки пробника (read-only). */
+static irm_bp_node *atc_hostinfo_params(void)
+{
+	irm_bp_node *p = irm_bp_dict();
+	if (!p || irm_bp_dict_set(p, "Type", irm_bp_string("iTunes")) != 0 ||
+	    irm_bp_dict_set(p, "Version", irm_bp_string("13.5.6.12")) != 0 ||
+	    irm_bp_dict_set(p, "MacOSVersion",
+			    irm_bp_string("15.8.2")) != 0)
+		goto fail;
+	char hn[128];
+	hn[0] = 0;
+	gethostname(hn, sizeof hn);
+	/* SyncHostName — реальный hostname; LibraryID — сгенерированный
+	 * пробником псевдослучайный UUID (без привязки к библиотеке). */
+	char lid[64];
+	snprintf(lid, sizeof lid, "%08x-0000-0000-0000-000000000000",
+		 (unsigned)getpid() * 2654435761u);
+	if (irm_bp_dict_set(p, "SyncHostName", irm_bp_string(hn)) != 0 ||
+	    irm_bp_dict_set(p, "LibraryID", irm_bp_string(lid)) != 0)
+		goto fail;
+	/* Read-only-пробник: пустые списки dataclass/asset-types, Wakeable=0
+	 * (никаких обещаний синка серверу). */
+	irm_bp_node *arr = irm_bp_array();
+	if (!arr || irm_bp_dict_set(p, "SyncedDataclasses", arr) != 0) {
+		irm_bp_free(arr);
+		goto fail;
+	}
+	arr = irm_bp_array();
+	if (!arr || irm_bp_dict_set(p, "SyncedAssetTypes", arr) != 0) {
+		irm_bp_free(arr);
+		goto fail;
+	}
+	if (irm_bp_dict_set(p, "Wakeable", irm_bp_bool(0)) != 0)
+		goto fail;
+	return p;
+fail:
+	irm_bp_free(p);
+	return NULL;
+}
+
+/* Подключение к сервису atc с общими шагами (StartService→Connect→TLS). */
+static int atc_serve_open(irm_lk_t *lk, const irm_pair_t *pair,
+			  const char *path, uint32_t device_id,
+			  const char *svc, int *fd_out, int *tls_out)
+{
+	uint16_t port = 0;
+	int ssl = 0;
+	if (irm_lk_start_service(lk, svc, &port, &ssl) != 0 || !port) {
+		fprintf(stderr, "atc-talk: StartService(%s): %s\n", svc,
+			irm_lk_error());
+		return -1;
+	}
+	printf("[%s] port=%u ssl=%d\n", svc, port, ssl);
+	int fd = irm_mux_connect(path, device_id, port, 5);
+	if (fd < 0) {
+		fprintf(stderr, "atc-talk: Connect: %s\n", irm_mux_error());
+		return -1;
+	}
+	int tls = ssl ? svc_tls_start(fd, pair) : 0;
+	printf("  канал: %s\n",
+	       tls == 1 ? "TLS (lbD-комбо)"
+	       : tls == 2 ? "TLS (Apple-комбо)"
+	       : ssl ? "TLS не поднялся!"
+		     : "сырой");
+	*fd_out = fd;
+	*tls_out = tls;
+	return 0;
+}
+
+/* Реальная клиентская последовательность: HostInfo → (кадры) → Ping. */
+static int cmd_atc_talk(const char *path, const char *selector)
+{
+	uint32_t device_id = 0;
+	char udid[128] = "-";
+	if (find_device(path, selector, &device_id, udid, sizeof udid) != 0)
+		return 1;
+	printf("device: id=%u udid=%s\n", device_id, udid);
+
+	irm_pair_t *pair = NULL;
+	if (irm_pair_load(udid, &pair) != 0) {
+		fprintf(stderr, "atc-talk: %s\n", irm_pair_error());
+		return 1;
+	}
+	printf("pair: %s\n", pair->src);
+
+	irm_lk_t *lk = irm_lk_open(path, device_id, IRM_LK_DEFAULT_PORT, 5);
+	if (!lk) {
+		fprintf(stderr, "atc-talk: lockdown: %s\n", irm_lk_error());
+		irm_pair_free(pair);
+		return 1;
+	}
+	irm_bp_node *qt = irm_lk_query_type(lk);
+	printf("checkin Type: %s\n", dash(qt ? str_of(qt, "Type") : NULL));
+	irm_bp_free(qt);
+	if (irm_lk_start_session(lk, pair) != 0) {
+		fprintf(stderr, "atc-talk: session: %s\n", irm_lk_error());
+		irm_lk_close(lk);
+		irm_pair_free(pair);
+		return 1;
+	}
+	printf("session: TLS поднят на lockconn\n");
+
+	int fd = -1;
+	int svc_tls = 0;
+	int rc = 1;
+	if (atc_serve_open(lk, pair, path, device_id, "com.apple.atc",
+			   &fd, &svc_tls) == 0) {
+		printf(" приветствие сервера:\n");
+		atc_read_frames(fd, svc_tls, 3);
+
+		/* Клиентский HostInfo (факт агента: 10033295f → SendHostInfo). */
+		irm_bp_node *hp = atc_hostinfo_params();
+		if (hp) {
+			irm_bp_node *msg = atc_msg("HostInfo", 1, hp);
+			uint8_t *out = NULL;
+			size_t on = 0;
+			if (msg && irm_xml_write(msg, &out, &on) == 0) {
+				printf(" отсылаем HostInfo (Id=1):\n");
+				fwrite(out, 1, on, stdout);
+				printf("\n");
+				free(out);
+			}
+			if (msg && atc_frame_write(fd, svc_tls, msg) == 0) {
+				printf(" после HostInfo:\n");
+				atc_read_frames(fd, svc_tls, 4);
+				rc = 0;
+			} else if (msg) {
+				fprintf(stderr,
+					"atc-talk: write HostInfo: %s\n",
+					svc_tls ? "tls-ошибка" : strerror(errno));
+				rc = 1;
+			}
+			irm_bp_free(msg);
+		}
+
+		/* Клиентский Ping (агент шлёт Ping по таймеру пустого сессии). */
+		irm_bp_node *ping = atc_msg("Ping", 2, NULL);
+		if (ping) {
+			if (atc_frame_write(fd, svc_tls, ping) == 0) {
+				printf(" после Ping (Id=2):\n");
+				atc_read_frames(fd, svc_tls, 4);
+			} else {
+				fprintf(stderr, "atc-talk: write Ping: %s\n",
+					svc_tls ? "tls-ошибка" : strerror(errno));
+			}
+			irm_bp_free(ping);
+		}
+	}
+	if (svc_tls)
+		irm_tls_disarm(fd);
+	if (fd >= 0)
+		irm_mux_close(fd);
+	irm_lk_close(lk);
+	irm_pair_free(pair);
+	return rc;
 }
 
 static int cmd_atc_probe(const char *path, const char *selector)
@@ -460,7 +745,9 @@ static void usage(FILE *f)
 		"  irmctl [-s SOCKET] list          список устройств\n"
 		"  irmctl [-s SOCKET] info [UDID|i] lockdown-инфо + сервисы\n"
 		"  irmctl [-s SOCKET] atc-probe     пара→StartSession+TLS→atc/atc2\n"
-		"                                   (обследование ATC, шаг 8+)\n");
+		"                                   (обследование ATC, шаг 8+)\n"
+		"  irmctl [-s SOCKET] atc-talk      клиентская последовательность ATC:\n"
+		"                                   HostInfo→Ping (read-only, E12)\n");
 }
 
 int main(int argc, char **argv)
@@ -490,6 +777,8 @@ int main(int argc, char **argv)
 		return cmd_info(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
 	if (strcmp(cmd, "atc-probe") == 0)
 		return cmd_atc_probe(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
+	if (strcmp(cmd, "atc-talk") == 0)
+		return cmd_atc_talk(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
 	usage(stderr);
 	return 2;
 }

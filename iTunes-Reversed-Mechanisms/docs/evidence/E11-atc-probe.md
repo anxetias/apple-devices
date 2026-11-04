@@ -98,6 +98,11 @@ frame3 len=727: {Command:"AssetMetrics", Params:{
   добавлении трека — дёшево проверяемый живой критерий успеха шага 9.
 - Q4: atc2: какой первый кадр ждёт сервер (команда/HTTP?).
 
+> **Обновление 04.11 (после E12)**: Q1/Q2 закрыты/частично в
+> `E12-atc-client-protocol.md` (клиентская последовательность из
+> дизасма + live `atc-talk` run1–run3: HostInfo принят, SyncAllowed,
+> наш Ping→Pong, IdleExit); Q3/Q4 остаются открытыми.
+
 ## 6. Код по факту (что именно цеплялось к телефону)
 
 - `libirm/src/mux.c::irm_mux_connect` — порт через `wire_port_of()`

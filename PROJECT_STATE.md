@@ -710,3 +710,39 @@ apple-devices/
   unsigned-касты `&#NN;`-ветки xmlplist.
 - Коммиты: подпроект-ветка `music-mac-style` (HEAD — см. строку «Пуши»),
   FINDINGS/тrace-артефакты — в ветке `3utools-research`.
+
+##### Шаг 9b: клиентская сторона ATC + atc-talk live (04.11, продолжение)
+
+- Итог в одну строку: **клиентская последовательность ATC восстановлена
+  из дизасма (AMPDevicesAgent/Dulcimer-класс) и подтверждена на
+  телефоне read-only обменом `irmctl atc-talk`**; факт-документ —
+  `docs/evidence/E12-atc-client-protocol.md` (E11 Q1/Q2 закрыты).
+- Из дизасма: клиентский API `_ATHostConnection*` (Send* полный список)
+  при AirTrafficControl.framework в корпусе только PLT-заглушками;
+  состояния Idle→RequestingSync→ReadyForSync→SyncingMetadata→
+  FinishedSyncingMetadata→TransferringAssets→Finished; RequestingSync =
+  маска dataclasses (1=Media|2=Ringtone|8=Book|0x10=Application|
+  0x20=Keybag|0x40=Photo|0x80=Data) + анкеры-словарь
+  `{Dataclass:"<uint32 string>"}` + HostInfo; ReadyForSync сервера
+  ОБЯЗАН нести DataclassAnchors; FinishedSyncingMetadata =
+  SyncTypes (ATSyncNoSync/DeltaSync/ResetSync/PrepOnly)+Anchors+
+  PurgeDataBytes; Grappa — подпись только .cig-сайдфайлов (не wire).
+- Live (run1–3, логи в traces/tools): приветствие Capabilities→
+  InstalledAssets→AssetMetrics; HostInfo (read-only заглушки) принят
+  → SyncAllowed (ManualSync/AutoSync/Purge/AppRemoval/**AppInstallation**
+  =true, EducationModeEnabled/DataProtected=false,
+  DisabledAssetTypes=[Photo,Movie,TVEpisode,HomeVideo],
+  SupportsFavorites=true); наш Ping→Pong; сервер пингует и закрывает
+  idle-сессию **IdleExit** (новый серверный Command); Id-сервера
+  глобальный по atcd (13→33), клиентский свой (1/2).
+- Код: `tools/irmctl.c::atc-talk` (HostInfo/Ping client-side,
+  5-ключевой конверт, LE32-фрейминг, svc_read_full 0/−2/−3),
+  `libirm/src/tls.c` — фикс ложного EOF: SSL_ERROR_SYSCALL+EAGAIN →
+  poll-ожидание; `-Wall -Wextra` чисто, юниты 6/6.
+- Открыто: R1 точные wire-имена Params RequestingSync (сериализует
+  AirTrafficControl.framework — дизасма нет; гипотезы в E12 §5),
+  R2 выбор Delta/Reset, Q3 (Music._Count инкремент — критерий шага 9),
+  Q4 atc2.
+- Артефакты в traces: `tools/atc-talk-run{1,2,3}-2026-11-04.log` и
+  попутно закоммичены `tools/atc-probe-run3-2026-11-04.log`,
+  `tools/ideviceinfo-mux.strace-2026-11-04`.

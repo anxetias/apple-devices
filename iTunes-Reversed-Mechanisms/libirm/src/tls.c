@@ -319,6 +319,25 @@ ssize_t irm_tls_read(int fd, uint8_t *b, size_t n, int timeout_sec)
 			set_err("%s", "tls: EOF (close_notify)");
 			break;
 		}
+		/* SSL_ERROR_SYSCALL с errno EAGAIN/EWOULDBLOCK/EINTR — не ошибка
+		 * канала: дожимаем poll'ом (живой GnuTLS/OpenSSL STP на nonblocking
+		 * fd так себя и ведёт; иначе получаем ложный EOF посреди сессии). */
+		if (er == SSL_ERROR_SYSCALL &&
+		    (errno == EAGAIN || errno == EWOULDBLOCK ||
+		     errno == EINTR)) {
+			errno = 0;
+			time_t left = dl - time(NULL);
+			if (left <= 0) {
+				g_tls_timed_out = 1;
+				set_err("%s", "tls: timeout чтения (syscall)");
+				break;
+			}
+			struct pollfd pfd;
+			pfd.fd = fd;
+			pfd.events = POLLIN;
+			(void)poll(&pfd, 1, (int)(left * 1000));
+			continue;
+		}
 		if (er == SSL_ERROR_WANT_READ || er == SSL_ERROR_WANT_WRITE) {
 			time_t left = dl - time(NULL);
 			if (left <= 0) {
@@ -337,8 +356,12 @@ ssize_t irm_tls_read(int fd, uint8_t *b, size_t n, int timeout_sec)
 			}
 			continue;
 		}
-		if (rc == 0 || (er == SSL_ERROR_SSL || er == SSL_ERROR_SYSCALL)) {
-			set_err("tls: read (SSL err %u)", (unsigned)ERR_peek_last_error());
+		if (rc == 0 ||
+		    (er == SSL_ERROR_SSL || er == SSL_ERROR_SYSCALL)) {
+			set_err("tls: read r=%d er=%u (%s)", rc, (unsigned)er,
+				er == SSL_ERROR_SYSCALL ?
+					strerror(errno) :
+					"ssl-lib");
 			break;
 		}
 		set_err("tls: неизвестное состояние чтения (%u)", er);

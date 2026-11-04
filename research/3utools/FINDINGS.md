@@ -1918,3 +1918,19 @@ HTTP-клиент a2-s.3u.com по запрятанному протоколу (
   DIFF с E01b-Mac-спеками; только локальный демон, до устройства не дошло).
 - Связь с 3u-путём: параллельный путь синка «как на маке» (механика B/C из
   docs/07: AppleMobileSync/ATC); телефон сегодня не трогался.
+
+#### 04.11: mux libirm доведён до Linux-usbmuxd («первое» из плана)
+
+- Проблема: `test_mux` (LIVE против демона) падал resp==NULL при
+  {@function ListDevices}. mac-факты E01b §9 «bplist-запрос принят» на
+  Linux-демоне НЕ работают.
+- Эмпирика (python-пробник, те же кадры LE): Linux `/usr/sbin/usbmuxd` —
+  **ver=1: тело только XML** (bplist → молчание); **ver=2 → легаси** (ответ
+  ver=0/msg=1 + LE u32 код 6); Helloworld НЕ нужен; ListDevices XML →
+  DeviceList (iPhone12,1, id=1 USB, serial=UDID, соединение read-only).
+- Правки `libirm/src/mux.c`: irm_mux_send пишет XML; irm_mux_recv diffает
+  legacy-ответ; Connect (PortNumber, Q14/сеть?) — до проверки live не звать.
+- Результат: **test_mux OK**, `irmctl list` OK; юниты 5/6 (красныйkening
+  только test_xmlw). Коммит ветки music-mac-style: af79e7cd + cc04e909.
+- Замечание: SSH/gcr пуш-канал флейкает («Permission denied (publickey)»
+  через раз) — ретрай с паузой помогает.

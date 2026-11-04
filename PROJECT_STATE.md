@@ -656,3 +656,21 @@ apple-devices/
 - Дальше: (1) довести mux клиента до Linux-usbmuxd (E01b) — фундамент; (2)
   слой `music/` по `docs/07` (ATC); (3) интеграция libirm в apple-devices
   через `subdir()` (заготовка в `iTunes-Reversed-Mechanisms/meson.build`).
+
+##### Шаг 8, продолжение: mux доведён до Linux-usbmuxd (04.11)
+
+- **`test_mux` зелёный против живого системного демона** (`/usr/sbin/usbmuxd`,
+  iso-cell: --user usbmuxd --systemd), как и `irmctl list` (видит iPhone12,1,
+  read-only `ListDevices`); телефон рыба не трогался: Connect не звали.
+- Эмпирия против чужого демона (проблема диффузии «mac-спока E01b §9» на
+  Linux): **`ver=1` кадра принимает только XML-тело**; наш прежний bplist
+  запрос демо-молчал (потому и «resp == NULL»); **`ver=2` демона ведёт как
+  legacy** (ответ `ver=0 msg=1` + LE u32 код 6). `Helloworld` для Linux
+  НЕ нужен (ListDevices работает без него; hello даёт `Result Number=1`).
+- Правки: `irm_mux_send` — тело XML (вместо bplist; mac-CF-план читает оба,
+  E01b §9); `irm_mux_recv` — diff легаси-ответа (полезная диагностика);
+  `irm_mux_connect` — TODO: PortNumber (сеть/байт-порядок?) НЕ проверяно
+  live, Connect до проверки не ждать. Всё потому в `docs/evidence/E01b §10`.
+- Юнит-итог: **5/6 OK** (bplist/xml/lockdown/mux/dl); красный только
+  `test_xmlw` (round-trip «nested-dict») — следующая сессия.
+- Коммит `af79e7cd` запушен (пуши флейкают по SSH/gcr — ретрай помогает).

@@ -1934,3 +1934,34 @@ HTTP-клиент a2-s.3u.com по запрятанному протоколу (
   только test_xmlw). Коммит ветки music-mac-style: af79e7cd + cc04e909.
 - Замечание: SSH/gcr пуш-канал флейкает («Permission denied (publickey)»
   через раз) — ретрай с паузой помогает.
+
+#### 04.11 вечер: session-TLS + ATC живые (libirm, без libimobiledevice)
+
+- Полный путь зелёный на iPhone12,1/iOS 27.2: пар-рекорд
+  (`/var/lib/lockdown/<UDID>.plist`, HostID/SystemBUID + 5 PEM-полей) →
+  StartSession {HostID, SystemBUID строками} → ответ **EnableSessionSSL=true**
+  → TLS на ТОМ ЖЕ lockconn (поток BE32-bplist внутри).
+- Клиентские серты TLS: **HostCertificate+HostPrivateKey (lbD-стиль) —
+  работает с первой попытки**; peer-pin DeviceCertificate по SHA-256 DER
+  (полную DER-байт-сверку E04 Apple делает — хватит и хэша). Apple-комбо
+  (DeviceCertificate+RootPrivateKey, E04 §2) осталось как фолбек.
+- StartService **БЕЗ сессии** → `{"Error":"SessionInactive"}` на atc/afc/
+  notification_proxy (после StartSession — порты прилетают норм).
+- **ATC framing = [LE32 len][bplist00 payload]** (LE не BE, длина —
+  только payload); **сервер САМ открывает обмен**: приветственная серия
+  Capabilities (GrappaSupportInfo: version/deviceType/protocolVersion) →
+  InstalledAssets → AssetMetrics (метрики классов: Music._Count=3/
+  _PhysicalSize=38715392 — сходится с шагом 7; _FreeSize≈72 ГБ).
+- Id у серверных кадров монотонно растёт (9→10→11); Session=0/Type=0 —
+  «область» пока не выбрана (Q).
+- `com.apple.atc2`: StartService+TLS ок, но сервер сразу закрывает канал,
+  кадры не шлёт (ждёт клиентский первый кадр? Q4).
+- Linux-usbmuxd Connect (libusbmuxd strace): PortNumber=**htons(port)**
+  (62078→32498=0x7EF2, Result=0; прочие — Result=3) + поля
+  ClientVersionString/ProgName/kLibUSBMuxVersion=3.
+- libirm-изменения: tls.c (OpenSSL, -DIRM_OPENSSL=1, pkg-config),
+  pairing.c (POSIX), lockdown.c (irm_lk_start_session, lk_wr/lk_rd),
+  mux.c (irm_mux_connect: htons+поля), irmctl `atc-probe`; юниты 6/6.
+- Артефакты: `tools/atc-probe-run3-2026-11-04.log`,
+  `tools/ideviceinfo-mux.strace-2026-11-04` (тут же); вести в E11
+  (`iTunes-Reversed-Mechanisms/docs/evidence/E11-atc-probe.md`).

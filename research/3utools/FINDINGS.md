@@ -2237,3 +2237,112 @@ HTTP-клиент a2-s.3u.com по запрятанному протоколу (
   (подпись §11.4 E13), insert_track с полной картой item/avformat_info
   (docs/02 §9), AssetManifest → Airlock-загрузка → FileComplete →
   SyncFinished; анкер растёт на A+1 только реальным insert-файлом.
+
+## Сессия 04.11 продолжение (9f): реальный Delta с треком — grappa .cig, insert_track, якерь 1→2 (live)
+
+### 9f.1 Код (libirm/irmctl)
+
+- **grappa** (`libirm/{include/libirm/grappa.h, src/grappa.c}`, OpenSSL 3.5.5):
+  - `irm_grappa_from_reply(IRM_GRAPPA_HOST_REQUEST[84] const, reply 83Б)`:
+    форма reply `{01,01,…,D[18]=0x40}`; D = AES-128-CBC-nopad-decrypt
+    reply[19..83] (key 0x95×16, IV reply[2..18]);
+    K0[i]=D[1+i]^D[39+i]^KEY_XOR[i]; key = AES-128-ECB-encrypt(WRAP_KEY,K0);
+    tag_mask[i]=D[18+i]^TAG_XOR[i];
+  - `irm_grappa_sign(ops 1..4МиБ) → 21Б`: sidecar[0]=0x01,
+    sidecar[1+i]=HMAC-SHA1(key,ops)[i]^tag_mask[i];
+  - **офлайн-самотест C-реализации** — 4/4 PASS на фиксированных векторах
+    rustunes (`grappa-fixed-vectors.plist`: ops длиной 1, 3, 55, 56 Б; лог
+    `atc-insert-verify-2026-11-04d.log`). Алгоритм реализован с нуля
+    (не копипаста), бит-в-бит совпадает с рабочим протоколом.
+- `irm_afc_remove` (op 0x00000008 RemovePath) в libirm/src/afc.c.
+- `tools/irmctl.c` — команда **`atc-insert`** (`IRMA_ATC_FIXTURE` обязателен,
+  `IRMA_ATC_STAGE_ONLY=1` — прогон до стадии без записей, `IRMA_ATC_ANCHOR`
+  — опциональная сверка с DB-якерем, LIBID/VERSION/SERVICE как раньше):
+  1. фиксирация .m4a (валидный ALAC; размеры 1 Б..32 МиБ);
+  2. AFC-канал живой на весь прогон; staging-инвариант (пуст!);
+  3. DB-копия (+wal), integrity_check ok → `db_pid`,
+     `primary_container_pid` (из db_info, НЕ allocate), якерь A
+     (MLSyncClientSyncAnchor); generic pid-scan (1017 значений, cap 65536);
+  4. PIDs track/album/artist = случайные из /dev/urandom (s64>0, ≥1000,
+     без коллизий с набором каталога и между собой);
+  5. конверт (bplist, порядок ключей = порядок вставки; **1:1 карта rustunes
+     `alac.rs::serialize`** — §docs/02 9.3/9.4):
+     `{revision: A+1, operations:[update_db_info, insert_track],
+       timestamp: CFDate(сек от 2001-01-01)}`,
+     `update_db_info = {pid: db_pid, operation:"update_db_info",
+       db_info:{primary_container_pid}}`,
+     `insert_track = {operation, pid, avformat_info, item_stats, item,
+       location}` с audio_format 601, bit_rate 1411, duration=4410
+     (TotalSamples, сэмплов на канал), gapless 4 ключа (0/0/1/0),
+     analysis_inhibit_flags 2, sample_rate 44100 REAL; item_stats — полный
+     словарь (4 нуля + has_been_played=false); item — album_pid, artist_pid,
+     title, artist, album, sort_name, sort_artist, sort_album, genre,
+     total_time_ms=100, track_number=1, is_song=true,
+     remember_bookmark=false, artwork_checksum=0; album_artist/composer/
+     year/track_count/disc_*/date_* НЕ присылать (omission);
+     location={kind:"Apple Lossless audio file"};
+  6. ATC-канал: Ping S1 → (Pong/Capabilities/InstalledAssets/AssetMetrics) →
+     SyncAllowed → RS S2 (якерь A, dec-строка) → ReadyForSync (якерь сверен
+     == A; Params.DeviceInfo.Grappa 83Б) → grappa-from-reply → `.cig`
+     (21 Б); STAGE_ONLY завершается здесь (staging остался пуст);
+  7. стадинг: `…/Sync/Sync_00000000.plist` (1070 Б), ЗАТЕМ `…plist.cig`
+     (21 Б) — каждая с read-back проверкой байт-в-байт;
+  8. FSFM S2 с якерем **A+1** → возможные Progress×2 → AssetManifest;
+  9. политика манифеста (строгая): own-запись обязана быть РОВНО одна,
+     dec(track PID), бит 1 (аудио) в Variant.AssetParts; foreign допускается
+     ТОЛЬКО ancillary-only (IsDownload=true && AssetType=="Music" && БЕЗ
+     бита 1) → FileError{ErrorCode:16, ErrorIsVisible:false} ПОСЛЕ всех
+     FileComplete; ЛЮБАЯ другая foreign-запись / отсутствие own / повторный
+     манифест → СТОП без отправок;
+  10. свой ассет: `/Airlock/Media/<AssetID>.m4a` upload → read-back →
+      rename bare `<AssetID>` → read-back → выбор постоянного пути
+      (`iTunes_Control/Music/Fnn/XXXX.m4a`: Fnn = track PID % 50,
+      4 случайные заглавные буквы без столкновений в папке; mkdir при
+      отсутствии) → `FileComplete{AssetID, Dataclass:"Media",
+      AssetPath root-relative}` → телефон сам перемещает файл;
+  11. терминальный кадр — **SyncFinished (Session обязан == 2)**; телеметрия
+      (Progress/SyncAllowed/InstalledAssets/AssetMetrics) игнорируется;
+      SyncFailed / неожиданная команда → СТОП.
+- Сборка `-Wall -Wextra` чистая; юниты 5/5 OK.
+
+### 9f.2 Live-факты run1 (iPhone12,1/iOS 27.2, USB; якерь до = 1)
+
+- STAGE_ONLY-прогон: полный wire-путь до стадии отработал, READY-якерь
+  1 == sent 1, GRAPPA-ответ 83 Б (форма {01,01,…,0x40}), sidecar
+  сформирован, НИ ОДНОЙ записи на телефон (staging пуст в конце).
+- Полный прогон:
+  - телефон применил конверт: FSFM якерь «2», телефонный ответ
+    **SyncFinished (Session=2)**;
+  - AssetManifest: единственная own-запись `8699068841132158781`
+    (= dec track PID), `Variant.AssetParts=5` (бит 1 = аудио),
+    `AssetType="Music"`, `IsDownload=true`; чужих не было;
+  - трассировка: Airlock-upload (2691 Б) → rename bare → FileComplete
+    `iTunes_Control/Music/F31/BOYY.m4a` → SyncFinished;
+- **Пост-верификация**:
+  - `music-id`: `MLSyncClientSyncAnchor = 2` — телефон инкрементировал
+    якерь (фоновой рост LastSyncedRevision 8491→8496 — независим);
+  - `iTunes_Control/Music/F31/BOYY.m4a`: st_size=2691 (ровно фикстура),
+    S_IFREG, st_nlink=1;
+  - `/Airlock/Media` пуста — телефон сам забрал файл из Airlock;
+  - `/iTunes_Control/Sync/Media` пуста — стейдж потреблён.
+- Инвариант держится: **якерь растёт только мутационной сессией** — в
+  пустых прогонах 9e он не рос; реальный insert 9f вырос ровно на 1.
+
+### 9f.3 Логи (research/3utools/tools/, серия `-2026-11-04d`)
+
+- `atc-insert-stage-2026-11-04d.log` — STAGE_ONLY (без записей);
+- `atc-insert-run1-2026-11-04d.log` — полный прогон (SyncFinished);
+- `atc-insert-verify-2026-11-04d.log` — пост-верификация (Airlock пуст,
+  F31/BOYY.m4a 2691Б, staging пуст) + grappa-самотест 4/4 PASS;
+- `music-id-verify-2026-11-04d.log` — якерь 2 после применения.
+- Факт-документ: `docs/evidence/E15-atc-insert.md` (краткая сводка фактов,
+  §3 карта полей, §4 политика манифеста, §5 инварианты).
+
+### 9f.4 Что дальше (шаг 9g — кандидаты)
+
+- Reset-синк (полная перезаливка каталога) или пакетный insert
+  (несколько треков за одну сессию — `MAX_SESSION_OPS 32768`);
+- ancillary-кадр (artwork-only) с FileError{16} — проверка FileError-ветки;
+- фрагментация файла > 1 блока при выгрузке уже покрыта
+  (`irm_afc_write_full` чанками ≤1 МиБ);
+- валидация повторного SyncFinished/повторного insert (idempotence).

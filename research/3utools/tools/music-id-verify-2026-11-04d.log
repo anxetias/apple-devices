@@ -1,0 +1,35 @@
+device: id=1 udid=00008030-001C3128119A402E
+[com.apple.afc] port=54539 ssl=0
+  канал: сырой
+iTunesPrefs: 1232 байт, повтор-чтение совпало
+frpd: версия 1.25 configured=1
+frpd: catalog_id=0000000000000000 user_id=0000000000000000
+frpd: LibraryID=0000000000000000 (= catalog_id^user_id)
+frpd: литералы catalog/user НЕЗАПОЛНЕНЫ (0) — LibraryID деривация не авторитетна; для IRMA_ATC_LIBID задаём env
+exp: IRMA_ATC_LIBID=0000000000000000
+/iTunes_Control/iTunes/MediaLibrary.sqlitedb: 1564672 байт, повтор совпало
+  копия: /tmp/opencode/00008030-001C3128119A402E-music/MediaLibrary.sqlitedb
+/iTunes_Control/iTunes/MediaLibrary.sqlitedb-wal: 1697472 байт, повтор совпало
+  копия: /tmp/opencode/00008030-001C3128119A402E-music/MediaLibrary.sqlitedb-wal
+_MLDatabaseProperties:
+  MLArtistHeroImageImportDatabaseRevision = 8498
+  MLArtistHeroImageImportDate = 814986811.26064706
+  MLCloudDatabaseUserVersion = 810010
+  MLJaliscoAccountID = 18715467998
+  MLJaliscoDatabaseRevision = 2
+  MLJaliscoLastSupportedMediaKinds = 1,32,65536,4194304
+  MLJaliscoNeedsUpdateForTokens = 0
+  MLMaintenanceTaskOperationDate = 815482630.27966201
+  MLSiriIndexValidityRevision = 0
+  MLSortMapUnicodeVersion = <не текст: блоб>
+  MLStorefrontID = 143565-16,29
+  MLSyncClientGenerationID = 1317823916904256706
+  MLSyncClientLastSyncedRevision = 8496
+  MLSyncClientSyncAnchor = 2
+  MPExplicitContentAllowedBoolean = 1
+  OrderingLanguage = ru-BY
+  _UUID = 9EF64D64-5012-4146-8A21-1A51A314AC20
+  autoCreatedSmartPlaylistsDeleted = 1
+  createdBuiltInSmartPlaylists = 1
+integrity_check: ok
+exp: якерь Media (MLSyncClientSyncAnchor выше)

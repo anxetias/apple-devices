@@ -1,0 +1,49 @@
+== 9f post-verify после atc-insert run1 (SyncFinished Session=2) ==
+
+-- Airlock/Media (пуст - телефон забрал файл):
+device: id=1 udid=00008030-001C3128119A402E
+[com.apple.afc] port=54558 ssl=0
+  канал: сырой
+devinfo: Model iPhone12,1 FSTotalBytes 116310212608 FSFreeBytes 71586131968 FSBlockSize 4096
+ls /Airlock/Media:
+  64       D .
+  160      D ..
+
+-- постоянный путь F31:
+device: id=1 udid=00008030-001C3128119A402E
+[com.apple.afc] port=54561 ssl=0
+  канал: сырой
+devinfo: Model iPhone12,1 FSTotalBytes 116310212608 FSFreeBytes 71586131968 FSBlockSize 4096
+ls iTunes_Control/Music/F31:
+  96       D .
+  3296     D ..
+  2691       BOYY.m4a
+
+-- stat BOYY.m4a:
+device: id=1 udid=00008030-001C3128119A402E
+[com.apple.afc] port=54564 ssl=0
+  канал: сырой
+iTunes_Control/Music/F31/BOYY.m4a: size=2691 dir=0
+iTunes_Control/Music/F31/BOYY.m4a kvs:
+  st_size = 2691
+  st_blocks = 8
+  st_nlink = 1
+  st_ifmt = S_IFREG
+  st_mtime = 1793802688995255876
+  st_birthtime = 1793802688984394853
+
+-- staging после:
+device: id=1 udid=00008030-001C3128119A402E
+[com.apple.afc] port=54567 ssl=0
+  канал: сырой
+devinfo: Model iPhone12,1 FSTotalBytes 116310212608 FSFreeBytes 71586131968 FSBlockSize 4096
+ls /iTunes_Control/Sync/Media:
+  64       D .
+  96       D ..
+
+== offline-самотест grappa C (libirm) по векторам rustunes ==
+vector 0: len(ops)=1 -> PASS
+vector 1: len(ops)=3 -> PASS
+vector 2: len(ops)=55 -> PASS
+vector 3: len(ops)=56 -> PASS
+4/4 PASS

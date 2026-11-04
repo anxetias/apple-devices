@@ -1,0 +1,124 @@
+device: id=1 udid=00008030-001C3128119A402E
+pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+fixture: /tmp/opencode/rustunes/repo/crates/music-protocol/tests/fixtures/tone-alac.m4a (2691 Б)
+[com.apple.afc] port=54533 ssl=0
+  канал: сырой
+staging /iTunes_Control/Sync/Media: пуст (ок)
+DB-копия: /tmp/opencode/00008030-001C3128119A402E-music/MediaLibrary.sqlitedb (с -wal)
+integrity_check: ok
+каталог: db_pid=860019141250340 primary_container_pid=460217054914055021
+якерь: A=1 → FSFM A+1=2
+PID-набор: 1017 значений
+PIDs: track=8699068841132158781 album=6403572979338305173 artist=7404991380911857325
+ops-файл: 1070 байт (head: 62 70 6c 69 73 74 30 30 d3 01 03 55 02 04 56 58 72 65 76 69 73 69 6f 6e...)
+[com.apple.atc] port=54535 ssl=1
+  канал: TLS (lbD-комбо)
+  кадр 1: len=94 Command=Pong
+  кадр 2: len=188 Command=Capabilities
+  кадр 3: len=150 Command=InstalledAssets
+  кадр 4: len=728 Command=AssetMetrics
+  кадр 5: len=387 Command=SyncAllowed
+ отсылаем RequestingSync (Session=2, якерь 1)
+  кадр 1: len=387 Command=SyncAllowed
+  кадр 2: len=150 Command=InstalledAssets
+  кадр 3: len=274 Command=ReadyForSync
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>ReadyForSync</string>
+	<key>Params</key>
+	<dict>
+		<key>DataclassAnchors</key>
+		<dict>
+			<key>Media</key>
+			<string>1</string>
+			<key>Book</key>
+			<string>0</string>
+		</dict>
+		<key>DeviceInfo</key>
+		<dict>
+			<key>Grappa</key>
+			<data>AQH03OUbvnOQiSY2IlcDpoj6QDQdHMkKQXq08VIELq6SwMiGFiQbUzB6vvCm+8VaNF9VisfVJujts5/7CD0765MU9aW9mNZgS46NL4OyNPo8ndE=</data>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>273</integer>
+</dict>
+</plist>
+
+  GRAPPA_REPLY(83): 01 01 f4 dc e5 1b be 73 90 89 26 36 22 57 03 a6 88 fa 40 34 1d 1c c9 0a 41 7a b4 f1 52 04 2e ae 92 c0 c8 86 16 24 1b 53 30 7a be f0 a6 fb c5 5a 34 5f 55 8a c7 d5 26 e8 ed b3 9f fb 08 3d 3b eb 93 14 f5 a5 bd 98 d6 60 4b 8e 8d 2f 83 b2 34 fa 3c 9d d1
+ anchor: sent=1 ready=1
+sidecar .cig: 0x01 + HMAC-SHA1⊕mask (21 б): 01 12 a7 88 00 a7 84 b1 fd 44 47 a9 cb d2 73 25 29 58 7d e2 66
+стейдж: Sync_00000000.plist (1070 Б) + .plist.cig (21 Б) — готово; телефон потребляет их ТОЛЬКО на FSFM
+ отсылаем FinishedSyncingMetadata (Session=2, якерь 2)
+  кадр 1: len=141 Command=Progress
+    телеметрия (игнор)
+  кадр 2: len=141 Command=Progress
+    телеметрия (игнор)
+  кадр 3: len=233 Command=AssetManifest
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>AssetManifest</string>
+	<key>Params</key>
+	<dict>
+		<key>AssetManifest</key>
+		<dict>
+			<key>Media</key>
+			<array>
+				<dict>
+					<key>Variant</key>
+					<dict>
+						<key>AssetParts</key>
+						<integer>5</integer>
+					</dict>
+					<key>AssetType</key>
+					<string>Music</string>
+					<key>AssetID</key>
+					<string>8699068841132158781</string>
+					<key>IsDownload</key>
+					<true/>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>276</integer>
+</dict>
+</plist>
+
+манифест: own=8699068841132158781 чужых=0 — загружаем свой
+  ассет: staged /Airlock/Media/8699068841132158781.m4a → bare /Airlock/Media/8699068841132158781 (2691 Б), постоянный путь iTunes_Control/Music/F31/BOYY.m4a
+ отсылаем FileComplete (AssetID=8699068841132158781, AssetPath=iTunes_Control/Music/F31/BOYY.m4a)
+  кадр 4: len=102 Command=SyncFinished
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>SyncFinished</string>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>277</integer>
+</dict>
+</plist>
+
+atc-insert: SYNC FINISHED — применено; якерь обязан быть A+1 (проверка: irmctl music-id)

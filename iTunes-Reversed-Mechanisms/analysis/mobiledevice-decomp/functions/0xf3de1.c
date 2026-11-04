@@ -1,0 +1,246 @@
+// rea decompile_all
+// name: _restored_get_supported_data_types
+// address: 0xf3de1
+// body: available
+// range: 0xf3de1-0xf4017 inclusive
+// non_contiguous: false
+// provider: Ghidra 12.1.4 (ghidra)
+// analysis_profile: 04dde8c57a87610dc458abf444e7f4727b39c7dade182ba942da8f8f7f4fe93b
+// limitations: The session serves operations only after Ghidra reports default auto-analysis complete; incomplete analysis does not expose partial results.; The imported Program and temporary project are ephemeral and deleted on close. Annotation operations edit session database metadata; original executable bytes are never written.; Cancelling an active Ghidra request terminates its ephemeral database and discards session annotations. The selected target remains open; the next provider query imports the original artifact again.; Default-space addresses use lowercase 0x-prefixed hexadecimal; other address spaces use <percent-encoded-space>:0x<hex>.; Ghidra Listing reports a terminal call at 0xf4013 to 0x2aa06e ___stack_chk_fail (external=false, thunk=true, hasNoReturn=true); fallthrough is excluded by Ghidra's flow model. This records Ghidra's FunctionManager flag, not an independent verification that the callee cannot return.; macOS sessions require a matching executable Ghidra native decompiler; REA checks for it but does not build native components or change Gatekeeper quarantine state.; Pseudocode is Ghidra decompiler output, not original source and not text-equivalent to Hopper output.; External functions and functions without an analyzable body return null; other decompiler failures remain explicit.
+// pseudocode: provider-specific; not original source
+
+
+void _restored_get_supported_data_types(void)
+
+{
+  undefined8 uVar1;
+  undefined4 uVar2;
+  undefined4 uVar3;
+  undefined4 local_448;
+  undefined4 uStack_444;
+  undefined4 uStack_440;
+  undefined4 uStack_43c;
+  undefined4 local_438;
+  undefined4 uStack_434;
+  undefined4 uStack_430;
+  undefined4 uStack_42c;
+  undefined4 local_428;
+  undefined4 uStack_424;
+  undefined4 uStack_420;
+  undefined4 uStack_41c;
+  undefined4 local_418;
+  undefined4 uStack_414;
+  undefined4 uStack_410;
+  undefined4 uStack_40c;
+  undefined4 local_408;
+  undefined4 uStack_404;
+  undefined4 local_400;
+  undefined4 uStack_3fc;
+  undefined8 local_3f8;
+  undefined4 local_3f0;
+  undefined4 uStack_3ec;
+  undefined4 local_3e8;
+  undefined4 uStack_3e4;
+  undefined4 local_3e0;
+  undefined4 uStack_3dc;
+  undefined4 local_3d8;
+  undefined4 uStack_3d4;
+  undefined4 local_3d0;
+  undefined4 uStack_3cc;
+  undefined4 local_3c8;
+  undefined4 uStack_3c4;
+  undefined4 local_3c0;
+  undefined4 uStack_3bc;
+  undefined4 local_3b8;
+  undefined4 uStack_3b4;
+  undefined4 local_3b0;
+  undefined4 uStack_3ac;
+  undefined4 local_3a8;
+  undefined4 uStack_3a4;
+  undefined4 local_3a0;
+  undefined4 uStack_39c;
+  undefined4 local_398;
+  undefined4 uStack_394;
+  undefined4 local_390;
+  undefined4 uStack_38c;
+  undefined4 local_388;
+  undefined4 uStack_384;
+  undefined4 local_380;
+  undefined4 uStack_37c;
+  undefined4 local_378;
+  undefined4 uStack_374;
+  undefined4 local_370;
+  undefined4 uStack_36c;
+  undefined4 local_368;
+  undefined4 uStack_364;
+  undefined4 local_360;
+  undefined4 uStack_35c;
+  undefined8 local_358;
+  undefined8 local_350;
+  undefined4 local_348;
+  undefined4 uStack_344;
+  undefined4 local_340;
+  undefined4 uStack_33c;
+  undefined8 local_338;
+  undefined8 local_330;
+  undefined8 local_328;
+  undefined8 local_320;
+  undefined8 local_318;
+  undefined8 local_310;
+  undefined8 local_308;
+  undefined8 local_300;
+  undefined8 local_2f8;
+  undefined8 local_2f0;
+  undefined8 local_2e8;
+  undefined8 local_2e0;
+  undefined8 local_2d8;
+  undefined4 local_2d0;
+  undefined4 uStack_2cc;
+  undefined4 local_2c8;
+  undefined4 uStack_2c4;
+  undefined8 local_2c0;
+  undefined4 local_2b8;
+  undefined4 uStack_2b4;
+  undefined8 local_2b0;
+  undefined4 local_2a8;
+  undefined4 uStack_2a4;
+  undefined4 local_2a0;
+  undefined4 uStack_29c;
+  undefined8 local_298;
+  undefined8 local_290;
+  undefined4 local_288;
+  undefined4 uStack_284;
+  undefined8 local_280;
+  undefined8 local_278;
+  undefined8 local_270;
+  undefined4 local_268;
+  undefined4 uStack_264;
+  undefined8 local_260;
+  undefined8 local_258;
+  undefined8 local_250;
+  undefined4 local_248;
+  undefined4 uStack_244;
+  undefined8 local_240;
+  undefined1 local_238 [528];
+  long local_28;
+  
+  local_28 = *(long *)PTR____stack_chk_guard_004412b8;
+  uVar1 = *(undefined8 *)PTR__kCFBooleanTrue_00441110;
+  uVar2 = *(undefined4 *)PTR__kCFBooleanFalse_00441108;
+  uVar3 = *(undefined4 *)(PTR__kCFBooleanFalse_00441108 + 4);
+  _memcpy(local_238,&DAT_004470b0,0x210);
+  local_448 = uVar2;
+  uStack_444 = uVar3;
+  uStack_440 = uVar2;
+  uStack_43c = uVar3;
+  local_438 = uVar2;
+  uStack_434 = uVar3;
+  uStack_430 = uVar2;
+  uStack_42c = uVar3;
+  local_428 = uVar2;
+  uStack_424 = uVar3;
+  uStack_420 = uVar2;
+  uStack_41c = uVar3;
+  local_418 = uVar2;
+  uStack_414 = uVar3;
+  uStack_410 = uVar2;
+  uStack_40c = uVar3;
+  local_408 = uVar2;
+  uStack_404 = uVar3;
+  local_400 = uVar2;
+  uStack_3fc = uVar3;
+  local_3f8 = uVar1;
+  local_3f0 = uVar2;
+  uStack_3ec = uVar3;
+  local_3e8 = uVar2;
+  uStack_3e4 = uVar3;
+  local_3e0 = uVar2;
+  uStack_3dc = uVar3;
+  local_3d8 = uVar2;
+  uStack_3d4 = uVar3;
+  local_3d0 = uVar2;
+  uStack_3cc = uVar3;
+  local_3c8 = uVar2;
+  uStack_3c4 = uVar3;
+  local_3c0 = uVar2;
+  uStack_3bc = uVar3;
+  local_3b8 = uVar2;
+  uStack_3b4 = uVar3;
+  local_3b0 = uVar2;
+  uStack_3ac = uVar3;
+  local_3a8 = uVar2;
+  uStack_3a4 = uVar3;
+  local_3a0 = uVar2;
+  uStack_39c = uVar3;
+  local_398 = uVar2;
+  uStack_394 = uVar3;
+  local_390 = uVar2;
+  uStack_38c = uVar3;
+  local_388 = uVar2;
+  uStack_384 = uVar3;
+  local_380 = uVar2;
+  uStack_37c = uVar3;
+  local_378 = uVar2;
+  uStack_374 = uVar3;
+  local_370 = uVar2;
+  uStack_36c = uVar3;
+  local_368 = uVar2;
+  uStack_364 = uVar3;
+  local_360 = uVar2;
+  uStack_35c = uVar3;
+  local_358 = uVar1;
+  local_350 = uVar1;
+  local_348 = uVar2;
+  uStack_344 = uVar3;
+  local_340 = uVar2;
+  uStack_33c = uVar3;
+  local_338 = uVar1;
+  local_330 = uVar1;
+  local_328 = uVar1;
+  local_320 = uVar1;
+  local_318 = uVar1;
+  local_310 = uVar1;
+  local_308 = uVar1;
+  local_300 = uVar1;
+  local_2f8 = uVar1;
+  local_2f0 = uVar1;
+  local_2e8 = uVar1;
+  local_2e0 = uVar1;
+  local_2d8 = uVar1;
+  local_2d0 = uVar2;
+  uStack_2cc = uVar3;
+  local_2c8 = uVar2;
+  uStack_2c4 = uVar3;
+  local_2c0 = uVar1;
+  local_2b8 = uVar2;
+  uStack_2b4 = uVar3;
+  local_2b0 = uVar1;
+  local_2a8 = uVar2;
+  uStack_2a4 = uVar3;
+  local_2a0 = uVar2;
+  uStack_29c = uVar3;
+  local_298 = uVar1;
+  local_290 = uVar1;
+  local_288 = uVar2;
+  uStack_284 = uVar3;
+  local_280 = uVar1;
+  local_278 = uVar1;
+  local_270 = uVar1;
+  local_268 = uVar2;
+  uStack_264 = uVar3;
+  local_260 = uVar1;
+  local_258 = uVar1;
+  local_250 = uVar1;
+  local_248 = uVar2;
+  uStack_244 = uVar3;
+  local_240 = uVar1;
+  _CFDictionaryCreate(*(undefined8 *)PTR__kCFAllocatorDefault_004410e8,local_238,&local_448,0x42,
+                      PTR__kCFTypeDictionaryKeyCallBacks_004411b0,
+                      PTR__kCFTypeDictionaryValueCallBacks_004411b8);
+  if (*(long *)PTR____stack_chk_guard_004412b8 == local_28) {
+    return;
+  }
+                    /* WARNING: Subroutine does not return */
+  ___stack_chk_fail();
+}
+

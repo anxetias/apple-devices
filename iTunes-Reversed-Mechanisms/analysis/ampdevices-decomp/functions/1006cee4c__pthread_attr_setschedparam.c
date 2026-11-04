@@ -1,0 +1,16 @@
+// name: _pthread_attr_setschedparam
+// address: 1006cee4c
+
+/* WARNING: Unknown calling convention -- yet parameter storage is locked */
+
+int _pthread_attr_setschedparam(pthread_attr_t *param_1,sched_param *param_2)
+
+{
+  int iVar1;
+  
+                    /* WARNING: Could not recover jumptable at 0x0001006cee4c. Too many branches */
+                    /* WARNING: Treating indirect jump as call */
+  iVar1 = (*(code *)PTR__pthread_attr_setschedparam_10082d010)();
+  return iVar1;
+}
+

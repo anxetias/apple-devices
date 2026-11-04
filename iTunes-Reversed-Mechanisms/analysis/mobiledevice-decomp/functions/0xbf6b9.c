@@ -1,0 +1,117 @@
+// rea decompile_all
+// name: __createDictionaryWithRequestAndArgKeysAndValues
+// address: 0xbf6b9
+// body: available
+// range: 0xbf6b9-0xbf87c inclusive
+// non_contiguous: false
+// provider: Ghidra 12.1.4 (ghidra)
+// analysis_profile: 04dde8c57a87610dc458abf444e7f4727b39c7dade182ba942da8f8f7f4fe93b
+// limitations: The session serves operations only after Ghidra reports default auto-analysis complete; incomplete analysis does not expose partial results.; The imported Program and temporary project are ephemeral and deleted on close. Annotation operations edit session database metadata; original executable bytes are never written.; Cancelling an active Ghidra request terminates its ephemeral database and discards session annotations. The selected target remains open; the next provider query imports the original artifact again.; Default-space addresses use lowercase 0x-prefixed hexadecimal; other address spaces use <percent-encoded-space>:0x<hex>.; Ghidra Listing reports a terminal call at 0xbf878 to 0x2aa06e ___stack_chk_fail (external=false, thunk=true, hasNoReturn=true); fallthrough is excluded by Ghidra's flow model. This records Ghidra's FunctionManager flag, not an independent verification that the callee cannot return.; macOS sessions require a matching executable Ghidra native decompiler; REA checks for it but does not build native components or change Gatekeeper quarantine state.; Pseudocode is Ghidra decompiler output, not original source and not text-equivalent to Hopper output.; External functions and functions without an analyzable body return null; other decompiler failures remain explicit.
+// pseudocode: provider-specific; not original source
+
+
+undefined8
+__createDictionaryWithRequestAndArgKeysAndValues
+          (undefined8 param_1,undefined8 param_2,undefined8 param_3,undefined8 param_4,
+          undefined8 param_5,undefined8 param_6,undefined8 param_7,undefined8 param_8,
+          undefined8 param_9,int param_10,undefined8 param_11,undefined8 param_12,
+          undefined8 param_13,undefined8 param_14)
+
+{
+  long lVar1;
+  uint uVar2;
+  char in_AL;
+  undefined8 uVar3;
+  undefined8 uVar4;
+  long *plVar5;
+  ulong uVar6;
+  int iVar7;
+  long lVar8;
+  undefined1 local_118 [16];
+  undefined8 local_108;
+  undefined8 local_100;
+  undefined8 local_f8;
+  undefined8 local_f0;
+  undefined8 local_e8;
+  undefined8 local_d8;
+  undefined8 local_c8;
+  undefined8 local_b8;
+  undefined8 local_a8;
+  undefined8 local_98;
+  undefined8 local_88;
+  undefined8 local_78;
+  undefined8 local_68;
+  undefined8 local_60;
+  ulong local_58;
+  long *local_50;
+  undefined1 *local_48;
+  long local_38;
+  
+  local_48 = local_118;
+  if (in_AL != '\0') {
+    local_e8 = param_1;
+    local_d8 = param_2;
+    local_c8 = param_3;
+    local_b8 = param_4;
+    local_a8 = param_5;
+    local_98 = param_6;
+    local_88 = param_7;
+    local_78 = param_8;
+  }
+  local_38 = *(long *)PTR____stack_chk_guard_004412b8;
+  local_50 = (long *)&stack0x00000008;
+  local_58 = 0x3000000010;
+  local_108 = param_11;
+  local_100 = param_12;
+  local_f8 = param_13;
+  local_f0 = param_14;
+  uVar3 = _CFArrayCreateMutable(0,param_10,PTR__kCFTypeArrayCallBacks_004411a8);
+  uVar4 = _CFDictionaryCreateMutable
+                    (0,param_10 + 2,PTR__kCFTypeDictionaryKeyCallBacks_004411b0,
+                     PTR__kCFTypeDictionaryValueCallBacks_004411b8);
+  local_68 = param_9;
+  _CFDictionarySetValue(uVar4,&cf_AMSRequestKey,param_9);
+  local_60 = uVar4;
+  _CFDictionarySetValue(uVar4,&cf_AMSMessageSignatureKey,uVar3);
+  if (0 < param_10) {
+    iVar7 = 0;
+    do {
+      uVar2 = (uint)local_58;
+      uVar6 = local_58 & 0xffffffff;
+      if (uVar6 < 0x29) {
+        local_58 = CONCAT44(local_58._4_4_,(int)(uVar6 + 8));
+        lVar8 = *(long *)(local_48 + uVar6);
+        if (0x20 < uVar2) goto LAB_000bf7e7;
+        local_58 = CONCAT44(local_58._4_4_,uVar2 + 0x10);
+        plVar5 = (long *)(local_48 + uVar6 + 8);
+      }
+      else {
+        lVar8 = *local_50;
+        local_50 = local_50 + 1;
+LAB_000bf7e7:
+        plVar5 = local_50;
+        local_50 = local_50 + 1;
+      }
+      if (lVar8 == 0) {
+        uVar4 = _CFStringGetCStringPtr(local_68,0x8000100);
+        __AMSDebugLog("Warning: missing key at index %d building process link request dictionary for %s"
+                      ,iVar7,uVar4);
+      }
+      else {
+        lVar1 = *plVar5;
+        _CFArrayAppendValue(uVar3,lVar8);
+        if (lVar1 != 0) {
+          _CFDictionarySetValue(local_60,lVar8,lVar1);
+        }
+      }
+      iVar7 = iVar7 + 1;
+    } while (param_10 != iVar7);
+  }
+  _CFRelease(uVar3);
+  if (*(long *)PTR____stack_chk_guard_004412b8 == local_38) {
+    return local_60;
+  }
+                    /* WARNING: Subroutine does not return */
+  ___stack_chk_fail();
+}
+

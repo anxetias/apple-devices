@@ -630,3 +630,29 @@ apple-devices/
   «не внесло ни одного». Сборка -Wall -Wextra чистая.
 - Наблюдение: чужой файл ~9,1 МБ в /Airlock/Media (вероятно,
   3uTools владельца) — не тронут, Cleaning — владелец.
+
+#### Шаг 8 — подпроект из реверс-материалов друга (04.11, ветка music-mac-style)
+
+- Друг владельца реверснул Apple-протоколы на хакинтоше (MobileDevice,
+  AMPDevices, usbmuxd, DeviceLink, Sync) и собрал `iTunes-Reversed-Mechanisms`:
+  26 MD-доков с evidence (0–12), 33 205 дизасм-`.c` (~67 МБ), рабочее ядро
+  `libirm` (bplist, xmlplist, mux, lockdown без TLS, devicelink), `irmctl`, 6 юнитов.
+- Импортировано в репо (та же структура + `PORTING.md` + `meson.build`-заготовка)
+  в **отдельную ветку `music-mac-style`** (база — `music-3u-only`, т.е. шаг 7 учтён).
+  Ключевой сценарий — «передача музыки как на маке» (`docs/07`: механика B/C,
+  ATC-канал; `docs/10`: слои; `E03/E06/E07`).
+- **НЕ в git** (блобы/сырьё): `*.o`, `libirm.a`, бинари, `.DS_Store`, вложенный
+  `.git` друга, индексы генератора `decompile-index.json`/`decompile-journal.jsonl`
+  (~34 МБ), `tests/bplist.sample.bin` (генерится тестом). Оригиналы у
+  `~/Загрузки/iTunes-Reversed-Mechanisms.zip`.
+- **Портирование на Linux, проверено** (шаг): Makefile `-D_GNU_SOURCE` (glibc
+  прятал gmtime_r), `getprogname()`→`program_invocation_short_name` (lockdown),
+  NUL-терминатор STRING-узлов в bplist (strcmp читал мусор за `n` на Linux).
+  Юниты: **test_bplist, test_xml, test_lockdown, test_dl — OK**; red:
+  `test_xmlw` (расхождение round-trip «nested-dict»), `test_mux` (LIVE-дым
+  против Linux-usbmuxd — need DIFF с/mac-SPECS E01b); 3 sign-compare
+  в xmlplist — код друга, фикс остаётся на его стиль. Сборка: libirm.a + irmctl.
+- Телефон рыба не трогался: офлайн-юниты only (test_mux — к локальному демону).
+- Дальше: (1) довести mux клиента до Linux-usbmuxd (E01b) — фундамент; (2)
+  слой `music/` по `docs/07` (ATC); (3) интеграция libirm в apple-devices
+  через `subdir()` (заготовка в `iTunes-Reversed-Mechanisms/meson.build`).

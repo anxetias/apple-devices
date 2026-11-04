@@ -1,0 +1,10 @@
+// name: FUN_10027eca8
+// address: 10027eca8
+
+void FUN_10027eca8(long param_1)
+
+{
+  (*(code *)PTR__objc_release_10082c7b0)(*(undefined8 *)(param_1 + 0x28));
+  return;
+}
+

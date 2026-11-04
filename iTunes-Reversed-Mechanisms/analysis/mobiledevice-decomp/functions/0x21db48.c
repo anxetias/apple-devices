@@ -1,0 +1,40 @@
+// rea decompile_all
+// name: RTKitFirmware::setFirmwareNonce
+// address: 0x21db48
+// body: available
+// range: 0x21db48-0x21dbb4 inclusive
+// non_contiguous: false
+// provider: Ghidra 12.1.4 (ghidra)
+// analysis_profile: 04dde8c57a87610dc458abf444e7f4727b39c7dade182ba942da8f8f7f4fe93b
+// limitations: The session serves operations only after Ghidra reports default auto-analysis complete; incomplete analysis does not expose partial results.; The imported Program and temporary project are ephemeral and deleted on close. Annotation operations edit session database metadata; original executable bytes are never written.; Cancelling an active Ghidra request terminates its ephemeral database and discards session annotations. The selected target remains open; the next provider query imports the original artifact again.; Default-space addresses use lowercase 0x-prefixed hexadecimal; other address spaces use <percent-encoded-space>:0x<hex>.; Ghidra Listing reports a terminal call at 0x21db9d to 0x219d22 ACFUFTABFile::setBootNonce (external=false, thunk=false, hasNoReturn=false); fallthrough is excluded by Ghidra's flow model. The reason for the terminal flow is not established by this observation.; macOS sessions require a matching executable Ghidra native decompiler; REA checks for it but does not build native components or change Gatekeeper quarantine state.; Pseudocode is Ghidra decompiler output, not original source and not text-equivalent to Hopper output.; External functions and functions without an analyzable body return null; other decompiler failures remain explicit.
+// pseudocode: provider-specific; not original source
+
+
+/* RTKitFirmware::setFirmwareNonce(__CFData const*) */
+
+undefined8 __thiscall RTKitFirmware::setFirmwareNonce(RTKitFirmware *this,__CFData *param_1)
+
+{
+  ACFUFTABFile *this_00;
+  long lVar1;
+  ulonglong *puVar2;
+  undefined8 uVar3;
+  __CFData *p_Var4;
+  
+  p_Var4 = *(__CFData **)(this + 0x20);
+  if ((p_Var4 == (__CFData *)0x0) ||
+     (this_00 = (ACFUFTABFile *)
+                ___dynamic_cast(p_Var4,&ACFUFile::typeinfo,&ACFUFTABFile::typeinfo,0),
+     this_00 == (ACFUFTABFile *)0x0)) {
+    setFirmwareNonce(p_Var4);
+    return 0;
+  }
+  if ((param_1 != (__CFData *)0x0) && (p_Var4 = param_1, lVar1 = _CFDataGetLength(), lVar1 == 8)) {
+    puVar2 = (ulonglong *)_CFDataGetBytePtr(param_1);
+    uVar3 = ACFUFTABFile::setBootNonce(this_00,*puVar2);
+    return uVar3;
+  }
+  setFirmwareNonce(p_Var4);
+  return 0;
+}
+

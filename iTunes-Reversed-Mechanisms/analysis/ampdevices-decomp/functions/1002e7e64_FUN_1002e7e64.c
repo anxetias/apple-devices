@@ -1,0 +1,104 @@
+// name: FUN_1002e7e64
+// address: 1002e7e64
+
+void FUN_1002e7e64(long param_1,undefined4 *param_2)
+
+{
+  undefined4 uVar1;
+  undefined4 uVar2;
+  undefined4 uVar3;
+  undefined4 uVar4;
+  undefined4 uVar5;
+  undefined4 uVar6;
+  undefined4 uVar7;
+  undefined4 uVar8;
+  undefined4 uVar9;
+  undefined4 uVar10;
+  undefined4 uVar11;
+  undefined4 uVar12;
+  undefined4 uVar13;
+  undefined4 uVar14;
+  undefined4 uVar15;
+  undefined4 uVar16;
+  undefined4 uVar17;
+  undefined8 uVar18;
+  undefined8 uVar19;
+  undefined8 uVar20;
+  undefined8 uVar21;
+  undefined8 *context;
+  undefined1 local_70 [8];
+  undefined1 local_68 [8];
+  undefined1 local_60 [8];
+  undefined8 local_58;
+  undefined4 local_50;
+  undefined1 local_48 [8];
+  undefined8 local_40;
+  undefined8 local_38;
+  
+  uVar18 = *(undefined8 *)(param_1 + 0x48);
+  uVar19 = *(undefined8 *)(param_1 + 0x50);
+  uVar20 = *(undefined8 *)(param_1 + 8);
+  uVar21 = *(undefined8 *)(param_1 + 0x10);
+  uVar2 = *(undefined4 *)(param_1 + 0x18);
+  uVar3 = *(undefined4 *)(param_1 + 0x1c);
+  uVar4 = *(undefined4 *)(param_1 + 0x20);
+  uVar5 = *(undefined4 *)(param_1 + 0x24);
+  uVar6 = *(undefined4 *)(param_1 + 0x28);
+  uVar7 = *(undefined4 *)(param_1 + 0x2c);
+  uVar8 = *(undefined4 *)(param_1 + 0x30);
+  uVar9 = *(undefined4 *)(param_1 + 0x34);
+  uVar10 = *(undefined4 *)(param_1 + 0x38);
+  uVar11 = *(undefined4 *)(param_1 + 0x3c);
+  uVar12 = *(undefined4 *)(param_1 + 0x40);
+  uVar13 = *(undefined4 *)(param_1 + 0x44);
+  uVar14 = *param_2;
+  uVar15 = param_2[1];
+  uVar16 = param_2[2];
+  uVar17 = param_2[3];
+  uVar1 = param_2[4];
+  FUN_1001a8c1c(local_70,param_2 + 6);
+  FUN_1001a8c1c(local_68,param_2 + 8);
+  FUN_1001a8c1c(local_60,param_2 + 10);
+  local_58 = *(undefined8 *)(param_2 + 0xc);
+  local_50 = param_2[0xe];
+  FUN_1001a8c1c(local_48,param_2 + 0x10);
+  local_40 = *(undefined8 *)(param_2 + 0x12);
+  context = operator_new(0xa0);
+  context[8] = uVar18;
+  context[9] = uVar19;
+  *(undefined4 *)(context + 6) = uVar10;
+  *(undefined4 *)((long)context + 0x34) = uVar11;
+  *(undefined4 *)(context + 7) = uVar12;
+  *(undefined4 *)((long)context + 0x3c) = uVar13;
+  *(undefined4 *)(context + 4) = uVar6;
+  *(undefined4 *)((long)context + 0x24) = uVar7;
+  *(undefined4 *)(context + 5) = uVar8;
+  *(undefined4 *)((long)context + 0x2c) = uVar9;
+  *(undefined4 *)(context + 2) = uVar2;
+  *(undefined4 *)((long)context + 0x14) = uVar3;
+  *(undefined4 *)(context + 3) = uVar4;
+  *(undefined4 *)((long)context + 0x1c) = uVar5;
+  *context = uVar20;
+  context[1] = uVar21;
+  *(undefined4 *)(context + 10) = uVar14;
+  *(undefined4 *)((long)context + 0x54) = uVar15;
+  *(undefined4 *)(context + 0xb) = uVar16;
+  *(undefined4 *)((long)context + 0x5c) = uVar17;
+  *(undefined4 *)(context + 0xc) = uVar1;
+  FUN_1001a8c1c(context + 0xd,local_70);
+  FUN_1001a8c1c(context + 0xe,local_68);
+  FUN_1001a8c1c(context + 0xf,local_60);
+  context[0x10] = local_58;
+  *(undefined4 *)(context + 0x11) = local_50;
+  FUN_1001a8c1c(context + 0x12,local_48);
+  context[0x13] = local_40;
+  local_38 = 0;
+  _dispatch_async_f((dispatch_queue_t)PTR___dispatch_main_q_10082cb60,context,FUN_1002e80a4);
+  FUN_1002e7582(&local_38);
+  FUN_1001ab006(local_48);
+  FUN_1001ab006(local_60);
+  FUN_1001ab006(local_68);
+  FUN_1001ab006(local_70);
+  return;
+}
+

@@ -774,3 +774,59 @@ apple-devices/
 - Артефакты: traces `tools/atc-sync-runN-*-2026-11-04.log` (12 логов),
   E12 §5 обновлён (R1-факты, гипотезы дальше: снять
   AirTrafficControl.framework или найти регистрацию LibraryID).
+
+##### Шаг 9d: переговорный слой ВСКРЫТ — R1/R2 закрыты, ReadyForSync получен (04.11, день)
+
+- Итог в одну строку: по публичной CONFIRMED-реализации **rustunes**
+  (`github.com/fbiba/rustunes`, MIT, Feim Biba 2026 — Linux-клиент ATC
+  с end-to-end синком на iPhone17,2/iOS 27.0.1) реализовано
+  **`irmctl atc-handshake`**, и на НАШЕМ телефоне iPhone12,1/iOS 27.2
+  после `RequestingSync` получен **`ReadyForSync`**
+  {DataclassAnchors:{Media:"1",Book:"0"}, DeviceInfo.Grappa: 83B}
+  — переговорный слой ATC закрыт (R1+R2 из E12 §5); read-only гарантирован
+  (после ReadyForSync ничего не шлём — закрытие = отмена).
+- Почему NegotiationFailed{4} (v1–v15) не сдавался — причина была НЕ
+  в контенте Params, а в трёх инвариантах сессии (E13 §2):
+  (1) **Session-нумерация**: Ping = Session 1, RequestingSync = Session 2
+  (SendSyncRequest инкрементирует счётчик сессий до отправки;
+  SendPing — нет); (2) **хост-конверт = {Session, Command, [Params]}**
+  без Type/Id; (3) **HostInfo-профиль Apple-хоста** в Params:
+  Type:iTunes, Version 13.2.4.123, **WindowsOSVersion:"10.0"** (не
+  MacOSVersion), SyncHostName, **LibraryID = 16 UPPERCASE hex**
+  (%016llX — НЕ UUID с дефисами), SyncedDataclasses:[Media],
+  SyncedAssetTypes:[Music], Wakeable:0 (**u64-число**, не bool),
+  **Grappa: data 84B** (фиксированная публичная константа);
+  Dataclasses:[Media,Book,Keybag] (порядок Apple), яккеры-десятичные
+  строки {Media:A, VoiceMemo:"1"} — A = якер телефона.
+- Live-диалог (рукопожатие): Ping S1 → Pong/Capabilities/InstalledAssets/
+  AssetMetrics/**SyncAllowed** (остановка чтения СРАЗУ на SyncAllowed —
+  idle-бюджет ~10–15 с) → RS S2 → **SyncAllowed/InstalledAssets/
+  ReadyForSync** → телефон шлёт Ping×2 → IdleExit (ждёт стадинг по AFC).
+  Якорь телефона Media:"1" (пустая библиотека).
+- Дополнительно закрыты отрицательно: **Q4** (com.apple.atc2 молчит даже
+  на HostInfo — EOF сразу; мёртв) и **R1a** (new `irmctl lk-dump`:
+  GetValue-домены lockdown внутри StartSession — Media-регистраций нет,
+  data_sync = iCal/Контакты iCloud; wireless_lockdown без
+  WiFiSyncingLibraries). v16 (Grappa-сиблинг)/v17 (якорь UINT32_MAX) —
+  NegotiationFailed{4} не сдвинули (вход-факты для E13).
+- Код: `tools/irmctl.c::atc-handshake` (Ping/RS-профиль, atc_host_msg,
+  GRAPPA_HOST_REQUEST, env IRMA_ATC_LIBID/ANCHOR/VERSION/SERVICE;
+  чтение по одному кадру, Pong на телефонный Ping), `lk-dump`
+  (dispatch+usage), v16/v17 в atc-sync; `-Wall -Wextra` чисто,
+  юниты libirm 6/6.
+- Документы: **E13** (`docs/evidence/E13-atc-resolved.md` — новая,
+  сводка+wire-профиль+план mutation-фазы), E12 §5 переписан
+  (R1 ЗАКРЫТ через E13; R2 уточнён: SyncTypes выбирает ХОСТ, anchor
+  mismatch → Reset, Linux-клиент всегда Delta), README-индекс +
+  E13-строка. Traces: `tools/*-2026-11-04b.log` (6 логов:
+  atc-handshake-run1/2, lk-dump-run1, atc-talk-atc2-run1,
+  atc-sync-run16-v{16,17}).
+- Дальше (мутирующая фаза — СТРОГО после явного согласия пользователя):
+  AFC-стадинг `iTunes_Control/Sync/Media/Sync_%08X.plist`+`.cig`
+  (подпись: AES-128-CBC(key 0x95×16, IV=reply[2:18]) на reply[19:83]→D;
+  K=ECB(key 7776…, D[1:17]^D[39:55]^const4); sidecar 21B = 01‖
+  (HMAC-SHA1(K,ops)^D[18:38]^const5)) → FinishedSyncingMetadata →
+  AssetManifest/Airlock/FileComplete → SyncFinished. Identity по AFC:
+  iTunesPrefs (frpd 1232B): catalog_id LE64@raw[12..20], user_id
+  LE64@raw[20..28], LibraryID=%016llX(cat^usr); якорь:
+  MediaLibrary.sqlitedb _MLDatabaseProperties.MLSyncClientSyncAnchor.

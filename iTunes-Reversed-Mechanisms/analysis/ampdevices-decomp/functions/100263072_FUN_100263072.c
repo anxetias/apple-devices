@@ -1,0 +1,15 @@
+// name: FUN_100263072
+// address: 100263072
+
+void FUN_100263072(undefined8 *param_1)
+
+{
+  *param_1 = &PTR_FUN_10083f1a8;
+  if (param_1[7] != 0) {
+    std::__shared_weak_count::__release_weak();
+  }
+  FUN_1003c5950(param_1);
+  operator_delete(param_1);
+  return;
+}
+

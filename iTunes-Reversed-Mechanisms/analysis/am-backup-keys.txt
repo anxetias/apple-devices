@@ -1,0 +1,312 @@
+AMSBackupCancelTarget
+AMSBackupPercentageKey
+AMSBackupRequest
+AMSChangeBackupPassword
+AMSEnableCloudBackup
+AMSEraseDeviceRequest
+AMSMessageSignatureKey
+AMSRequestKey
+AMSRestoreWithApplicationsRequest
+ARASA
+AVSH
+AVSI
+AWAVATSH
+AWAVATSI
+AWAVAUATSH
+AWAVAUATSPA
+AWAVAUATSPH
+AWAVAUATSPI
+AWAVAUATSPL
+AWAVSPH
+AWAVSPI
+Account Moved
+ActivationState
+Adding observer for backup cancellation notifications
+AppInfo
+AppleMobileBackup
+ApplicationIDs
+Applications
+AuthVersion
+Backup
+Backup Success
+Backup cancelled
+BackupAtomicManifestKey
+BackupComputerBasePathKey
+BackupErrorBadManifest
+BackupErrorFindMyiPhoneEnabled
+BackupErrorInvalidPassword
+BackupErrorNoDestinationSpecified
+BackupErrorReasonKey
+BackupErrorSpringboardNotReady
+BackupFileDataKey
+BackupFileInfo
+BackupFileInfoKey
+BackupFilesToDeleteKey
+BackupManifestKey
+BackupMessageBackupFinished
+BackupMessageBackupReplyOK
+BackupMessageBackupReplyRefused
+BackupMessageBackupRequest
+BackupMessageError
+BackupMessageRestoreApplicationReceived
+BackupMessageRestoreApplicationSent
+BackupMessageRestoreComplete
+BackupMessageRestoreFileReceived
+BackupMessageRestoreReplyOK
+BackupMessageRestoreReplyRefused
+BackupMessageSendFilePiece
+BackupMessageTypeKey
+BackupMigrateReadyForBackup
+BackupProtocolVersion
+BackupRestoreError
+BackupRestoreFileName
+BackupState
+BackupTotalSizeKey
+CFBundleIdentifier
+CFDataCreateWithBytesNoCopy
+CFDictionaryGetValue
+CFGetTypeID
+CFPropertyListCreateFromXMLData
+CFPropertyListCreateWithData
+CFRelease
+CFStringCreateWithCStringNoCopy
+CFStringGetCString
+CFStringGetTypeID
+CKPartialErrors
+Cancelling backup
+ChangePassword
+Child
+CloudBackupState
+Conflict
+Connecting
+Connecting to the device failed because it is locked
+Connection to device lost
+Container
+Content
+Could not create a temporary path for the backup file data
+Creating connection
+DLErrorConnectingLocked
+DLFileAttributesKey
+DLFileDest
+DLFileSource
+DLFileStatusKey
+Data
+Default
+Default Selection
+Deleting connection
+Denying NULL inner manifest version
+Device Name
+Device is ready
+Device listener stopped
+Disconnecting
+Display Name
+Displaying backup info not supported for this backup format
+Domain
+DomainName
+Done sending all restore files and applications
+EnableCloudBackup
+EraseDevice
+Error acknowledging received file
+Error attaching to device
+Error encoding string
+Error getting list of attached devices
+Error parsing file metadata
+ErrorCode
+ErrorDescription
+Expected at least one underlying error
+Extract
+Failed Dependency
+Failed to fstat src file
+Failed to open src file
+FileSize
+Files
+Greylist
+HTTP connection error
+Hello
+HomeDomain
+Ignoring backup cancel request since no backup is in progress
+Incompatible backup protocol versions
+Incorrect SHA1 digest length
+Incorrect SHA256 digest length
+Info
+Insufficient Storage
+Invalid arguments
+Invalid buffer size
+Last Backup Date
+List
+Locked
+Lost connection to device
+MBComputerManager
+MBComputerManager1
+MBComputerManager2
+MBComputerTools
+MBConnectionManager
+MBDigest
+MBDigestSHA1
+MBDigestSHA256
+MBError
+MBErrorDomain
+MBFileManager
+MBProcessLinkProgressDelegate
+MBProgressDelegate
+MBSimpleChecksumForString
+MessageName
+NewPassword
+No UDID for a device
+No backups exist
+No data was found in the backup file
+No deleted files in this backup
+No manifest to save
+No response or error
+No response to message
+Not Found
+Not a regular file
+Not pruning app bundle files
+Not pruning app files
+Not pruning system files
+OldPassword
+Only a lockdown device identifier is supported
+Options
+Password
+Path
+Perhaps we shall try again later
+Product Version
+ProductVersion
+ProtocolVersion
+Pruning system files
+RelativePath
+Remove
+Removing observer for backup cancellation notifications
+Response
+Restore
+RetryAfter
+RootDirectory
+Service Unavailable
+Setting root directory of connection
+Source identifier required
+SourceIdentifier
+StorageVersion
+SupportedProtocolVersions
+Target Identifier
+TargetIdentifier
+Thanks for the memories
+The backup did not contain a manifest
+TimeoutConnection
+UAWAVAUATSH
+UAWAVSH
+UTF8String
+Unactivated
+Unauthorized
+Unexpected device ready callback
+Unique Identifier
+Unknown error
+UnlockEscrowBag
+Using default version
+Version
+Version may not be zero when not connecting to device
+absoluteString
+allHeaderFields
+allKeys
+allObjects
+allValues
+array
+backup
+boolValue
+bytes
+callbacks
+cancelling
+change
+class
+closeConnection
+closing
+cloud
+code
+computerTools
+connection
+connectionLostCallback Called
+copy
+count
+currentHandler
+currentLocale
+data
+date
+dealloc
+defaultManager
+deleteConnection
+description
+device
+dictionary
+disconnected
+domain
+doubleValue
+drain
+erase
+errorCode
+extract
+fileHandleWithStandardOutput
+filePath
+fileSystemRepresentation
+filename
+final
+firstObject
+floatValue
+help
+iPhone
+idle
+info
+init
+intValue
+integerValue
+itcH
+jZAYH
+kBackupMessageBackupFileReceived
+kCFAllocatorNull
+kMBErrorDateKey
+kMBUnderlyingErrorsKey
+kMMCSErrorUnderlyingErrorArrayKey
+keyEnumerator
+lastPathComponent
+length
+list
+listener
+localizedDescription
+longLongValue
+lowercaseString
+mbbackup
+mdbackup
+mddata
+mdinfo
+mutableCopy
+nextObject
+objectEnumerator
+output
+pageSize
+password
+path
+processLinkProgressDelegate
+progressDelegate
+remove
+restore
+root
+serviceName
+sha1
+sha256
+source
+statusCode
+string
+stringByDeletingPathExtension
+stringByStandardizingPath
+supportedVersion
+target
+targetIdentifier
+teUH
+timeIntervalSinceReferenceDate
+underlyingError
+underlyingErrors
+userInfo
+version
+w5H
+wQH
+waiting for device ready
+waiting for hello response
+waiting for response

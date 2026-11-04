@@ -1,0 +1,50 @@
+// name: FUN_10052f976
+// address: 10052f976
+
+undefined8 FUN_10052f976(long param_1,undefined8 param_2,undefined8 param_3)
+
+{
+  char cVar1;
+  undefined8 uVar2;
+  undefined4 local_58;
+  char *local_54;
+  undefined2 local_4c;
+  char *local_4a;
+  long local_38;
+  
+  local_38 = *(long *)PTR____stack_chk_guard_10082cb58;
+  if (*(long *)(param_1 + 0x518) != 0) {
+    uVar2 = FUN_1001cc310();
+    cVar1 = _os_log_type_enabled(uVar2,0x10);
+    if (cVar1 != '\0') {
+      local_58 = 0x8220202;
+      local_54 = "Assertion failure";
+      local_4c = 0x822;
+      local_4a = "mHashContext == __null";
+      __os_log_error_impl(0x100000000,uVar2,0x10,"%{public}s: (%{public}s)",&local_58,0x16);
+    }
+    FUN_1001782e9(0,0);
+  }
+  if (*(long *)(param_1 + 0x550) == 0) {
+    uVar2 = FUN_1001cc310();
+    cVar1 = _os_log_type_enabled(uVar2,0x10);
+    if (cVar1 != '\0') {
+      local_58 = 0x8220202;
+      local_54 = "Assertion failure";
+      local_4c = 0x822;
+      local_4a = "mStream != __null";
+      __os_log_error_impl(0x100000000,uVar2,0x10,"%{public}s: (%{public}s)",&local_58,0x16);
+    }
+    FUN_1001782e9(0,0);
+    uVar2 = 0xffffffce;
+  }
+  else {
+    uVar2 = FUN_1001d8042(*(long *)(param_1 + 0x550),param_2,param_3);
+  }
+  if (*(long *)PTR____stack_chk_guard_10082cb58 == local_38) {
+    return uVar2;
+  }
+                    /* WARNING: Subroutine does not return */
+  ___stack_chk_fail();
+}
+

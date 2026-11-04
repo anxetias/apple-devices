@@ -1,0 +1,75 @@
+// name: FUN_100218db0
+// address: 100218db0
+
+void FUN_100218db0(void)
+
+{
+  FUN_1001b7b04(&DAT_1008a2ba0,"app.DidHide");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2ba0,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2bb0,"app.DidShow");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2bb0,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2bc0,"app.Activated");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2bc0,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2bd0,"app.Deactivated");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2bd0,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2be0,"app.PreferencesDidChange");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2be0,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2bf0,"app.StatusLineTotalsStringChange");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2bf0,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2c00,"app.StatusLineTotalsLabelWasClicked");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2c00,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2c10,"app.ContentViewControllerWillChange");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2c10,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2c20,"app.ContentViewControllerDidChange");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2c20,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2c30,"app.ViewModeWillChange");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2c30,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2c40,"app.ViewModeDidChange");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2c40,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2c50,"app.ViewOptionsDidChange");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2c50,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2c60,"app.VisiblePlaylistDidChange");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2c60,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2c70,"app.VisibleFieldsDidChange");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2c70,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2c80,"app.OcclusionStateChanged");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2c80,0x100000000);
+  FUN_1001b7b04(&DAT_1008c54b8,"app.NetworkUpDelayed");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008c54b8,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2c90,"app.IsQuitting");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2c90,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2ca0,"app.NoSelectionAvailableToSelect");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2ca0,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2cb0,"app.AppearanceDidChange");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2cb0,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2cc0,"app.ShouldSimulateUserSearch");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2cc0,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2cd0,"sys.ThemeChanged");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2cd0,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2ce0,"sys.ScrollBarStyleChanged");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2ce0,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2cf0,"sys.SidebarIconSizeChanged");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2cf0,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2d00,"sys.UserSessionActivated");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2d00,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2d10,"sys.UserSessionDeactivated");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2d10,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2d20,"sys.ActiveSpaceChanged");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2d20,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2d30,"sys.ScreenConfigurationChanged");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2d30,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2d40,"sys.ScreenSaverActivated");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2d40,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2d50,"sys.ScreenSaverDeactivated");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2d50,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2d60,"sys.ScreenLocked");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2d60,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2d70,"sys.ScreenUnlocked");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2d70,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2d80,"sys.ThermalPressureChange");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2d80,0x100000000);
+  FUN_1001b7b04(&DAT_1008a2d90,"sys.MemoryPressureChange");
+  ___cxa_atexit(FUN_1001b7a50,&DAT_1008a2d90,0x100000000);
+  return;
+}
+

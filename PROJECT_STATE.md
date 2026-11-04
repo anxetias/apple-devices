@@ -168,7 +168,7 @@ apple-devices/
 #### Шаг 1 — Модуляризация и рефакторинг (ЗАВЕРШЁН)
 
 - Создан `src/deviceScanner.h/c` — DeviceInfo GObject, иконки устройств, plist helpers, поток сканирования USB, события usbmuxd, восстановление выделения.
-- Создан `src/medialib.h/c` — MusicTrack GObject, вся работа с MediaLibrary.sqlitedb (SQL helpers, sort_map, ensure_* сущностей, вставка/удаление треков, artwork,自我исправление путей).
+- Создан `src/medialib.h/c` — MusicTrack GObject, вся работа с MediaLibrary.sqlitedb (SQL helpers, sort_map, ensure_* сущностей, вставка/удаление треков, artwork, самовосстановление путей).
 - Создан `src/afcUtils.h/c` — AfcSession, AFC скачивание/загрузка, умное частичное чтение тегов (MP3/M4A/FLAC), readTrackTags.
 - Создан `src/uiWidgets.h/c` — виджеты UI: makeButton, makeStubPage, createSidebarRow, createMusicRow, навигация, фильтрация/сортировка, заглушки, настройки.
 - `src/application.h` — перенесено определение структуры `AppleApplication`, типы DeviceInfo/MusicTrack через G_DECLARE_FINAL_TYPE.
@@ -555,3 +555,463 @@ apple-devices/
   безобложечных; проверить отдельно, не блокер); (3) финальный
   UI-прогон (та же цепочка, что в headless-харнессе и в 4 прогонva
   через модуль) — по желанию владельца.
+
+#### Шаг 7 — ветка music-3u-only: только путь 3u, прямой убран (01.11)
+
+- Копия main (после шага 6, `faeb614` → `4ee85e4`) для варианта
+  «импорт музыки только через сервер 3uTools»: реорганизация в
+  src/application.c; изменения не задел прочих модулей.
+- musicImportThread переписан: убран wal-гейт и весь прямой путь
+  (mkdir Imported/, цикл afcUploadFile→Imported/, db_metas,
+  musicSyncMedialibAdd, слот-массив); остались: afcSessionOpen,
+  чтение тегов, требования «все .mp3 + полные теги» и вызов
+  sync3uImportBatch; при нарушении требований или отказе сервера —
+  журнал + return -1 (откатов нет).
+- onMusicImportFinished: ветка -2 (wal-гейт) исчезла; toast:
+  «Импорт не удался — подробности в журнале» / «Импортировано
+  файлов: %d»; хвостовое сообщение — «устройство внесло треки в
+  свою базу (atc-синх)…».
+- trTable: удалены 6 строк прямого пути; 8 новых RU/EN (отказы и
+  итоги 3u-пути, включая «внесло %d из %u треков (SyncFinished)»).
+  Строки медiable: sync3uImportBatch логирует сам, его tr-строки
+  в таблице остаются с шага 6.
+- Сборка (-Wall -Wextra) чистая; юнит-тест sync3u (frame/cig-area/
+  decl) цел. Диф: −103/+63 строк в app.c. Коммит `a50f873`,
+  ветка запушена (origin/music-3u-only).
+- Прямой путь живёт в main — там частично необходим для другой
+  целевой записи (экспорт/удаление модулей мобильной музыки);
+  music-3u-only НЕ merged: решение за владельцем после UI-прогона
+  этого варианта (та же цепочка, что харнесс).
+
+#### Шаг 7 — E2E прогон ветки music-3u-only (01.11, ночь)
+
+- Харнесс пересобран от ветки `music-3u-only` (a50f873) — код совпадает
+  с musicImportThread: теги → sync3uImportBatch, без wal-гейта и
+  прямого пути. wal «грязный» (3,82 МБ) — 3u-путь не заметил.
+- Итог: **2/2 демо-трека внесены с обложками** (SyncFinished).
+  demo1 — 1-я попытка; demo2 в батче — сервер 104×5 → батч вернул
+  частичный успех 1/2 (сегодняшний дросселинг сильнее вчерашнего);
+  отдельный повторный запуск demo2 — успех на 5/5 попытке
+  (F10/AHHHDFGF.mp3).
+- Подтверждено: файлы успешных треков устройство потребляет из
+  Airlock; при неудачных попытках остаются невидимые сироты в
+  /Airlock/Media + Artwork (3 шт. ≈ 590 КБ, владелец informed).
+- Семантика ветки подтверждена: частичное внесение возвращает
+  число (тост «Импортировано файлов: %d», остальные — в журнале),
+  полный отказ сервера/требований → -1; откатов нет.
+- Ветка по-прежнему не слита в main. Естественное продолжение:
+  UI-прогон из приложения (кнопка Импорт), решение о merge — за
+  владельцем.
+
+#### Шаг 7 — дополнение: конвертация не-mp3 и двойной RETRY (02.11)
+
+- **Не-mp3 конвертируется в mp3** вместо отказа: новый модуль
+  `src/transcode.{c,h}` (GStreamer: decodebin → lamemp3enc 320 kbps
+  CBR, GSubprocess на gst-launch-1.0; свойства пайплайна одним
+  токеном `location=...`). Теги и обложка переносятся TagLib'ом
+  (комплексное свойство PICTURE — и чтение, и запись; MIME по
+  магическим байтам). В thread после конвертации мета перечитывается
+  с mp3 (размер/битрейт/длительность точные). Ошибка конвертации
+  файла → отказ всего импорта (откатов нет), причина в журнале.
+- **Двухуровневый RETRY против дросселинга сервера**: внутри трека
+  осталось 5 попыток × 60 с; sync3uImportBatch теперь отдаёт
+  `out_failed` (индексы не внесённых), а musicImportThread делает
+  до 3 раундов по НЕуспешным с паузой 60 с (до 15 попыток на трек).
+  Успешные треки в повтор не попадают (pid свежий на попытку —
+  дубликатов нет). Возврат батча: всегда >=0 (число внесённых);
+  -1 только на некорректные аргументы.
+- Хост-тест `tools/trans_test.c` (в 3utools-research): flac (с
+  обложкой) и ogg (без) — конвертация/теги/обложка/мета — все OK.
+- **E2E прогон 6 (устройство): 2/2 внесены.** flac→mp3 (обложка
+  перенесена, cover=да) на 2-й попытке (RETRY 104 внутр.), ogg→mp3
+  с 1-й. Airlock по обоим потреблён.
+- trTable: +11 RU/EN строк (конвертация, раунды, частичный итог);
+  удалены «не mp3 (в наборе…)», «сервер 3u отказал — импорт»,
+  «не внесло ни одного». Сборка -Wall -Wextra чистая.
+- Наблюдение: чужой файл ~9,1 МБ в /Airlock/Media (вероятно,
+  3uTools владельца) — не тронут, Cleaning — владелец.
+
+#### Шаг 8 — подпроект из реверс-материалов друга (04.11, ветка music-mac-style)
+
+- Друг владельца реверснул Apple-протоколы на хакинтоше (MobileDevice,
+  AMPDevices, usbmuxd, DeviceLink, Sync) и собрал `iTunes-Reversed-Mechanisms`:
+  26 MD-доков с evidence (0–12), 33 205 дизасм-`.c` (~67 МБ), рабочее ядро
+  `libirm` (bplist, xmlplist, mux, lockdown без TLS, devicelink), `irmctl`, 6 юнитов.
+- Импортировано в репо (та же структура + `PORTING.md` + `meson.build`-заготовка)
+  в **отдельную ветку `music-mac-style`** (база — `music-3u-only`, т.е. шаг 7 учтён).
+  Ключевой сценарий — «передача музыки как на маке» (`docs/07`: механика B/C,
+  ATC-канал; `docs/10`: слои; `E03/E06/E07`).
+- **НЕ в git** (блобы/сырьё): `*.o`, `libirm.a`, бинари, `.DS_Store`, вложенный
+  `.git` друга, индексы генератора `decompile-index.json`/`decompile-journal.jsonl`
+  (~34 МБ), `tests/bplist.sample.bin` (генерится тестом). Оригиналы у
+  `~/Загрузки/iTunes-Reversed-Mechanisms.zip`.
+- **Портирование на Linux, проверено** (шаг): Makefile `-D_GNU_SOURCE` (glibc
+  прятал gmtime_r), `getprogname()`→`program_invocation_short_name` (lockdown),
+  NUL-терминатор STRING-узлов в bplist (strcmp читал мусор за `n` на Linux).
+  Юниты: **test_bplist, test_xml, test_lockdown, test_dl — OK**; red:
+  `test_xmlw` (расхождение round-trip «nested-dict»), `test_mux` (LIVE-дым
+  против Linux-usbmuxd — need DIFF с/mac-SPECS E01b); 3 sign-compare
+  в xmlplist — код друга, фикс остаётся на его стиль. Сборка: libirm.a + irmctl.
+- Телефон рыба не трогался: офлайн-юниты only (test_mux — к локальному демону).
+- Дальше: (1) довести mux клиента до Linux-usbmuxd (E01b) — фундамент; (2)
+  слой `music/` по `docs/07` (ATC); (3) интеграция libirm в apple-devices
+  через `subdir()` (заготовка в `iTunes-Reversed-Mechanisms/meson.build`).
+
+##### Шаг 8, продолжение: mux доведён до Linux-usbmuxd (04.11)
+
+- **`test_mux` зелёный против живого системного демона** (`/usr/sbin/usbmuxd`,
+  iso-cell: --user usbmuxd --systemd), как и `irmctl list` (видит iPhone12,1,
+  read-only `ListDevices`); телефон рыба не трогался: Connect не звали.
+- Эмпирия против чужого демона (проблема диффузии «mac-спока E01b §9» на
+  Linux): **`ver=1` кадра принимает только XML-тело**; наш прежний bplist
+  запрос демо-молчал (потому и «resp == NULL»); **`ver=2` демона ведёт как
+  legacy** (ответ `ver=0 msg=1` + LE u32 код 6). `Helloworld` для Linux
+  НЕ нужен (ListDevices работает без него; hello даёт `Result Number=1`).
+- Правки: `irm_mux_send` — тело XML (вместо bplist; mac-CF-план читает оба,
+  E01b §9); `irm_mux_recv` — diff легаси-ответа (полезная диагностика);
+  `irm_mux_connect` — TODO: PortNumber (сеть/байт-порядок?) НЕ проверяно
+  live, Connect до проверки не ждать. Всё потому в `docs/evidence/E01b §10`.
+- Юнит-итог: **5/6 OK** (bplist/xml/lockdown/mux/dl); красный только
+  `test_xmlw` (round-trip «nested-dict») — следующая сессия.
+- Коммит `af79e7cd` запушен (пуши флейкают по SSH/gcr — ретрай помогает).
+
+##### Шаг 9: pair + TLS + StartSession + ATC-probe (04.11, тот же день)
+
+- Итог в одну строку: **полный живой TLS-путь пройден own-libirm'ом без
+  libimobiledevice**: пар-рекорд → StartSession → session-TLS на lockconn →
+  StartService(atc) → собственный фреймовый reader. Всё зелёное на
+  iPhone12,1 / iOS 27.2 (лог `atc-probe-run3.log`, копия в traces/tools).
+- Фундамент: `libirm/src/tls.c` (OpenSSL-клиент: client handshake +
+  pinning SHA-256 DER peer, E04 §3–6; включается
+  `-DIRM_OPENSSL=1` + pkg-config openssl) и `libirm/src/pairing.c` (чистый
+  POSIX-разбор `/var/lib/lockdown/<UDID>.plist`: HostID/SystemBUID +
+  5 PEM-полей). lockdown.c: `irm_lk_start_session(lk, pair)` (E02: HostID +
+  SystemBUID СТРОКАМИ; ответ EnableSessionSSL=true → wrap ТОГО ЖЕ fd);
+  I/O через единые `lk_wr/lk_rd` (plain↔TLS под флагом).
+- mux: `irm_mux_connect` дополнена полями демона (ClientVersionString/
+  ProgName/kLibUSBMuxVersion=3) и Linux-фактом **PortNumber=htons(port)**
+  (strace libusbmuxd: 32498=0x7EF2 при 62078; Result=0; сырой/«косой-свап»
+  варианты давали Result=3 — поправлено в E01b §10).
+- Живая эмпирика (E11 `docs/evidence/E11-atc-probe.md`):
+  1) StartService БЕЗ сессии → `SessionInactive` на все сервисы;
+     QueryType до сессии — единственный plain-обмен, который принимают.
+  2) StartSession+TLS: клиент = HostCertificate+HostPrivateKey (lbD-стиль)
+     сработал с ПЕРВОЙ попытки (Apple-комбо DeviceCertificate+RootPrivateKey
+     не понадобилось); GetValue ProductVersion через TLS → `27.2`.
+  3) **ATC framing = [LE32 len][bplist00 payload]**, и сервер САМ открывает
+     обмен: приветственная серия Capabilities → InstalledAssets →
+     AssetMetrics (Id-счётчик 9→10→11; Session=0, Type=0). В AssetMetrics
+     `Music{_Count:3,_PhysicalSize:38715392}` — сходится с трёмя треками
+     шага 7; № и счётчики Phone.GetProhibited не путаются.
+  4) `com.apple.atc2`: StartService/TLS ок, но сервер сразу закрывает
+     канал (без приветствия) — поведение иное, Q4.
+- Юнит-набор: **6/6 OK** (test_bplist/xml/xmlw/lockdown/mux-LIVE/dl);
+  `-Wall -Wextra` чисто; xmlw-фикс: NUL-терминатор в `take_text` +
+  unsigned-касты `&#NN;`-ветки xmlplist.
+- Коммиты: подпроект-ветка `music-mac-style` (HEAD — см. строку «Пуши»),
+  FINDINGS/тrace-артефакты — в ветке `3utools-research`.
+
+##### Шаг 9b: клиентская сторона ATC + atc-talk live (04.11, продолжение)
+
+- Итог в одну строку: **клиентская последовательность ATC восстановлена
+  из дизасма (AMPDevicesAgent/Dulcimer-класс) и подтверждена на
+  телефоне read-only обменом `irmctl atc-talk`**; факт-документ —
+  `docs/evidence/E12-atc-client-protocol.md` (E11 Q1/Q2 закрыты).
+- Из дизасма: клиентский API `_ATHostConnection*` (Send* полный список)
+  при AirTrafficControl.framework в корпусе только PLT-заглушками;
+  состояния Idle→RequestingSync→ReadyForSync→SyncingMetadata→
+  FinishedSyncingMetadata→TransferringAssets→Finished; RequestingSync =
+  маска dataclasses (1=Media|2=Ringtone|8=Book|0x10=Application|
+  0x20=Keybag|0x40=Photo|0x80=Data) + анкеры-словарь
+  `{Dataclass:"<uint32 string>"}` + HostInfo; ReadyForSync сервера
+  ОБЯЗАН нести DataclassAnchors; FinishedSyncingMetadata =
+  SyncTypes (ATSyncNoSync/DeltaSync/ResetSync/PrepOnly)+Anchors+
+  PurgeDataBytes; Grappa — подпись только .cig-сайдфайлов (не wire).
+- Live (run1–3, логи в traces/tools): приветствие Capabilities→
+  InstalledAssets→AssetMetrics; HostInfo (read-only заглушки) принят
+  → SyncAllowed (ManualSync/AutoSync/Purge/AppRemoval/**AppInstallation**
+  =true, EducationModeEnabled/DataProtected=false,
+  DisabledAssetTypes=[Photo,Movie,TVEpisode,HomeVideo],
+  SupportsFavorites=true); наш Ping→Pong; сервер пингует и закрывает
+  idle-сессию **IdleExit** (новый серверный Command); Id-сервера
+  глобальный по atcd (13→33), клиентский свой (1/2).
+- Код: `tools/irmctl.c::atc-talk` (HostInfo/Ping client-side,
+  5-ключевой конверт, LE32-фрейминг, svc_read_full 0/−2/−3),
+  `libirm/src/tls.c` — фикс ложного EOF: SSL_ERROR_SYSCALL+EAGAIN →
+  poll-ожидание; `-Wall -Wextra` чисто, юниты 6/6.
+- Открыто: R1 точные wire-имена Params RequestingSync (сериализует
+  AirTrafficControl.framework — дизасма нет; гипотезы в E12 §5),
+  R2 выбор Delta/Reset, Q3 (Music._Count инкремент — критерий шага 9),
+  Q4 atc2.
+- Артефакты в traces: `tools/atc-talk-run{1,2,3}-2026-11-04.log` и
+  попутно закоммичены `tools/atc-probe-run3-2026-11-04.log`,
+  `tools/ideviceinfo-mux.strace-2026-11-04`.
+
+##### Шаг 9c: R1-проба RequestingSync — валидатор atcd частично расшифрован (04.11, ночь)
+
+- Итог в одну строку: **`irmctl atc-sync`** (15 вариантов Params) довёл
+  до известного слоя: сервер видит наш `RequestingSync`, проверяет
+  версию (`DeviceProtocolOutOfDate`=12 при 13.5.6.12; RequiredVersion
+  **"10.5.0.115"** — версии ИЗ Params.HostInfo, не top-level HostInfo!)
+  и дальше всегда отвечает **NegotiationFailed(=4)**; переговорный
+  слой за AirTrafficControl.framework (в corpus'е его нет).
+- Расшифрована **таблица AT-ошибок (25 имён, из строк агента +
+  FUN_10032f390)**: 4=NegotiationFailed, 5=DeviceRefusedToSyncDataclass,
+  9=DeviceCancelledSync, 14=DeviceProtocolOutOfDate, 15=HostProtocolOutOfDate,
+  18=SyncBlocked, ...
+- Открытия механики: (1) RequestingSync требует `Params.HostInfo.Version`
+  (вложенный HostInfo обязателен); (2) после SyncAllowed у сервера
+  короткий idle-бюджет — запрос слать сразу (поздний = тихий EOF);
+  (3) имя массива классов/яккеры/типы-assеты/GrappaSupportInfo — на
+  слой NegotiationFailed не влияют (v1–v15).
+- Read-only подтвердён: SyncFailed → AssetMetrics → Ping×2 → IdleExit,
+  ничего не пишется.
+- syslog_relay на iOS 27 = InvalidService (device-логи недоступны).
+- Код: `atc-sync` (Builder Params 1..15, env IRMA_ATC_VERSION/
+  IRMA_ATC_SYNCED_DC/IRMA_ATC_SYNCED_TYPES), `atc_summary` для крупных
+  кадров, `syslog`-подкоманда; SIGPIPE-игнор; юнит-набор не ломался
+  (`-Wall -Wextra` clean).
+- Артефакты: traces `tools/atc-sync-runN-*-2026-11-04.log` (12 логов),
+  E12 §5 обновлён (R1-факты, гипотезы дальше: снять
+  AirTrafficControl.framework или найти регистрацию LibraryID).
+
+##### Шаг 9d: переговорный слой ВСКРЫТ — R1/R2 закрыты, ReadyForSync получен (04.11, день)
+
+- Итог в одну строку: по публичной CONFIRMED-реализации **rustunes**
+  (`github.com/fbiba/rustunes`, MIT, Feim Biba 2026 — Linux-клиент ATC
+  с end-to-end синком на iPhone17,2/iOS 27.0.1) реализовано
+  **`irmctl atc-handshake`**, и на НАШЕМ телефоне iPhone12,1/iOS 27.2
+  после `RequestingSync` получен **`ReadyForSync`**
+  {DataclassAnchors:{Media:"1",Book:"0"}, DeviceInfo.Grappa: 83B}
+  — переговорный слой ATC закрыт (R1+R2 из E12 §5); read-only гарантирован
+  (после ReadyForSync ничего не шлём — закрытие = отмена).
+- Почему NegotiationFailed{4} (v1–v15) не сдавался — причина была НЕ
+  в контенте Params, а в трёх инвариантах сессии (E13 §2):
+  (1) **Session-нумерация**: Ping = Session 1, RequestingSync = Session 2
+  (SendSyncRequest инкрементирует счётчик сессий до отправки;
+  SendPing — нет); (2) **хост-конверт = {Session, Command, [Params]}**
+  без Type/Id; (3) **HostInfo-профиль Apple-хоста** в Params:
+  Type:iTunes, Version 13.2.4.123, **WindowsOSVersion:"10.0"** (не
+  MacOSVersion), SyncHostName, **LibraryID = 16 UPPERCASE hex**
+  (%016llX — НЕ UUID с дефисами), SyncedDataclasses:[Media],
+  SyncedAssetTypes:[Music], Wakeable:0 (**u64-число**, не bool),
+  **Grappa: data 84B** (фиксированная публичная константа);
+  Dataclasses:[Media,Book,Keybag] (порядок Apple), яккеры-десятичные
+  строки {Media:A, VoiceMemo:"1"} — A = якер телефона.
+- Live-диалог (рукопожатие): Ping S1 → Pong/Capabilities/InstalledAssets/
+  AssetMetrics/**SyncAllowed** (остановка чтения СРАЗУ на SyncAllowed —
+  idle-бюджет ~10–15 с) → RS S2 → **SyncAllowed/InstalledAssets/
+  ReadyForSync** → телефон шлёт Ping×2 → IdleExit (ждёт стадинг по AFC).
+  Якорь телефона Media:"1" (пустая библиотека).
+- Дополнительно закрыты отрицательно: **Q4** (com.apple.atc2 молчит даже
+  на HostInfo — EOF сразу; мёртв) и **R1a** (new `irmctl lk-dump`:
+  GetValue-домены lockdown внутри StartSession — Media-регистраций нет,
+  data_sync = iCal/Контакты iCloud; wireless_lockdown без
+  WiFiSyncingLibraries). v16 (Grappa-сиблинг)/v17 (якорь UINT32_MAX) —
+  NegotiationFailed{4} не сдвинули (вход-факты для E13).
+- Код: `tools/irmctl.c::atc-handshake` (Ping/RS-профиль, atc_host_msg,
+  GRAPPA_HOST_REQUEST, env IRMA_ATC_LIBID/ANCHOR/VERSION/SERVICE;
+  чтение по одному кадру, Pong на телефонный Ping), `lk-dump`
+  (dispatch+usage), v16/v17 в atc-sync; `-Wall -Wextra` чисто,
+  юниты libirm 6/6.
+- Документы: **E13** (`docs/evidence/E13-atc-resolved.md` — новая,
+  сводка+wire-профиль+план mutation-фазы), E12 §5 переписан
+  (R1 ЗАКРЫТ через E13; R2 уточнён: SyncTypes выбирает ХОСТ, anchor
+  mismatch → Reset, Linux-клиент всегда Delta), README-индекс +
+  E13-строка. Traces: `tools/*-2026-11-04b.log` (6 логов:
+  atc-handshake-run1/2, lk-dump-run1, atc-talk-atc2-run1,
+  atc-sync-run16-v{16,17}).
+- Дальше (мутирующая фаза — СТРОГО после явного согласия пользователя):
+  AFC-стадинг `iTunes_Control/Sync/Media/Sync_%08X.plist`+`.cig`
+  (подпись: AES-128-CBC(key 0x95×16, IV=reply[2:18]) на reply[19:83]→D;
+  K=ECB(key 7776…, D[1:17]^D[39:55]^const4); sidecar 21B = 01‖
+  (HMAC-SHA1(K,ops)^D[18:38]^const5)) → FinishedSyncingMetadata →
+  AssetManifest/Airlock/FileComplete → SyncFinished. Identity по AFC:
+  iTunesPrefs (frpd 1232B): catalog_id LE64@raw[12..20], user_id
+  LE64@raw[20..28], LibraryID=%016llX(cat^usr); якорь:
+  MediaLibrary.sqlitedb _MLDatabaseProperties.MLSyncClientSyncAnchor.
+
+##### Шаг 9d (прод.): run3 с hex-ответом, фикс wb_b64, локальная проверка подписи
+
+- Run3 повторного рукопожатия: добавлена hex-печать phone-ответа
+  `GRAPPA_REPLY(83): 01 01 … r18=0x40 …` прямо из bplist — свежая
+  PS-пара (меняется от запуска к запуску), структура корректна.
+- **Баг-фикс `libirm/src/xmlplist.c::wb_b64`**: рендер b64 data-узла
+  при остатке n%3∈{1,2} писал NUL вместо б64-символа и неверные
+  полубиты (run2 XML Grappa был «обрезан»: 111 vs 112). Юниты xmlw
+  дополнены data-узлами всех остатков %3 → **6/6 OK**; wire никогда
+  не страдал (reader tolerant), только наш XML-рендер.
+- Локальная цепочка §11.4 сошлась: AES-128-CBC-nopad decrypt
+  reply[19:83] (key 0x95×16, IV r[2:18]) без PaddingError → K=ECB →
+  sidecar 21Б (HMAC-SHA1⊕маски). GRAPPA_HOST_REQUEST == rustunes
+  HOST_REQUEST байт-в-байт. Расчётная способность есть; контракт-
+  проверка телефоном — только в mutation-фазе. Печатался только
+  sha256 производных (сырые ключи не выводились).
+- Артефакты: traces `atc-handshake-run3-2026-11-04b.log`,
+  `grappa-verify-2026-11-04b.log`; E13 §3.1 дополнена.
+
+##### Шаг 9e: AFC-клиент + идентичность/якерь + ПУСТОЙ Delta (первый мутационный прогон)
+
+- Согласие пользователя на mutation-фазу получено («можно»). Первый
+  реальный мутационный прогон — **пустой Delta-синк** (staging у Apple
+  отсутствует, FSFM без инкремента якеря — CONFIRMED по rustunes
+  docs/02 §8.3/§14.5): живёт весь wire-путь, пользовательский контент
+  не трогает.
+- **AFC-модуль в libirm**: `libirm/include/libirm/afc.h` +
+  `libirm/src/afc.c` (чистый C11/POSIX; методы devinfo/dir_list/
+  file_info/size_info/read_full/write_full/mkdir/rename; обмен
+  «запрос → ОДИН ответ» Status/Data; Read до EOF чанками 1 МиБ;
+  Write-чанки ≤1 МиБ; отладка env IRM_AFC_DEBUG=1). Wire-фактура из
+  idevice 0.1.68 (crates.io dependency rustunes) + live-факты:
+  FileOpen-ответ приходит с op=0 (НЕ 0x0e!) и fd в
+  header_payload[0..8]; kv-пары ЧЕРЕДОВАНИЕМ (ключ\0значение\0...,
+  не «key=value»); dir_list всегда содержит «.»/«..» (пустая =
+  2 записи); пути АБСОЛЮТНЫЕ («/iTunes_Control/...»); st_ifmt =
+  «S_IFDIR»/«S_IFREG»; канал com.apple.afc на USB — БЕЗ TLS.
+- **music-id** (read-only): frpd адресца `/iTunes_Control/iTunes/
+  iTunesPrefs` (1232 Б, v1.25, configured=1, повтор-чтение совпало) —
+  НО catalog_id=user_id=0 на девственной медиатеке (литералы пишет
+  Windows-AMP; LibraryID-деривация НЕ авторитетна; рабочий LIBID
+  остаётся env-контрактом E13). DB `/iTunes_Control/iTunes/
+  MediaLibrary.sqlitedb` (+wal; -shm НЕ копия) копиями в
+  /tmp/opencode/<udid>-music с двукратной сверкой (совпало);
+  vendored sqlite (../vendor/sqlite, THREADSAFE=0, OMIT_LOAD_EXTENSION,
+  build/sqlite3.o) через локальную копию (RW для WAL-recovery):
+  integrity_check ok; **MLSyncClientSyncAnchor = 1 == Ready-якерь
+  Media:"1"** (сходство с E13). MLSyncClientLastSyncedRevision фоново
+  растёт (6814→8491) — якерь меняется ТОЛЬКО мутационной ATC-сессией.
+- **atc-delta (полный алгоритм)**: (a) staging по AFC: dir_list
+  /iTunes_Control/Sync/Media — пуст/отсутствует → ОК, файлы >0 → ABORT
+  (§8.2); (b) ATC TLS: Ping S1 → SyncAllowed → RequestingSync S2
+  (профиль E13, якерь env/1) → ReadyForSync; сверка якеря численно
+  (расхождение → ABORT до FSFM); (c) FSFM S2 {DataclassAnchors{Media:"A"
+  (не растёт), VoiceMemo:"1"}, SyncTypes{Media:1,Book:0,Keybag:1}};
+  (d) терминал: телеметрия Progress/AssetMetrics/InstalledAssets/
+  SyncAllowed пропускается; SyncFinished = успех; SyncFailed = печать
+  ErrorCode; AssetManifest = полный dump + СТОП БЕЗ ОТВЕТА
+  (observe-only).
+- **Результат run1 (первый мутационный прогон)**: весь путь прошёл
+  (staging пуст → RS S2 → Ready 1==1 с GRAPPA_REPLY 83Б → FSFM →
+  телефон прислал **AssetManifest**: AssetID 7773567125019000,
+  AssetType Music, AssetParts 4, IsDownload=true — телефонный
+  own-asset требует хост-загрузку; rustunes допускает оба терминала
+  пустого Delta). Ответа мы НЕ дали (observe-only) → close.
+  **Верификация no-op**: повторный music-id — якерь 1 (не вырос),
+  staging пуст; первый шаг мутационной фазы ничего не применил.
+- Юниты 5/5 OK; сборка чисто (-Wall -Wextra). Makefile: объект vendored
+  sqlite3.o (build/) линкуется в irmctl.
+- Артефакты: traces `afc-ls-smoke-2026-11-04c.log`,
+  `afc-stat-photos-2026-11-04c.log`, `afc-stat-prefs-2026-11-04c.log`,
+  `music-id-run1/verify-2026-11-04c.log`, `atc-delta-run1-2026-11-04c.log`;
+  факт-документ `docs/evidence/E14-afc-identity-empty-delta.md`
+  (+ индекс, E13 §4-ссылка).
+- **Дальше** (отдельная порция, mutation-фаза продолжается): реальный
+  Delta с треками — стадинг Sync_00000000.plist + .cig (подпись §11.4),
+  insert_track (полная карта item/avformat_info, docs/02 §9),
+  AssetManifest → Airlock → FileComplete → SyncFinished; якерь растёт
+  только реальным insert-файлом (A+1).
+
+##### Шаг 9f: РЕАЛЬНЫЙ Delta с треком — grappa .cig, insert_track, якерь 1→2 (LIVE ПРИМЕНЕНО)
+
+Коммит этой порции; ветка `music-mac-style`; traces серия `-2026-11-04d`.
+
+- **libirm/grappa** (`libirm/{include/libirm/grappa.h,src/grappa.c}`,
+  OpenSSL 3.5.5 EVP_CIPHER/EVP_MAC): from_reply (форма reply 83Б
+  {01,01,…,D[18]=0x40}; D = AES-128-CBC-nopad reply[19..83], key 0x95×16,
+  IV reply[2..18]; K0 = D[1..17]^D[39..55]^KEY_XOR; key =
+  ECB-encrypt(WRAP_KEY,K0); tag_mask = D[18..38]^TAG_XOR) + sign (21 Б:
+  0x01 + HMAC-SHA1(key,ops)⊕mask; ops 1..4 МиБ, ТОЧНЫЕ сериализованные
+  байты). **Офлайн-самотест — 4/4 PASS на векторах rustunes**
+  (`grappa-fixed-vectors.plist`; лог atc-insert-verify-2026-11-04d.log).
+  `IRM_GRAPPA_HOST_REQUEST[84]` экспортирован.
+- **libirm/afc**: `irm_afc_remove` (op 0x0008).
+- **tools/irmctl.c `atc-insert`** (env IRMA_ATC_FIXTURE обязателен,
+  IRMA_ATC_STAGE_ONLY=1 — прогон до стадии без записей, IRMA_ATC_ANCHOR —
+  сверка, LIBID/VERSION/SERVICE): полный wire-путь (инварианты ниже);
+  staging-инвариант ДО и ПОСЛЕ; DB-копия (+wal, integrity) → db_pid /
+  primary_container_pid (db_info, не allocate) / якерь A /
+  pid-scan (1017 значений); PIDs track/album/artist случайные s64>0 без
+  коллизий; конверт bplist 1070 Б `{revision:A+1, operations:
+  [update_db_info(db_pid→primary_container_pid), insert_track],
+  timestamp CFDate}` — карта полей 1:1 rustunes alac.rs (audio_format 601,
+  bit_rate 1411, duration 4410, gapless 4 ключа 0/0/1/0,
+  analysis_inhibit_flags 2, sample_rate REAL 44100; item_stats полный
+  словарь; item без album_artist/composer/year/disc/track_count;
+  location kind="Apple Lossless audio file"); RS S2 якерь А → Ready
+  (сверка A==A, Grappa 83Б) → .cig → [STAGE_ONLY stop] → стадинг ops
+  (Sync_00000000.plist) ЗАТЕМ .cig (21 Б), обе с read-back → FSFM S2
+  якерь A+1 → AssetManifest-политика (own РОВНО одна = dec track PID с
+  битом 1; foreign только ancillary IsDownload/Music/без бита 1 →
+  FileError{16} ПОСЛЕ FileComplete; любая иная → СТОП без отправок) →
+  Airlock upload `/Airlock/Media/<AssetID>.m4a` → read-back → rename
+  bare → read-back → постоянный путь `iTunes_Control/Music/Fnn/XXXX.m4a`
+  (Fnn = track PID % 50, 4 случайные буквы, mkdir при отсутствии) →
+  FileComplete → SyncFinished (Session==2) = успех.
+- **Результат run1**: тот же телефон; STAGE_ONLY прогон чисто до стадии
+  (READY-якерь 1==1, sidecar сформирован, ноль записей); полный прогон:
+  MANIFEST own=8699068841132158781 (AssetParts=5 — бит 1), чужих нет;
+  upload 2691Б → FileComplete F31/BOYY.m4a → **SyncFinished Session=2**.
+  **Пост-верификация**: `MLSyncClientSyncAnchor = 2` в DB (якерь вырос
+  ровно на 1; фоновой рост LastSyncedRevision 8491→8496 — независим);
+  F31/BOYY.m4a существует (2691Б S_IFREG nlink=1); /Airlock/Media пуста
+  (телефон сам забрал); staging пуст (потреблён). Визуальное подтверждение
+  пользователя: иконка синка на телефоне во время сессии; трек «IRM Tone»
+  появился в Music (UI-уровень).
+- Юниты 5/5 OK; сборка чисто (-Wall -Wextra, grappa в LIB_SRCS).
+- Артефакты: traces `atc-insert-stage-2026-11-04d.log`,
+  `atc-insert-run1-2026-11-04d.log`, `atc-insert-verify-2026-11-04d.log`,
+  `music-id-verify-2026-11-04d.log`; факт-документ
+  `docs/evidence/E15-atc-insert.md` (+ индекс README, E13/E14-ссылки).
+- **Дальше (9g — кандидаты)**: пакетный insert (несколько треков за одну
+  сессию), ancillary-only кадр с FileError{16} (живая проверка ветки),
+  Reset-синк, повторная вставка/idempotence.
+
+##### Шаг 9g: ПАКЕТНЫЙ insert — один конверт на N треков (LIVE ПРИМЕНЕНО, SyncFinished)
+
+- **Эталон (rustunes, CONFIRMED)**: `batch.rs` — ОДИН конверт
+  `[update_db_info, insert_track × N]`, один revision/timestamp;
+  MAX_OPERATIONS=500 → **499 вставок** с update_db_info; ops ≤ 4 МиБ;
+  `ancillary.rs` — audio_batch: PIDs попарно различны и вне каталога,
+  MAX_MANIFEST_ASSETS=1024; `session.rs` — MAX_FRAMES=1024, FileError
+  СТРОГО после всех FileComplete, «Native completions are not ordered
+  by manifest position».
+- **Код** (`tools/irmctl.c`): `IRMA_ATC_BATCH_N=1..499` (default 1,
+  reject вне диапазона); массив `tpids[batch_n]` + буферы
+  `own_ids[batch_n][24]` (dec-строки в ПОРЯДКЕ МАНИФЕСТА) +
+  `titles[batch_n][80]`; builder insert_track получил `number`
+  (track_number 1..N); `atc_manifest_parse` переписан под пакет
+  (строгий own-набор, бэклог-классификация примечей); (j)-цикл до
+  **512** кадров; frees в close-блоке. Сборка -Wall -Wextra чисто,
+  юниты 5/5, скан мусорных символов чист.
+- **Live-прогоны (якерь 2 → 6, 4 мутационные сессии)**:
+  1. stage-only N=4: ops **3962 Б** + .cig 21 Б, grappa PASS.
+  2. run1: FSFM применил вставку ДО файлов (якерь 3; item появились,
+     телефон переписал item_pid внутренними 62..65) → молчание ~30 s →
+     Ping×2 → **IdleExit** (никаких FileComplete не ушли).
+  3. run2: манифест = **4 own + бэклог-аудио=4 (run1!) + artwork 8699…**
+     — старая строгая политика СТОП (якерь 4 применился на FSFM).
+  4. run3: бэклог-политика — 12 FileComplete (4 own + 8 бэклог);
+     ancillary-баг (failed на аудио-записи вместо continue) → FileError
+     не ушёл → снова Ping×2 + IdleExit (якерь 5).
+  5. run4: манифест = 4 own + бэклог-аудио=**0** + ancillary=1 →
+     FileError{16} ПОСЛЕ всех FileComplete → **SyncFinished**
+     (якерь 6), файлы 2691 Б на постоянных путях.
+- **Факты пакета** (детально в `docs/evidence/E16-atc-insert-batch.md`):
+  - телефон применяет метаданные при потреблении staging на FSFM
+    ДО получения файлов (файлы могут прийти позже);
+  - AssetManifest = ЕДИНЫЙ whitelist желаний: own пакета + весь
+    пока-не-донесённый аудио-бэклог + artwork-пожелания;
+  - FileComplete снимает бэклог-желание навсегда; FileError{16} НЕ
+    снимает artwork-желание (приходит в каждом манифесте, вечный
+    отказ телефон согласен принимать);
+  - БЕЗ решения по ancillary телефон не завершает (Ping×2 → IdleExit);
+  - FileComplete можно в любом порядке, но own_ids приходят в порядке
+    манифеста — сверять ИДЕНТИФИКАТОРЫ (membership), не позицией.
+- **Пост-верификация**: якерь = A+1 после SyncFinished: SyncAnchor=6 по
+  `music-id`; музыкальный UI покажет новые треки
+  (визуальное подтверждение пользователя, как в 9f).
+- **Трейсы**: `atc-insert-batch-stage/run1..run4` +
+  `music-id-batch-verify` `-2026-11-04d.log` →
+  `research/3utools/tools/` (3utools-research); FINDINGS §9g.
+- **Дальше**: GTK4-приложение для теста заливки музыки (обертка
+  atc-insert/atc-sync в GUI) — отдельная порция; Reset-синк, idempotence.

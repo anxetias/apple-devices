@@ -1,0 +1,60 @@
+// name: FUN_1002fca9a
+// address: 1002fca9a
+
+undefined8 FUN_1002fca9a(long param_1,long param_2)
+
+{
+  char cVar1;
+  undefined8 uVar2;
+  undefined4 local_48;
+  char *local_44;
+  undefined2 local_3c;
+  char *local_3a;
+  long local_28;
+  
+  local_28 = *(long *)PTR____stack_chk_guard_10082cb58;
+  if (((param_1 == 0) || (*(long *)(param_1 + 8) == 0)) ||
+     (*(long *)(*(long *)(param_1 + 8) + 0x10) == 0)) {
+    uVar2 = FUN_1001cc310();
+    cVar1 = _os_log_type_enabled(uVar2,0x10);
+    if (cVar1 != '\0') {
+      local_3a = "TrackInstanceIsValid(sourceTrackInstance)";
+LAB_1002fcbe9:
+      local_3c = 0x822;
+      local_44 = "Assertion failure";
+      local_48 = 0x8220202;
+      __os_log_error_impl(0x100000000,uVar2,0x10,"%{public}s: (%{public}s)",&local_48,0x16);
+    }
+  }
+  else {
+    if (((param_2 != 0) && (*(long *)(param_2 + 8) != 0)) &&
+       (*(long *)(*(long *)(param_2 + 8) + 0x10) != 0)) {
+      FUN_1001c62d9(&local_48,0x20);
+      cVar1 = FUN_1002fcc1f(param_1,param_2,&local_48);
+      if (cVar1 == '\0') {
+        uVar2 = 0;
+      }
+      else {
+        FUN_1002fe16c(*(undefined8 *)(param_2 + 8),&local_48,0);
+        FUN_1004755ef(*(undefined8 *)(param_2 + 8),0,&local_48);
+        uVar2 = 1;
+      }
+      goto LAB_1002fcb64;
+    }
+    uVar2 = FUN_1001cc310();
+    cVar1 = _os_log_type_enabled(uVar2,0x10);
+    if (cVar1 != '\0') {
+      local_3a = "TrackInstanceIsValid(destTrackInstance)";
+      goto LAB_1002fcbe9;
+    }
+  }
+  uVar2 = 0;
+  FUN_1001782e9(0,0);
+LAB_1002fcb64:
+  if (*(long *)PTR____stack_chk_guard_10082cb58 == local_28) {
+    return uVar2;
+  }
+                    /* WARNING: Subroutine does not return */
+  ___stack_chk_fail();
+}
+

@@ -1,0 +1,25 @@
+// name: FUN_1001b8378
+// address: 1001b8378
+
+undefined8 FUN_1001b8378(long *param_1)
+
+{
+  undefined8 *puVar1;
+  undefined8 uVar2;
+  
+  puVar1 = (undefined8 *)*param_1;
+  if (puVar1 == (undefined8 *)0x0) {
+    if (param_1[1] != 0) {
+      FUN_1001b8454(param_1);
+      puVar1 = (undefined8 *)*param_1;
+      if (puVar1 != (undefined8 *)0x0) goto LAB_1001b8386;
+    }
+    uVar2 = 0;
+  }
+  else {
+LAB_1001b8386:
+    uVar2 = *puVar1;
+  }
+  return uVar2;
+}
+

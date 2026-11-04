@@ -4,6 +4,7 @@
 #include "afcUtils.h"
 #include "uiWidgets.h"
 #include "sync3u.h"
+#include "transcode.h"
 
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
@@ -143,21 +144,39 @@ static const TrEntry trTable[] = {
   {"Читаем теги и обложки с устройства — это может занять время.",
    "Reading tags and cover art from the device — this may take a while."},
   {"Музыка: импорт не удался — нет подключения (AFC).", "Music: import failed — no connection (AFC)."},
-  {"Музыка: импорт «%s» -> %s", "Music: importing \"%s\" -> %s"},
-  {"Музыка: не удалось загрузить «%s».", "Music: failed to upload \"%s\"."},
   {"Импортировано файлов: %d", "Files imported: %d"},
-  {"Импорт отменён: у устройства незаписанные транзакции в библиотеке — повторите позже",
-   "Import cancelled: the device's library has unwritten transactions — try again later"},
   {"Импорт не удался — подробности в журнале", "Import failed — see the log for details"},
-  {"Музыка: файлы загружены, но база «Музыки» не обновлена — треки в библиотеке не появятся; подробности в журнале.",
-   "Music: files uploaded, but the Music database was not updated — the tracks will not appear in the library; see the log for details."},
   {"Музыка: импорт через сервер 3u: %u треков", "Music: importing via the 3uTools server: %u track(s)"},
-  {"Музыка: сервер 3u недоступен — откат на прямой путь (Imported/)",
-   "Music: the 3uTools server is unavailable — falling back to the direct path (Imported/)"},
-  {"Музыка: в наборе есть не-mp3 файлы — импорт прямым путём (Imported/)",
-   "Music: non-mp3 files in the selection — importing via the direct path (Imported/)"},
-  {"Музыка: не все теги прочитаны — импорт прямым путём (Imported/)",
-   "Music: not all tags could be read — importing via the direct path (Imported/)"},
+  {"Музыка: набор пуст — импорт не удался",
+   "Music: the selection is empty — import failed"},
+  {"Музыка: конвертирую «%s» в mp3 (320 kbps)…",
+   "Music: converting \"%s\" to mp3 (320 kbps)…"},
+  {"Музыка: конвертация «%s» не удалась: %s",
+   "Music: conversion of \"%s\" failed: %s"},
+  {"Музыка: конвертация невозможна — нет временной папки: %s",
+   "Music: conversion impossible — cannot create a temp dir: %s"},
+  {"Музыка: конвертация «%s» не удалась — не-mp3 не стал mp3, импорт не удался",
+   "Music: conversion of \"%s\" failed — the non-mp3 did not become an mp3, import failed"},
+  {"Музыка: не удалось перенести теги в mp3 («%s»): %s",
+   "Music: failed to copy tags to the mp3 (\"%s\"): %s"},
+  {"Музыка: не удалось прочитать теги конвертированного «%s»: %s",
+   "Music: failed to read tags from the converted \"%s\": %s"},
+  {"Музыка: не все теги прочитаны (%u из %u файлов) — серверу 3u нужны полные метаданные, импорт не удался",
+   "Music: not all tags could be read (%u of %u files) — the 3uTools server requires full metadata, import failed"},
+  {"Музыка: импорт через сервер 3u не удался: %s",
+   "Music: import via the 3uTools server failed: %s"},
+  {"Музыка: сервер 3u не принял %u треков — повтор через %u с (раунд %u/%d)",
+   "Music: the 3uTools server did not take %u track(s) — retrying in %u s (round %u/%d)"},
+  {"Музыка: сервер 3u продолжал отказывать — не внесено %u из %u треков",
+   "Music: the 3uTools server kept refusing — %u of %u track(s) not imported"},
+  {"Музыка: устройство внесло %d из %u треков; сервер 3u продолжал отказывать по остальным",
+   "Music: the device registered %d of %u track(s); the 3uTools server kept refusing the rest"},
+  {"Музыка: устройство внесло %d из %u треков (SyncFinished)",
+   "Music: the device registered %d of %u track(s) (SyncFinished)"},
+  {"Музыка: обложка не перенеслась в %s — продолжаем без неё",
+   "Music: cover art was not copied into %s — continuing without it"},
+  {"Музыка: устройство внесло треки в свою базу (atc-синх). Перезапустите приложение «Музыка» на iPhone, чтобы они появились.",
+   "Music: the device added the tracks to its own database (atc sync). Restart the Music app on the iPhone to see them."},
   {"Выберите аудиофайлы для импорта", "Select audio files to import"},
   {"Музыка: экспорт не удался — нет подключения (AFC).", "Music: export failed — no connection (AFC)."},
   {"Музыка: экспорт %s -> %s", "Music: exporting %s -> %s"},
@@ -191,9 +210,6 @@ static const TrEntry trTable[] = {
   {"Музыка: добавляем треки в базу медиатеки…", "Music: adding tracks to the media library database…"},
   {"Музыка: трек добавлен в базу (ID %lld).", "Music: track added to the database (ID %lld)."},
   {"Музыка: трек уже есть в медиатеке — обновляю ревизию («%s»).", "Music: track is already in the library — refreshing its revision (\"%s\")."},
-  {"Музыка: треки добавлены в базу медиатеки. Перезапустите приложение «Музыка» на iPhone, чтобы они появились.",
-   "Music: tracks have been added to the media library database. Restart the Music app on the iPhone to see them."},
-  {"Музыка: все треки уже есть в медиатеке.", "Music: all tracks are already in the media library."},
   {"Музыка: не удалось прочитать теги «%s»: %s", "Music: failed to read tags from \"%s\": %s"},
   {"Музыка: у %u трека(ов) нет встроенной обложки — попробуем унаследовать обложку альбома.",
    "Music: %u track(s) have no embedded cover — the album cover will be inherited."},
@@ -1027,113 +1043,211 @@ musicImportThread(GTask *task, gpointer source_object,
     return;
   }
 
-  /* wal-гейт НЕ ставим перед пути 3u: он пишет базу САМО устройство
-   * (atc-синх), наша замена MediaLibrary.sqlitedb к нему не имеет
-   * отношения. Гейт остаётся только на откатном прямом пути (ниже),
-   * где мы скачиваем базу, правим её и заливаем обратно. */
+  /* Единственный путь импорта в этой сборке — сервер 3uTools; устройство
+   * само вносит треки в свою базу (atc-синх, Airlock), wal-гейт не нужен.
+   * Не-mp3 файлы конвертируются в mp3 (320 kbps, теги и обложка
+   * переносятся TagLib'ом). Прямой путь (Imported/ + запись
+   * MediaLibrary.sqlitedb) убран: откатов нет, причина отказа — в журнале. */
 
-  afc_make_directory(s.afc, MUSIC_REMOTE_ROOT "/Imported");
-
-  int done = 0;
+  int done = -1;
   guint n = ctx->local_paths->len;
+
+  /* Собственные массивы пакета: пути И меты выбираются заново —
+   * для mp3 это исходный файл и его теги, для не-mp3 — конвертированная
+   * копия в tmp с перечитанными тегами. */
   GPtrArray *metas = g_ptr_array_new_with_free_func(medialibMetaFree);
-  /* slot[i] — мета файла i, если теги прочитаны (владелец — metas). */
-  MedialibMeta **slot = g_new0(MedialibMeta *, n > 0 ? n : 1);
+  GPtrArray *paths = g_ptr_array_new_with_free_func(g_free);
+  char *workdir = NULL; /* временная папка конвертации (создаётся лениво) */
+  guint nmeta_fail = 0, nconv_fail = 0;
+  char *first_bad = NULL; /* basename первого файла с ошибкой */
 
-  /* Путь через сервер 3u работает только с .mp3: проверяем весь набор. */
-  gboolean all_mp3 = n > 0;
-  for (guint i = 0; all_mp3 && i < n; i++) {
-    const char *lp = ctx->local_paths->pdata[i];
-    char *lc = g_ascii_strdown(lp, -1);
-    if (!g_str_has_suffix(lc, ".mp3"))
-      all_mp3 = FALSE;
-    g_free(lc);
-  }
-
-  /* Теги читаем заранее: и для решения о пути 3u, и для записи базы в
-   * обоих путях (location = basename — совпадает с именем заливки). */
-  guint nmeta_fail = 0;
   for (guint i = 0; i < n; i++) {
     const char *lp = ctx->local_paths->pdata[i];
     char *base = g_path_get_basename(lp);
-    MedialibMeta *m = g_new0(MedialibMeta, 1);
+
+    /* Теги читаем из исходника: переносятся в mp3 или идут напрямую. */
+    MedialibMeta *sm = g_new0(MedialibMeta, 1);
     GError *merr = NULL;
-    if (medialibReadMeta(lp, base, m, &merr)) {
-      slot[i] = m;
-      g_ptr_array_add(metas, m);
-    } else {
+    if (!medialibReadMeta(lp, base, sm, &merr)) {
       nmeta_fail++;
+      if (!first_bad)
+        first_bad = g_strdup(base);
       logMessage(tr("Музыка: не удалось прочитать теги «%s»: %s"), base,
                  merr->message);
       g_clear_error(&merr);
+      medialibMetaFree(sm);
+      g_free(base);
+      continue;
     }
-    g_free(base);
-  }
 
-  if (n > 0) {
-    /* — Попытка пути через сервер 3u: все файлы .mp3 и все теги читаны. */
-    if (all_mp3 && (guint)metas->len == n) {
-      logMessage(tr("Музыка: импорт через сервер 3u: %u треков"), n);
-      GError *s3uerr = NULL;
-      int imported = sync3uImportBatch(ctx->udid, s.afc, ctx->local_paths,
-                                       metas, &s3uerr);
-      if (imported >= 0) {
-        /* Устройство само канонизирует файлы в свою базу (atc-синх). */
-        ctx->db_added = imported;
-        g_free(slot);
-        g_ptr_array_unref(metas);
-        afcSessionClose(&s);
-        g_task_return_int(task, imported);
-        return;
+    char *lc = g_ascii_strdown(lp, -1);
+    gboolean is_mp3 = g_str_has_suffix(lc, ".mp3");
+    g_free(lc);
+    if (is_mp3) {
+      g_ptr_array_add(paths, g_strdup(lp));
+      g_ptr_array_add(metas, sm); /* владение уходит пакету */
+      g_free(base);
+      continue;
+    }
+
+    logMessage(tr("Музыка: конвертирую «%s» в mp3 (320 kbps)…"), base);
+    if (!workdir) {
+      GError *werr = NULL;
+      workdir = g_dir_make_tmp("appledev-imp-XXXXXX", &werr);
+      if (!workdir) {
+        logMessage(tr("Музыка: конвертация невозможна — нет временной папки: %s"),
+                   werr->message);
+        g_clear_error(&werr);
+        nconv_fail++;
+        if (!first_bad)
+          first_bad = g_strdup(base);
+        medialibMetaFree(sm);
+        g_free(base);
+        continue;
       }
-      logMessage(tr("Музыка: сервер 3u недоступен — откат на прямой путь (Imported/)"));
-      g_clear_error(&s3uerr);
-    } else if (!all_mp3) {
-      logMessage(tr("Музыка: в наборе есть не-mp3 файлы — импорт прямым путём (Imported/)"));
-    } else {
-      logMessage(tr("Музыка: не все теги прочитаны — импорт прямым путём (Imported/)"));
     }
-  }
-
-  /* — Прямой путь: заливка в Imported/ + запись MediaLibrary.sqlitedb. —
-   * Здесь и только здесь wal-гейт: мы сами заменяем базу, при незаписанных
-   * транзакциях устройства это небезопасно; файлы-сироты не создаём. */
-  GError *wal_err = NULL;
-  if (!medialibDeviceWalIsClean(s.afc, &wal_err)) {
-    logMessage(tr("Музыка: импорт отменён: %s"), wal_err->message);
-    g_clear_error(&wal_err);
-    g_free(slot);
-    g_ptr_array_unref(metas);
-    afcSessionClose(&s);
-    /* -2 — безопасный отказ гейта (записей на устройство не было);
-     * onMusicImportFinished показывает по нему дружелюбное сообщение. */
-    g_task_return_int(task, -2);
-    return;
-  }
-  afc_make_directory(s.afc, MUSIC_REMOTE_ROOT "/Imported");
-  GPtrArray *db_metas = g_ptr_array_new(); /* без free: владелец — metas */
-  for (guint i = 0; i < n; i++) {
-    const char *lp = ctx->local_paths->pdata[i];
-    char *base = g_path_get_basename(lp);
-    char *remote = g_build_filename(MUSIC_REMOTE_ROOT, "Imported", base, NULL);
-
-    logMessage(tr("Музыка: импорт «%s» -> %s"), base, remote);
-    if (afcUploadFile(s.afc, lp, remote) == 0) {
-      done++;
-      if (slot[i])
-        g_ptr_array_add(db_metas, slot[i]);
-    } else {
-      logMessage(tr("Музыка: не удалось загрузить «%s»."), base);
+    char *dst = g_strconcat(workdir, G_DIR_SEPARATOR_S, base, ".mp3", NULL);
+    GError *cerr = NULL;
+    if (transcodeToMp3(lp, dst, &cerr) != 0) {
+      logMessage(tr("Музыка: конвертация «%s» не удалась: %s"), base,
+                 cerr->message);
+      g_clear_error(&cerr);
+      nconv_fail++;
+      if (!first_bad)
+        first_bad = g_strdup(base);
+      g_free(dst);
+      medialibMetaFree(sm);
+      g_free(base);
+      continue;
     }
-
+    if (!transcodeWriteTags(dst, sm, &cerr)) {
+      logMessage(tr("Музыка: не удалось перенести теги в mp3 («%s»): %s"),
+                 base, cerr->message);
+      g_clear_error(&cerr);
+      nconv_fail++;
+      if (!first_bad)
+        first_bad = g_strdup(base);
+      g_free(dst);
+      medialibMetaFree(sm);
+      g_free(base);
+      continue;
+    }
+    /* Перечитываем мету с mp3: длительность/битрейт/размер — точные. */
+    char *dstbase = g_strconcat(base, ".mp3", NULL);
+    MedialibMeta *nm = g_new0(MedialibMeta, 1);
+    if (!medialibReadMeta(dst, dstbase, nm, &cerr)) {
+      logMessage(tr("Музыка: не удалось прочитать теги конвертированного «%s»: %s"),
+                 dstbase, cerr->message);
+      g_clear_error(&cerr);
+      nconv_fail++;
+      if (!first_bad)
+        first_bad = g_strdup(base);
+      medialibMetaFree(nm);
+      g_free(dstbase);
+      g_free(dst);
+      medialibMetaFree(sm);
+      g_free(base);
+      continue;
+    }
+    g_ptr_array_add(paths, dst); /* владение уходит paths */
+    g_ptr_array_add(metas, nm);
+    medialibMetaFree(sm);
+    g_free(dstbase);
     g_free(base);
-    g_free(remote);
   }
 
-  ctx->db_added = db_metas->len > 0 ? musicSyncMedialibAdd(s.afc, db_metas) : 0;
-  g_ptr_array_unref(db_metas);
+  if (n == 0) {
+    logMessage(tr("Музыка: набор пуст — импорт не удался"));
+  } else if (nconv_fail > 0) {
+    logMessage(tr("Музыка: конвертация «%s» не удалась — не-mp3 не стал mp3, импорт не удался"),
+               first_bad ? first_bad : "?");
+  } else if (nmeta_fail > 0) {
+    logMessage(tr("Музыка: не все теги прочитаны (%u из %u файлов) — серверу 3u нужны полные метаданные, импорт не удался"),
+               (guint)(n - nmeta_fail), n);
+  } else {
+    /* Дросселинг сервера (серии err=104) снимается двойным RETRY:
+     * внутри трека — до 5 попыток с паузой 60 с, снаружи — до 3 раундов
+     * по НЕуспешным трекам (итого до 15 попыток на трек). */
+    const int S3U_IMPORT_ROUNDS = 3;
+    const guint S3U_IMPORT_ROUND_PAUSE_S = 60;
 
-  g_free(slot);
+    logMessage(tr("Музыка: импорт через сервер 3u: %u треков"),
+               (guint)metas->len);
+    GArray *failed = g_array_new(FALSE, FALSE, sizeof(guint));
+    done = 0;
+
+    for (guint round = 1;; round++) {
+      int imported;
+      if (round > 1) {
+        logMessage(tr("Музыка: сервер 3u не принял %u треков — повтор через %u с (раунд %u/%d)"),
+                   (guint)failed->len, S3U_IMPORT_ROUND_PAUSE_S, round,
+                   S3U_IMPORT_ROUNDS);
+        g_usleep(S3U_IMPORT_ROUND_PAUSE_S * G_USEC_PER_SEC);
+        /* Пул повторов: ТОЛЬКО неуспешные треки (успешные не засылаем
+         * второй раз — pid у каждой попытки свежий, дубликатов не
+         * создаём). Массивы ссылочные, без владения. */
+        GPtrArray *rp = g_ptr_array_new();
+        GPtrArray *rm = g_ptr_array_new();
+        for (guint k = 0; k < failed->len; k++) {
+          guint idx = g_array_index(failed, guint, k);
+          g_ptr_array_add(rp, g_ptr_array_index(paths, idx));
+          g_ptr_array_add(rm, g_ptr_array_index(metas, idx));
+        }
+        g_array_set_size(failed, 0);
+        GError *berr = NULL;
+        imported = sync3uImportBatch(ctx->udid, s.afc, rp, rm, failed,
+                                     &berr);
+        g_ptr_array_unref(rp); /* без владения — только массив */
+        g_ptr_array_unref(rm);
+        if (imported < 0) {
+          logMessage(tr("Музыка: импорт через сервер 3u не удался: %s"),
+                     berr && berr->message ? berr->message : "?");
+          g_clear_error(&berr);
+          done = -1;
+          break;
+        }
+        g_clear_error(&berr);
+      } else {
+        GError *berr = NULL;
+        imported = sync3uImportBatch(ctx->udid, s.afc, paths, metas,
+                                     failed, &berr);
+        if (imported < 0) {
+          logMessage(tr("Музыка: импорт через сервер 3u не удался: %s"),
+                     berr && berr->message ? berr->message : "?");
+          g_clear_error(&berr);
+          done = -1;
+          break;
+        }
+        g_clear_error(&berr);
+      }
+      done += imported;
+      ctx->db_added = done;
+
+      if (failed->len == 0) {
+        logMessage(tr("Музыка: устройство внесло %d из %u треков (SyncFinished)"),
+                   done, n);
+        break;
+      }
+      if (round >= (guint)S3U_IMPORT_ROUNDS) {
+        if (done == 0) {
+          logMessage(tr("Музыка: сервер 3u продолжал отказывать — не внесено %u из %u треков"),
+                     (guint)failed->len, n);
+        } else {
+          logMessage(tr("Музыка: устройство внесло %d из %u треков; сервер 3u продолжал отказывать по остальным"),
+                     done, n);
+        }
+        break;
+      }
+    }
+    g_array_unref(failed);
+  }
+
+  g_free(first_bad);
+  if (workdir) {
+    transcodeCleanupTmpDir(workdir);
+    g_free(workdir);
+  }
+  g_ptr_array_unref(paths);
   g_ptr_array_unref(metas);
 
   afcSessionClose(&s);
@@ -1154,10 +1268,8 @@ onMusicImportFinished(GObject *source_object, GAsyncResult *res, gpointer user_d
   updateMusicButtons(self);
 
   char *msg;
-  if (done == -2) {
-    /* Отказ гейта wal: подробная причина уже в журнале (musicImportThread). */
-    msg = g_strdup(tr("Импорт отменён: у устройства незаписанные транзакции в библиотеке — повторите позже"));
-  } else if (done < 0) {
+  if (done < 0) {
+    /* Подробная причина уже в журнале (musicImportThread). */
     msg = g_strdup(tr("Импорт не удался — подробности в журнале"));
   } else {
     msg = g_strdup_printf(tr("Импортировано файлов: %d"), done);
@@ -1168,11 +1280,9 @@ onMusicImportFinished(GObject *source_object, GAsyncResult *res, gpointer user_d
   g_free(msg);
 
   if (done > 0 && ctx->db_added > 0)
-    logMessage(tr("Музыка: треки добавлены в базу медиатеки. Перезапустите приложение «Музыка» на iPhone, чтобы они появились."));
-  else if (done > 0 && ctx->db_added == 0)
-    logMessage(tr("Музыка: все треки уже есть в медиатеке."));
+    logMessage(tr("Музыка: устройство внесло треки в свою базу (atc-синх). Перезапустите приложение «Музыка» на iPhone, чтобы они появились."));
   else if (done > 0)
-    logMessage(tr("Музыка: файлы загружены, но база «Музыки» не обновлена — треки в библиотеке не появятся; подробности в журнале."));
+    logMessage(tr("Музыка: устройство не внесло ни одного трека — подробности в журнале."));
 
   // Обновляем список, чтобы показать импортированное
   if (done > 0 && self->selected && g_strcmp0(self->selected->udid, ctx->udid) == 0)

@@ -1,0 +1,13 @@
+// name: requestWithIdentifier:content:trigger:
+// address: 10091b601
+
+/* WARNING: Control flow encountered bad instruction data */
+/* WARNING: Unknown calling convention: __cdecl -- yet parameter storage is locked */
+
+ID __cdecl UNNotificationRequest::requestWithIdentifier_content_trigger_(ID self,SEL op,...)
+
+{
+                    /* WARNING: Bad instruction - Truncating control flow here */
+  halt_baddata();
+}
+

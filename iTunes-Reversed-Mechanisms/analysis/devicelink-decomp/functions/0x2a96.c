@@ -1,0 +1,51 @@
+// rea decompile_all
+// name: __DLCreateDeviceLinkConnectionForComputer
+// address: 0x2a96
+// body: available
+// range: 0x2a96-0x2b4c inclusive
+// non_contiguous: false
+// provider: Ghidra 12.1.4 (ghidra)
+// analysis_profile: 04dde8c57a87610dc458abf444e7f4727b39c7dade182ba942da8f8f7f4fe93b
+// limitations: The session serves operations only after Ghidra reports default auto-analysis complete; incomplete analysis does not expose partial results.; The imported Program and temporary project are ephemeral and deleted on close. Annotation operations edit session database metadata; original executable bytes are never written.; Cancelling an active Ghidra request terminates its ephemeral database and discards session annotations. The selected target remains open; the next provider query imports the original artifact again.; Default-space addresses use lowercase 0x-prefixed hexadecimal; other address spaces use <percent-encoded-space>:0x<hex>.; Ghidra Listing reports a terminal call at 0x2b3a to 0xa706 _DLSetStatus (external=false, thunk=false, hasNoReturn=false); fallthrough is excluded by Ghidra's flow model. The reason for the terminal flow is not established by this observation.; macOS sessions require a matching executable Ghidra native decompiler; REA checks for it but does not build native components or change Gatekeeper quarantine state.; Pseudocode is Ghidra decompiler output, not original source and not text-equivalent to Hopper output.; External functions and functions without an analyzable body return null; other decompiler failures remain explicit.
+// pseudocode: provider-specific; not original source
+
+
+undefined8
+__DLCreateDeviceLinkConnectionForComputer
+          (undefined1 param_1,long param_2,undefined8 param_3,undefined8 param_4,long *param_5,
+          undefined8 param_6,undefined4 param_7,undefined8 param_8)
+
+{
+  long lVar1;
+  cfstringStruct *pcVar2;
+  undefined8 uVar3;
+  
+  if (param_2 == 0) {
+    pcVar2 = &cf__DLCreateDeviceLinkConnectionForComputer_CallbacksparameterisNULL;
+  }
+  else if (*(long *)(param_2 + 0x58) == 0) {
+    pcVar2 = &cf__DLCreateDeviceLinkConnectionForComputer_DeviceReadycallbackisNULL;
+  }
+  else {
+    if (param_5 != (long *)0x0) {
+      lVar1 = __DLCreateDeviceLinkConnection(&cf_Computer,param_1,param_2,param_3,param_4);
+      if (lVar1 != 0) {
+        *(long *)(lVar1 + 0x38) = param_2;
+        *(undefined8 *)(lVar1 + 0x18) = param_6;
+        *(undefined4 *)(lVar1 + 0x20) = 0xffffffff;
+        *(undefined4 *)(lVar1 + 0x24) = param_7;
+        *param_5 = lVar1;
+        return 0;
+      }
+      pcVar2 = &cf__DLCreateDeviceLinkConnectionForComputer_Couldnotcreateaconnection;
+      uVar3 = 0xffffffff;
+      goto LAB_00002b29;
+    }
+    pcVar2 = &cf__DLCreateDeviceLinkConnectionForComputer_Connection_out_parameterisNULL;
+  }
+  uVar3 = 0xfffffffd;
+LAB_00002b29:
+  uVar3 = _DLSetStatus(uVar3,param_8,pcVar2);
+  return uVar3;
+}
+

@@ -1,0 +1,13 @@
+# C артефакты сборки
+*.o
+*.a
+
+# собранные бины и тестовые фикстуры
+irmctl
+tests/test_bplist
+tests/test_mux
+tests/test_xml
+tests/bplist.sample.bin
+tests/test_lockdown
+tests/test_xmlw
+tests/test_dl

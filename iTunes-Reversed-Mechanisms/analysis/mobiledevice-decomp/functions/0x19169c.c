@@ -1,0 +1,41 @@
+// rea decompile_all
+// name: _pcRead
+// address: 0x19169c
+// body: available
+// range: 0x19169c-0x191725 inclusive
+// non_contiguous: false
+// provider: Ghidra 12.1.4 (ghidra)
+// analysis_profile: 04dde8c57a87610dc458abf444e7f4727b39c7dade182ba942da8f8f7f4fe93b
+// limitations: The session serves operations only after Ghidra reports default auto-analysis complete; incomplete analysis does not expose partial results.; The imported Program and temporary project are ephemeral and deleted on close. Annotation operations edit session database metadata; original executable bytes are never written.; Cancelling an active Ghidra request terminates its ephemeral database and discards session annotations. The selected target remains open; the next provider query imports the original artifact again.; Default-space addresses use lowercase 0x-prefixed hexadecimal; other address spaces use <percent-encoded-space>:0x<hex>.; macOS sessions require a matching executable Ghidra native decompiler; REA checks for it but does not build native components or change Gatekeeper quarantine state.; Pseudocode is Ghidra decompiler output, not original source and not text-equivalent to Hopper output.; External functions and functions without an analyzable body return null; other decompiler failures remain explicit.
+// pseudocode: provider-specific; not original source
+
+
+long _pcRead(code *param_1,undefined8 param_2,long param_3,long param_4)
+
+{
+  long lVar1;
+  long lVar2;
+  
+  if (param_4 == 0) {
+    lVar2 = 0;
+  }
+  else {
+    lVar2 = 0;
+    do {
+      lVar1 = (*param_1)(param_2,param_3,param_4);
+      if (lVar1 < 0) {
+        _pc_log_error("/AppleInternal/Library/BuildRoots/4~Caj6ugDGYsYEA-VFMB05u4pLpIBvwdTdC-LDNMc/Library/Caches/com.apple.xbs/Sources/ParallelCompression/ParallelCompression/Filter.c"
+                      ,"pcRead",0x52,0x25,0,"pcRead failed");
+        return lVar1;
+      }
+      if (lVar1 == 0) {
+        return lVar2;
+      }
+      param_3 = param_3 + lVar1;
+      lVar2 = lVar2 + lVar1;
+      param_4 = param_4 - lVar1;
+    } while (param_4 != 0);
+  }
+  return lVar2;
+}
+

@@ -2021,3 +2021,35 @@ HTTP-клиент a2-s.3u.com по запрятанному протоколу (
 - Открыто: точные wire-имена Params у RequestingSync (R1; снятие
   AirTrafficControl.framework или осторожная live-проба), atc2 (Q4),
   критерий шага 9 — Music._Count инкремент (Q3).
+
+#### 04.11 ночь: R1-проба RequestingSync — расшифровка валидатора atcd
+
+- Новая подкоманда `irmctl atc-sync [вариант 1..15]` (read-only): HostInfo →
+  SyncAllowed → МГНОВЕННО RequestingSync → читаем SyncFailed/ кадры
+  (окна 20 с до EOF). Средство-экwiście: сервер сам называет недост_hashae.
+- **Таблица AT-ошибок atcd (25 имён) расшифрована по строкам агента**
+  (`AMPDevicesAgent.strings` 56257+: NoError/GenericError/SessionFailure/
+  DeviceOutOfDate/**NegotiationFailed(4)**/DeviceRefusedToSyncDataclass(5)/
+  MingleFailure/PushFailure/RemapFailure/DeviceCancelledSync(9)/
+  DeviceDisconnected(10)/…/**DeviceProtocolOutOfDate(14ри?)**/…
+  — нумерация по заказу FUN_10032f390 (0..24)): → live:
+  **SyncFailed{12} = DeviceProtocolOutOfDate** (+ RequiredVersion
+  "10.5.0.115"), **{4} = NegotiationFailed**.
+- **Версия-шеврон до всего**: RequestingSync требует `Params.HostInfo`
+  ВНУТРИ запроса с `Version == "10.5.0.115"` (top-level HostInfo с той же
+  версией НЕ спасает — {12}); «13.5.6.12» (константа corpus-агента) → {12}.
+- **Idle-тайминг**: после SyncAllowed у atcd короткий бюджет (~10–15 с,
+  Ping×2 → IdleExit); поздний запрос = тихий EOF. Порядок: HostInfo →
+  1 кадр (SyncAllowed) → сразу RequestingSync.
+- **Слой 2 = NegotiationFailed{4}** держится при: любые имена массива
+  классов (Dataclasses/SyncDataClasses/SyncDataclasses), Media/Music,
+  яккеры-строки/числа/отсутствующие, +SyncTypes{Media:ATSyncDeltaSync},
+  SyncedAssetTypes[Track,Playlist,Genius,Lyrics,Artwork],
+  SyncedDataclasses=["Media"], GrappaSupportInfo в HostInfo.
+  Переговорный слой пока без our key.
+- syslog_relay на iOS 27: **InvalidService** (приватный oslog — не прочитать).
+- Вероятные следующие ходы: снять AirTrafficControl.framework (реальный
+  дизасм FT-клиента на macOS/iTunes — в corpus'е его нет); либо найти
+  регистрацию библиотеки-host'а (LibraryID не определен у atcd).
+- Логи: `tools/atc-sync-run{1,2,5,7,8,9,10,11,12,13,14,15}-*-2026-11-04.log`,
+  `tools/syslog-runA-2026-11-04.log` (InvalidService).

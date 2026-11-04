@@ -1,0 +1,3 @@
+atc-talk: StartService(com.apple.mobile.syslog_relay): lockdown: InvalidService
+device: id=1 udid=00008030-001C3128119A402E
+checkin Type: com.apple.mobile.lockdown

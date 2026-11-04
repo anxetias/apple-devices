@@ -16,11 +16,13 @@
 #include "libirm/xmlplist.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 static const char *str_of(const irm_bp_node *d, const char *key)
@@ -209,11 +211,11 @@ static int find_device(const char *path, const char *selector,
 /* ================================================================ */
 
 /* Ровно n байт из сервиса: 0 — ок; -2 — таймаут; -3 — EOF/ошибка канала
- * (для TLS деталей — irm_tls_error()). */
-static int svc_read_full(int fd, int tls, uint8_t *b, size_t n)
+ * (для TLS деталей — irm_tls_error()). timeout — секунды. */
+static int svc_read_full_t(int fd, int tls, uint8_t *b, size_t n, int timeout)
 {
 	if (tls) {
-		int rc = irm_tls_read_full(fd, b, n, 12);
+		int rc = irm_tls_read_full(fd, b, n, timeout);
 		if (rc == 0)
 			return 0;
 		return rc == -2 ? -2 : -3;
@@ -233,6 +235,12 @@ static int svc_read_full(int fd, int tls, uint8_t *b, size_t n)
 		got += (size_t)r;
 	}
 	return 0;
+}
+
+#define SVC_TO_DEFAULT 12
+static int svc_read_full(int fd, int tls, uint8_t *b, size_t n)
+{
+	return svc_read_full_t(fd, tls, b, n, SVC_TO_DEFAULT);
 }
 
 /* TLS сервиса: той же парой (lbD-стиль → Apple-стиль, E04 §2).
@@ -340,16 +348,132 @@ static void probe_service(irm_lk_t *lk, const irm_pair_t *pair,
 	irm_mux_close(fd);
 }
 
-/* Читает до max кадров [LE32 len][bplist00] из канала сервиса; печатает
- * дампы (XML) каждого dict-кадра; осторожно с мусором — стоп по границам. */
-static void atc_read_frames(int fd, int tls, int max)
+/* Короткая строка для summary (усечение по ASCII-границе). */
+static void clip_print(const char *s, size_t n, size_t max)
 {
+	if (n > max) {
+		fwrite(s, 1, max, stdout);
+		printf("…");
+	} else {
+		fwrite(s, 1, n, stdout);
+	}
+}
+
+static const char *bp_type_name(irm_bp_type t)
+{
+	switch (t) {
+	case IRM_BP_NULL: return "null";
+	case IRM_BP_BOOL: return "bool";
+	case IRM_BP_UINT: return "uint";
+	case IRM_BP_REAL: return "real";
+	case IRM_BP_DATE: return "date";
+	case IRM_BP_STRING: return "string";
+	case IRM_BP_DATA: return "data";
+	case IRM_BP_ARRAY: return "array";
+	case IRM_BP_DICT: return "dict";
+	}
+	return "?";
+}
+
+/* Структура узла одной строкой: с дочерними — до depth, глубже — типы
+ * (обрезки: массив >8 пунктов, словарь >16 ключей, строка >64 байт). */
+static void atc_summary(const irm_bp_node *d, int depth)
+{
+	if (!d) {
+		printf("null");
+		return;
+	}
+	irm_bp_type t = irm_bp_type_of(d);
+	switch (t) {
+	case IRM_BP_DICT: {
+		size_t n = irm_bp_dict_count(d);
+		printf("dict[%zu]{", n);
+		size_t show = n < 16 ? n : 16;
+		for (size_t i = 0; i < show; i++) {
+			if (i)
+				printf(", ");
+			printf("%s=", irm_bp_dict_key_at(d, i));
+			irm_bp_node *v = irm_bp_dict_val_at(d, i);
+			if (depth > 0)
+				atc_summary(v, depth - 1);
+			else
+				printf("%s", bp_type_name(irm_bp_type_of(v)));
+		}
+		if (show < n)
+			printf(", …+%zu", n - show);
+		printf("}");
+		break;
+	}
+	case IRM_BP_ARRAY: {
+		size_t n = irm_bp_array_len(d);
+		printf("array[%zu]{", n);
+		size_t show = n < 8 ? n : 8;
+		for (size_t i = 0; i < show; i++) {
+			if (i)
+				printf(", ");
+			irm_bp_node *v = irm_bp_array_get(d, i);
+			if (depth > 0)
+				atc_summary(v, depth - 1);
+			else
+				printf("%s", bp_type_name(irm_bp_type_of(v)));
+		}
+		if (show < n)
+			printf(", …+%zu", n - show);
+		printf("}");
+		break;
+	}
+	case IRM_BP_STRING: {
+		size_t len = 0;
+		const char *s = irm_bp_string_ptr(d, &len);
+		printf("str\"");
+		if (s)
+			clip_print(s, len, 64);
+		printf("\"");
+		break;
+	}
+	case IRM_BP_UINT:
+		printf("%llu",
+		       (unsigned long long)irm_bp_uint_value(d));
+		break;
+	case IRM_BP_REAL:
+		printf("%.6f", irm_bp_real_value(d));
+		break;
+	case IRM_BP_DATA: {
+		size_t len = 0;
+		irm_bp_data_ptr(d, &len);
+		printf("data[%zu]", len);
+		break;
+	}
+	case IRM_BP_BOOL:
+		printf("%s", irm_bp_bool_value(d) ? "true" : "false");
+		break;
+	default:
+		printf("%s", bp_type_name(t));
+		break;
+	}
+}
+
+/* Читает до max кадров [LE32 len][bplist00]: кадры <= dump_limit печатает
+ * полным XML-дампом, крупные — структурой (depth); stop на мусоре.
+ * Возврат: сколько dict-кадров прочитано; *stop (м不为 NULL): 0 = max
+ * кадров; -2 = таймаут (сервер ждёт/готовится); -3 = EOF канала;
+ * -4 = кадр вне границ; -5 = не plist-dict. */
+static int atc_read_frames_ext(int fd, int tls, int max, uint32_t cap,
+			       size_t dump_limit, int timeout, int depth,
+			       int *stop)
+{
+	int got = 0;
+	if (stop)
+		*stop = 0;
 	for (int k = 1; k <= max; k++) {
 		uint8_t lb[4] = { 0, 0, 0, 0 };
-		int rc = svc_read_full(fd, tls, lb, sizeof lb);
+		int rc = svc_read_full_t(fd, tls, lb, sizeof lb, timeout);
 		if (rc != 0) {
+			if (stop)
+				*stop = rc == -2 ? -2 : -3;
 			printf("%s\n",
-			       rc == -3 ? "  обмен закрыт (EOF) — кадров больше нет" :
+			       rc == -3 ?
+				       "  обмен закрыт (EOF) — кадров больше нет" :
 			       rc == -2 ? "  тишина — сервер ждёт от клиента" :
 					  "  ошибка чтения заголовка кадра");
 			break;
@@ -357,14 +481,16 @@ static void atc_read_frames(int fd, int tls, int max)
 		uint32_t len = (uint32_t)lb[0] | ((uint32_t)lb[1] << 8) |
 			       ((uint32_t)lb[2] << 16) | ((uint32_t)lb[3] << 24);
 		printf("  кадр %d: len=%u", k, len);
-		if (len < 8 || len > (1u << 20)) {
-			printf(" — вне разумных границ, стоп\n");
+		if (len < 8 || len > cap) {
+			printf(" — вне границ (cap=%u), стоп\n", cap);
+			if (stop)
+				*stop = -4;
 			break;
 		}
 		uint8_t *body = (uint8_t *)malloc(len);
 		if (!body)
 			break;
-		if (svc_read_full(fd, tls, body, len) != 0) {
+		if (svc_read_full_t(fd, tls, body, len, timeout) != 0) {
 			printf(" — тело недочитано\n");
 			free(body);
 			break;
@@ -380,18 +506,36 @@ static void atc_read_frames(int fd, int tls, int max)
 		if (!d || irm_bp_type_of(d) != IRM_BP_DICT) {
 			printf("  (не plist-dict — фрагмент протокола?)\n");
 			irm_bp_free(d);
+			if (stop)
+				*stop = -5;
 			break;
 		}
-		uint8_t *xm = NULL;
-		size_t xn = 0;
-		if (irm_xml_write(d, &xm, &xn) == 0) {
-			printf("  dump:\n");
-			fwrite(xm, 1, xn, stdout);
+		got++;
+		if (len <= dump_limit) {
+			uint8_t *xm = NULL;
+			size_t xn = 0;
+			if (irm_xml_write(d, &xm, &xn) == 0) {
+				printf("  dump:\n");
+				fwrite(xm, 1, xn, stdout);
+				printf("\n");
+				free(xm);
+			}
+		} else {
+			printf("  (крупный — структура):\n  ");
+			atc_summary(d, depth);
 			printf("\n");
-			free(xm);
 		}
 		irm_bp_free(d);
 	}
+	return got;
+}
+
+/* Читает до max кадров [LE32 len][bplist00] из канала сервиса; печатает
+ * дампы (XML) каждого dict-кадра; осторожно с мусором — стоп по границам. */
+static void atc_read_frames(int fd, int tls, int max)
+{
+	atc_read_frames_ext(fd, tls, max, 1u << 20, 64 * 1024,
+			    SVC_TO_DEFAULT, 2, NULL);
 }
 
 /* ================================================================ */
@@ -463,12 +607,15 @@ static irm_bp_node *atc_msg(const char *command, uint64_t id,
 
 /* Params из FUN_1003335d2 (HostInfo агента): Type=«iTunes», Version,
  * MacOSVersion, SyncHostName, LibraryID, SyncedDataclasses, SyncedAssetTypes,
- * Wakeable. Значения — стартовые заглушки пробника (read-only). */
-static irm_bp_node *atc_hostinfo_params(void)
+ * Wakeable. Значения — стартовые заглушки пробника (read-only).
+ * version — строка из HostInfo.Params (сервер проверяет её РАНЬШЕ всего:
+ * SyncFailed{ErrorCode:12, RequiredVersion:"10.5.0.115"} при «13.5.6.12»). */
+static irm_bp_node *atc_hostinfo_params_v(const char *version)
 {
 	irm_bp_node *p = irm_bp_dict();
 	if (!p || irm_bp_dict_set(p, "Type", irm_bp_string("iTunes")) != 0 ||
-	    irm_bp_dict_set(p, "Version", irm_bp_string("13.5.6.12")) != 0 ||
+	    irm_bp_dict_set(p, "Version",
+			    irm_bp_string(version)) != 0 ||
 	    irm_bp_dict_set(p, "MacOSVersion",
 			    irm_bp_string("15.8.2")) != 0)
 		goto fail;
@@ -483,17 +630,54 @@ static irm_bp_node *atc_hostinfo_params(void)
 	if (irm_bp_dict_set(p, "SyncHostName", irm_bp_string(hn)) != 0 ||
 	    irm_bp_dict_set(p, "LibraryID", irm_bp_string(lid)) != 0)
 		goto fail;
-	/* Read-only-пробник: пустые списки dataclass/asset-types, Wakeable=0
-	 * (никаких обещаний синка серверу). */
+	/* Read-only-пробник: по умолчанию пустые списки dataclass/asset-types,
+	 * Wakeable=0 (никаких обещаний синка серверу). IRMA_ATC_SYNCED_DC=1 —
+	 * SyncedDataclasses=["Media"] (для v12: согласованность классов с
+	 * RequestingSync.Params). */
+	const char *sdc = getenv("IRMA_ATC_SYNCED_DC");
 	irm_bp_node *arr = irm_bp_array();
 	if (!arr || irm_bp_dict_set(p, "SyncedDataclasses", arr) != 0) {
 		irm_bp_free(arr);
 		goto fail;
 	}
+	if (sdc && *sdc == '1') {
+		irm_bp_node *dc = irm_bp_array();
+		if (!dc || irm_bp_array_add(dc, irm_bp_string("Media")) != 0 ||
+		    irm_bp_dict_set(p, "SyncedDataclasses", dc) != 0) {
+			irm_bp_free(dc);
+			goto fail;
+		}
+	}
 	arr = irm_bp_array();
 	if (!arr || irm_bp_dict_set(p, "SyncedAssetTypes", arr) != 0) {
 		irm_bp_free(arr);
 		goto fail;
+	}
+	/* IRMA_ATC_SYNCED_TYPES="Track,Playlist,..." — заполняет
+	 * SyncedAssetTypes (переговоры ассет-типов, R1). */
+	const char *sat = getenv("IRMA_ATC_SYNCED_TYPES");
+	if (sat && *sat) {
+		irm_bp_node *ta = irm_bp_array();
+		const char *hod = sat;
+		while (*hod) {
+			const char *sep = strchr(hod, ',');
+			size_t tl = sep ? (size_t)(sep - hod) : strlen(hod);
+			char item[64];
+			if (tl >= sizeof item)
+				tl = sizeof item - 1;
+			memcpy(item, hod, tl);
+			item[tl] = 0;
+			if (!ta || irm_bp_array_add(ta,
+						    irm_bp_string(item)) != 0) {
+				irm_bp_free(ta);
+				goto fail;
+			}
+			hod = sep ? sep + 1 : hod + tl;
+		}
+		if (!ta || irm_bp_dict_set(p, "SyncedAssetTypes", ta) != 0) {
+			irm_bp_free(ta);
+			goto fail;
+		}
 	}
 	if (irm_bp_dict_set(p, "Wakeable", irm_bp_bool(0)) != 0)
 		goto fail;
@@ -501,6 +685,12 @@ static irm_bp_node *atc_hostinfo_params(void)
 fail:
 	irm_bp_free(p);
 	return NULL;
+}
+
+/* Классическая версия для atc-talk (E12 run1-3) — 13.5.6.12 из дизасма. */
+static irm_bp_node *atc_hostinfo_params(void)
+{
+	return atc_hostinfo_params_v("13.5.6.12");
 }
 
 /* Подключение к сервису atc с общими шагами (StartService→Connect→TLS). */
@@ -612,6 +802,332 @@ static int cmd_atc_talk(const char *path, const char *selector)
 		}
 	}
 	if (svc_tls)
+		irm_tls_disarm(fd);
+	if (fd >= 0)
+		irm_mux_close(fd);
+	irm_lk_close(lk);
+	irm_pair_free(pair);
+	return rc;
+}
+
+/* Подготовка Params для RequestingSync по варианту пробы R1:
+ *  1 = {} (пустой — сервер должен назвать недостающие ключи);
+ *  2 = только DataclassAnchors {Media:"0"};
+ *  3 = Dataclasses:["Media"] + anchors;
+ *  4 = 3 + HostInfo (полный словарь приветствия);
+ *  5 = 4, но массив классов под именем SyncDataClasses;
+ *  6 = 4, но массив классов под именем SyncDataclasses.
+ * hi_params — NEW dict (или NULL для 1/2/3-путей внутри). Возвращает NEW. */
+static irm_bp_node *atc_sync_params(int variant, const char *ver)
+{
+	irm_bp_node *p = irm_bp_dict();
+	if (!p)
+		return NULL;
+	irm_bp_node *anchors = NULL;
+	irm_bp_node *classes = NULL;
+	irm_bp_node *hi = NULL;
+	switch (variant) {
+	case 12:
+		/* v4 БЕЗ DataclassAnchors: классы + HostInfo (роль яккеров). */
+		classes = irm_bp_array();
+		if (!classes ||
+		    irm_bp_array_add(classes, irm_bp_string("Media")) != 0)
+			goto fail;
+		if (irm_bp_dict_set(p, "Dataclasses", classes) != 0)
+			goto fail;
+		hi = atc_hostinfo_params_v(ver && *ver ? ver : "13.5.6.12");
+		if (!hi || irm_bp_dict_set(p, "HostInfo", hi) != 0) {
+			irm_bp_free(hi);
+			goto fail;
+		}
+		return p;
+	case 1:
+		break; /* пусто */
+	case 2:
+		/* только DataclassAnchors (без классов и HostInfo) */
+		anchors = irm_bp_dict();
+		if (!anchors ||
+		    irm_bp_dict_set(anchors, "Media",
+				    irm_bp_string("0")) != 0 ||
+		    irm_bp_dict_set(p, "DataclassAnchors", anchors) != 0)
+			goto fail;
+		return p;
+	case 3:
+	case 4:
+	case 5:
+	case 6:
+	case 7:
+	case 10:
+	case 11:
+	case 15:
+		anchors = irm_bp_dict();
+		if (!anchors ||
+		    irm_bp_dict_set(anchors, variant == 10 ? "Music" :
+						   "Media",
+				    variant == 11 ? irm_bp_uint(0) :
+						    irm_bp_string("0")) !=
+			    0)
+			goto fail;
+		classes = irm_bp_array();
+		if (!classes ||
+		    irm_bp_array_add(
+			    classes,
+			    irm_bp_string(variant == 10 ? "Music" :
+					  "Media")) != 0)
+			goto fail;
+		if (irm_bp_dict_set(p,
+			      variant == 5 ? "SyncDataClasses" :
+			      variant == 6 ? "SyncDataclasses" :
+					     "Dataclasses",
+			      classes) != 0)
+			goto fail;
+		if (irm_bp_dict_set(p, "DataclassAnchors", anchors) != 0)
+			goto fail;
+		if (variant == 7) {
+			/* Гипотеза: современный atcd хочет карту режимов
+			 * синка в самом запроее (из старого корпуса они
+			 * приходят только в FinishedSyncingMetadata). */
+			irm_bp_node *st = irm_bp_dict();
+			if (!st ||
+			    irm_bp_dict_set(st, "Media",
+					    irm_bp_string(
+						    "ATSyncDeltaSync")) !=
+				    0 ||
+			    irm_bp_dict_set(p, "SyncTypes", st) != 0)
+				goto fail;
+		}
+		if (variant >= 4) {
+			hi = atc_hostinfo_params_v(ver && *ver ? ver :
+						   "13.5.6.12");
+			if (!hi)
+				goto fail;
+			if (variant == 15) {
+				/* Гипотеза переговоров: хост отвечает
+				 * Grappa-капабилити внутри своего HostInfo
+				 * (зеркало Capabilities сервера). */
+				irm_bp_node *gs = irm_bp_dict();
+				irm_bp_node *gi = irm_bp_dict();
+				if (!gs || !gi ||
+				    irm_bp_dict_set(gi, "version",
+						    irm_bp_uint(1)) != 0 ||
+				    irm_bp_dict_set(gi, "deviceType",
+						    irm_bp_uint(0)) != 0 ||
+				    irm_bp_dict_set(gi, "protocolVersion",
+						    irm_bp_uint(1)) != 0 ||
+				    irm_bp_dict_set(gs, "GrappaSupportInfo",
+						    gi) != 0 ||
+				    irm_bp_dict_set(hi, "GrappaSupportInfo",
+						    gs) != 0) {
+					irm_bp_free(gs);
+					goto fail;
+				}
+			}
+			if (irm_bp_dict_set(p, "HostInfo", hi) != 0) {
+				irm_bp_free(hi);
+				goto fail;
+			}
+		}
+		return p;
+	default:
+		break;
+	}
+	return p;
+fail:
+	irm_bp_free(classes);
+	irm_bp_free(anchors);
+	irm_bp_free(hi);
+	irm_bp_free(p);
+	return NULL;
+}
+
+/* atc-sync: read-only проба RequestingSync (R1 из E12): прощупывание
+ * wire-имен Params по валидатору сервера (вариант 1 — пустой Params). */
+static int cmd_atc_sync(const char *path, const char *selector,
+			int variant)
+{
+	uint32_t device_id = 0;
+	char udid[128] = "-";
+	if (find_device(path, selector, &device_id, udid, sizeof udid) != 0)
+		return 1;
+	printf("device: id=%u udid=%s\n", device_id, udid);
+
+	irm_pair_t *pair = NULL;
+	if (irm_pair_load(udid, &pair) != 0) {
+		fprintf(stderr, "atc-sync: %s\n", irm_pair_error());
+		return 1;
+	}
+	printf("pair: %s\n", pair->src);
+
+	irm_lk_t *lk = irm_lk_open(path, device_id, IRM_LK_DEFAULT_PORT, 5);
+	if (!lk) {
+		fprintf(stderr, "atc-sync: lockdown: %s\n", irm_lk_error());
+		irm_pair_free(pair);
+		return 1;
+	}
+	irm_bp_node *qt = irm_lk_query_type(lk);
+	printf("checkin Type: %s\n", dash(qt ? str_of(qt, "Type") : NULL));
+	irm_bp_free(qt);
+	if (irm_lk_start_session(lk, pair) != 0) {
+		fprintf(stderr, "atc-sync: session: %s\n", irm_lk_error());
+		irm_lk_close(lk);
+		irm_pair_free(pair);
+		return 1;
+	}
+	printf("session: TLS поднят на lockconn\n");
+
+	int fd = -1;
+	int svc_tls = 0;
+	int rc = 1;
+	if (atc_serve_open(lk, pair, path, device_id, "com.apple.atc",
+			   &fd, &svc_tls) == 0) {
+		printf(" приветствие сервера:\n");
+		atc_read_frames(fd, svc_tls, 3);
+
+		/* Сначала — стандартный HostInfo (run1-3: принимается).
+		 * Версия прогружаемая: сервер сверяет её РАНЬШЕ валидации
+		 * Params RequestingSync (SyncFailed ErrorCode 12,
+		 * RequiredVersion "10.5.0.115"). */
+		const char *ver = getenv("IRMA_ATC_VERSION");
+		irm_bp_node *hp = atc_hostinfo_params_v(
+			ver && *ver ? ver : "13.5.6.12");
+		irm_bp_node *msg = hp ? atc_msg("HostInfo", 1, hp) : NULL;
+		if (msg && atc_frame_write(fd, svc_tls, msg) == 0) {
+			/* Читаем ТОЛЬКО SyncAllowed (1 кадр) — после него у
+			 * сервера короткий idle-бюджет (Ping×2 → IdleExit),
+			 * запрос должен уйти мгновенно (run5-факт). */
+			int stop = 0;
+			atc_read_frames_ext(fd, svc_tls, 1, 16u << 20,
+					    16 * 1024, 12, 1, &stop);
+		} else if (msg) {
+			fprintf(stderr, "atc-sync: write HostInfo: %s\n",
+				svc_tls ? "tls-ошибка" : strerror(errno));
+		}
+		irm_bp_free(msg);
+
+		/* Проба RequestingSync: вариант variant. */
+		const char *ver2 = getenv("IRMA_ATC_VERSION");
+		irm_bp_node *sp = atc_sync_params(variant, ver2);
+		msg = sp ? atc_msg("RequestingSync", 3, sp) : NULL;
+		if (msg) {
+			uint8_t *out = NULL;
+			size_t on = 0;
+			if (irm_xml_write(msg, &out, &on) == 0) {
+				printf(" отсылаем RequestingSync "
+				       "(Id=3, вариант %d):\n",
+				       variant);
+				fwrite(out, 1, on, stdout);
+				printf("\n");
+				free(out);
+			}
+			if (atc_frame_write(fd, svc_tls, msg) == 0) {
+				printf(" после RequestingSync:\n");
+				/* Пока сервер проводит prepare, каналы могут
+				 * молчать десятки секунд: окна 8 кадров по
+				 * 20 с; продолжаем до EOF/готовности. */
+				int stop = 0;
+				int total = 0;
+				for (int w = 0; w < 6; w++) {
+					int nf = atc_read_frames_ext(
+						fd, svc_tls, 8, 16u << 20,
+						96 * 1024, 20, 2, &stop);
+					total += nf;
+					if (stop == -3)
+						break; /* EOF — конец */
+					if (stop != -2)
+						break; /* рамка битая */
+					printf(" (окно %d: тишина, "
+					       "продолжаем)\n",
+					       w + 1);
+				}
+				printf(" прочитано кадров: %d\n",
+				       total);
+				rc = 0;
+			} else {
+				fprintf(stderr,
+					"atc-sync: write RequestingSync: "
+					"%s\n",
+					svc_tls ? "tls-ошибка" :
+						strerror(errno));
+			}
+			irm_bp_free(msg);
+		} else {
+			fprintf(stderr, "atc-sync: сбор Params варианта %d "
+					"не удался\n",
+				variant);
+		}
+	}
+	if (svc_tls)
+		irm_tls_disarm(fd);
+	if (fd >= 0)
+		irm_mux_close(fd);
+	irm_lk_close(lk);
+	irm_pair_free(pair);
+	return rc;
+}
+
+/* Системный лог устройства (com.apple.mobile.syslog_relay): StartService
+ * → (TLS?) → сырой поток N секунд в stdout (UI-нейтрально: raw-байты).
+ * Синхронно с atc-sync: ищем сообщения atcd про RequestingSync (R1). */
+static int cmd_syslog(const char *path, const char *selector,
+		      const char *secs)
+{
+	uint32_t device_id = 0;
+	char udid[128] = "-";
+	if (find_device(path, selector, &device_id, udid, sizeof udid) != 0)
+		return 1;
+	printf("device: id=%u udid=%s\n", device_id, udid);
+
+	irm_pair_t *pair = NULL;
+	if (irm_pair_load(udid, &pair) != 0) {
+		fprintf(stderr, "syslog: %s\n", irm_pair_error());
+		return 1;
+	}
+	irm_lk_t *lk = irm_lk_open(path, device_id, IRM_LK_DEFAULT_PORT, 5);
+	if (!lk) {
+		fprintf(stderr, "syslog: lockdown: %s\n", irm_lk_error());
+		irm_pair_free(pair);
+		return 1;
+	}
+	irm_bp_node *qt = irm_lk_query_type(lk);
+	printf("checkin Type: %s\n", dash(qt ? str_of(qt, "Type") : NULL));
+	irm_bp_free(qt);
+	if (irm_lk_start_session(lk, pair) != 0) {
+		fprintf(stderr, "syslog: session: %s\n", irm_lk_error());
+		irm_lk_close(lk);
+		irm_pair_free(pair);
+		return 1;
+	}
+	int fd = -1;
+	int tls = 0;
+	int rc = 1;
+	if (atc_serve_open(lk, pair, path, device_id,
+			   "com.apple.mobile.syslog_relay",
+			   &fd, &tls) == 0) {
+		int to = secs ? atoi(secs) : 20;
+		if (to < 5)
+			to = 5;
+		time_t end = time(NULL) + to;
+		long total = 0;
+		printf("[syslog] стрим %d с:\n", to);
+		fflush(stdout);
+		while (time(NULL) < end) {
+			uint8_t c;
+			if (svc_read_full_t(fd, tls, &c, 1, 2) != 0)
+				continue;
+			fputc((int)c, stdout);
+			total++;
+			if (c == 0) {
+				fflush(stdout);
+			} else if (total % 512 == 0) {
+				fflush(stdout);
+			}
+			if (ferror(stdout))
+				break;
+		}
+		printf("\n[syslog] прочитано байт: %ld\n", total);
+		rc = 0;
+	}
+	if (tls)
 		irm_tls_disarm(fd);
 	if (fd >= 0)
 		irm_mux_close(fd);
@@ -747,11 +1263,20 @@ static void usage(FILE *f)
 		"  irmctl [-s SOCKET] atc-probe     пара→StartSession+TLS→atc/atc2\n"
 		"                                   (обследование ATC, шаг 8+)\n"
 		"  irmctl [-s SOCKET] atc-talk      клиентская последовательность ATC:\n"
-		"                                   HostInfo→Ping (read-only, E12)\n");
+		"                                   HostInfo→Ping (read-only, E12)\n"
+		"  irmctl [-s SOCKET] atc-sync [1-15] проба RequestingSync (R1, E12):\n"
+		"                                   1=пусто (валидатор), 2=anchors,\n"
+		"                                   3=Dataclasses+anchors,\n"
+		"                                   4=3+HostInfo, 5=SyncDataClasses,\n"
+		"                                   6=SyncDataclasses, 7=+SyncTypes,\n"
+		"                                   10=Music, 11=anchors-uint,\n"
+		"\n"
+		"  irmctl [-s SOCKET] syslog [сек]  сырой syslog_relay-поток (R1)\n");
 }
 
 int main(int argc, char **argv)
 {
+	signal(SIGPIPE, SIG_IGN); /* закрытый peer → EPIPE в errno, не смерть */
 	const char *path = getenv("IRM_MUX_SOCKET");
 	const char *cmd = NULL;
 	const char *arg = NULL;
@@ -778,7 +1303,27 @@ int main(int argc, char **argv)
 	if (strcmp(cmd, "atc-probe") == 0)
 		return cmd_atc_probe(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
 	if (strcmp(cmd, "atc-talk") == 0)
-		return cmd_atc_talk(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
+		return cmd_atc_talk(path ? path : IRM_MUX_DEFAULT_SOCKET,
+				    arg);
+	if (strcmp(cmd, "atc-sync") == 0) {
+		int variant = 1;
+		if (arg && *arg) {
+			char *endp = NULL;
+			long v = strtol(arg, &endp, 10);
+			if (arg[0] >= '1' && arg[0] <= '9' && endp &&
+			    !*endp && v >= 1 && v <= 15)
+				variant = (int)v;
+			else {
+				usage(stderr);
+				return 2;
+			}
+		}
+		return cmd_atc_sync(path ? path : IRM_MUX_DEFAULT_SOCKET,
+				    NULL, variant);
+	}
+	if (strcmp(cmd, "syslog") == 0)
+		return cmd_syslog(path ? path : IRM_MUX_DEFAULT_SOCKET, NULL,
+				  arg);
 	usage(stderr);
 	return 2;
 }

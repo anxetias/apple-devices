@@ -165,17 +165,42 @@ TLS: lbD-комбо (HostCertificate+HostPrivateKey, pin DeviceCertificate)
 
 ## 5. Открытые вопросы
 
-- **R1 (RequestingSync wire)**: сумма фактов — `SendSyncRequest(conn,
-  dataclasses[], anchors, hostInfo)`; верифицированных wire-имён
-  Params в корпусе НЕТ (сериализует AirTrafficControl.framework).
-  Рабочие гипотезы: `{SyncDataClasses|Dataclasses:[...],
-  DataclassAnchors:{...}, HostInfo:{...}}`. Next: живая read-only
-  проба с кадром RequestingSync{Media, anchor "0"} (осторожно:
-  сервер отвечает AssetManifest-потоком; фрейм-кап 1 МБ надо поднять)
-  ИЛИ снятие AirTrafficControl.framework с мака/iTunes-инсталляции.
+- **R1 (RequestingSync wire / переговоры)**: живая read-only проба
+  `atc-sync` 04.11 (варианты 1–15, логи traces
+  `atc-sync-runN-*.log`) установила:
+  1. **Ошибка-таблица atcd расшифрована** (strings `56257+`, 25 имён,
+     FUN_10032f390 → DAT_10074507c): 0=NoError, 1=GenericError,
+     2=SessionFailure, 3=DeviceOutOfDate, **4=NegotiationFailed**,
+     5=DeviceRefusedToSyncDataclass, 9=DeviceCancelledSync,
+     10=DeviceDisconnected, 14=DeviceProtocolOutOfDate,
+     15=HostProtocolOutOfDate, 17=SyncServerFailed, 18=SyncBlocked …
+     → **SyncFailed{ErrorCode:12} = DeviceProtocolOutOfDate**
+     (+`RequiredVersion:"10.5.0.115"`), **{4} = NegotiationFailed**.
+  2. **Версия-шеврон**: RequestingSync проверяет `Params.HostInfo.Version`
+     (вложенный, не top-level HostInfo!) РАНЬШЕ всего остального;
+     «13.5.6.12» (старый corpus) → {12, RequiredVersion "10.5.0.115"};
+     без HostInfo в Params → тоже {12}. Версия «10.5.0.115» проходит
+     слой 1 (и top-level HostInfo с ней же получает SyncAllowed).
+  3. **Тайминг**: после `SyncAllowed` idle-бюджет сервера КОРОТКИЙ
+     (~10–15 с: Ping×2 → IdleExit); запрос надо слать сразу после
+     SyncAllowed. Поздний запрос в закрытое окно = мгновенный EOF без
+     сообщений (run2–run6, инвалидные пробы).
+  4. **Слой 2 = NegotiationFailed{4}** при: Dataclasses/SyncDataClasses/
+     SyncDataclasses (имя не важно), Media или Music, anchors
+     «"0"-строкой» или 0-числом, с яккерами/без, с SyncTypes/без,
+     SyncedAssetTypes ["Track","Playlist","Genius","Lyrics","Artwork"],
+     SyncedDataclasses=["Media"], GrappaSupportInfo внутри HostInfo.
+     НЕ проходит ни одна комбинация (≤15 вариантов).
+     Гипотезы на след. подход: (a) LibraryID не зарегистрирован у
+     atcd (негде взять «настоящую» библиотеку-домен — переговорам
+     не с чем сверяться); (b) требуется AirTrafficControl.framework
+     этап №2 (снятие фреймворка с мака/iTunes для дизасма);
+     (c) современный %HostInfo может иметь доп. ключи (corpus'а нет).
+  5. **syslog_relay на iOS 27 = InvalidService** (privat oslog;
+     device-логи недоступны этим способом).
 - **R2**: как выбирается ATSyncResetSync vs DeltaSync у сервера
-  при готовности (видимо, от полноты/host-анкеров; «PrepOnly» —
-  режим только-подготовки).
+  при готовности (anchor 0 ⇒ полная перезагрузка, вероятно ResetSync).
+- **R3**: atc2 (E11 §4).
 - **R3**: atc2 (E11 §4).
 
 ## 6. Код по факту
@@ -185,8 +210,18 @@ TLS: lbD-комбо (HostCertificate+HostPrivateKey, pin DeviceCertificate)
   `atc_hostinfo_params` (Params из FUN_1003335d2, read-only
   заглушки), `atc_serve_open` (StartService→Connect→TLS), raw_write_full;
   `svc_read_full` — контракт 0/−2 (таймаут)/−3 (EOF).
+- `tools/irmctl.c::atc-sync` (R1-проба, E12 §5): варианты Params 1–15,
+  версия HostInfo через `IRMA_ATC_VERSION` (по умолчанию 10.5.0.115
+  — RequiredVersion atcd; «13.5.6.12» = corpus-константа),
+  `IRMA_ATC_SYNCED_DC`/`IRMA_ATC_SYNCED_TYPES`; 结构-summary для
+  крупных кадров (`atc_summary`, кап 16 МБ). Механика: HostInfo →
+  читаем ТОЛЬКО SyncAllowed → МГНОВЕННО RequestingSync (idle-бюджет),
+  окна чтения по 20 с до EOF.
+- `tools/irmctl.c::syslog` — com.apple.mobile.syslog_relay (на iOS 27
+  → InvalidService, оставлен для портативности).
 - `libirm/src/tls.c`: SSL_read теперь трактует
   `SSL_ERROR_SYSCALL`+EAGAIN/EWOULDBLOCK/EINTR как «продолжить с
   poll» (иначе ложный EOF посреди живой сессии, run2-факт);
-  диагностика ошибки улучшена (rc/er/errno).
+  диагностика ошибки улучшена (rc/er/errno); SIGPIPE игнорируется
+  в main (закрытый peer → EPIPE-текст, не смерть).
 - Юниты libirm 6/6 OK после полной пересборки (`-Wall -Wextra` clean).

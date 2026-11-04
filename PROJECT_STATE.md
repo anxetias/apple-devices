@@ -746,3 +746,31 @@ apple-devices/
 - Артефакты в traces: `tools/atc-talk-run{1,2,3}-2026-11-04.log` и
   попутно закоммичены `tools/atc-probe-run3-2026-11-04.log`,
   `tools/ideviceinfo-mux.strace-2026-11-04`.
+
+##### Шаг 9c: R1-проба RequestingSync — валидатор atcd частично расшифрован (04.11, ночь)
+
+- Итог в одну строку: **`irmctl atc-sync`** (15 вариантов Params) довёл
+  до известного слоя: сервер видит наш `RequestingSync`, проверяет
+  версию (`DeviceProtocolOutOfDate`=12 при 13.5.6.12; RequiredVersion
+  **"10.5.0.115"** — версии ИЗ Params.HostInfo, не top-level HostInfo!)
+  и дальше всегда отвечает **NegotiationFailed(=4)**; переговорный
+  слой за AirTrafficControl.framework (в corpus'е его нет).
+- Расшифрована **таблица AT-ошибок (25 имён, из строк агента +
+  FUN_10032f390)**: 4=NegotiationFailed, 5=DeviceRefusedToSyncDataclass,
+  9=DeviceCancelledSync, 14=DeviceProtocolOutOfDate, 15=HostProtocolOutOfDate,
+  18=SyncBlocked, ...
+- Открытия механики: (1) RequestingSync требует `Params.HostInfo.Version`
+  (вложенный HostInfo обязателен); (2) после SyncAllowed у сервера
+  короткий idle-бюджет — запрос слать сразу (поздний = тихий EOF);
+  (3) имя массива классов/яккеры/типы-assеты/GrappaSupportInfo — на
+  слой NegotiationFailed не влияют (v1–v15).
+- Read-only подтвердён: SyncFailed → AssetMetrics → Ping×2 → IdleExit,
+  ничего не пишется.
+- syslog_relay на iOS 27 = InvalidService (device-логи недоступны).
+- Код: `atc-sync` (Builder Params 1..15, env IRMA_ATC_VERSION/
+  IRMA_ATC_SYNCED_DC/IRMA_ATC_SYNCED_TYPES), `atc_summary` для крупных
+  кадров, `syslog`-подкоманда; SIGPIPE-игнор; юнит-набор не ломался
+  (`-Wall -Wextra` clean).
+- Артефакты: traces `tools/atc-sync-runN-*-2026-11-04.log` (12 логов),
+  E12 §5 обновлён (R1-факты, гипотезы дальше: снять
+  AirTrafficControl.framework или найти регистрацию LibraryID).

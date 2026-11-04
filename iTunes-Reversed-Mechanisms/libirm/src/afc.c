@@ -609,6 +609,28 @@ int irm_afc_mkdir(irm_afc_t *a, const char *path)
 	return ok;
 }
 
+int irm_afc_remove(irm_afc_t *a, const char *path)
+{
+	size_t pl = strlen(path);
+	uint8_t *hp = (uint8_t *)malloc(pl);
+	if (!hp) {
+		aerr("AFC: нет памяти");
+		return -1;
+	}
+	memcpy(hp, path, pl);
+	afc_reply r;
+	memset(&r, 0, sizeof r);
+	int rc = afc_exchange(a, IRM_AFC_OP_REMOVEPATH, hp, pl, NULL, 0, &r);
+	free(hp);
+	int ok = (r.op == IRM_AFC_OP_STATUS) ? (r.code == 0 ? 0 : -1)
+					     : (rc == 0 ? 0 : -1);
+	free(r.hp);
+	free(r.pl);
+	if (ok != 0 && rc == 0)
+		aerr(irm_afc_status_name((unsigned)r.code));
+	return ok;
+}
+
 int irm_afc_rename(irm_afc_t *a, const char *from, const char *to)
 {
 	size_t fl = strlen(from), tl = strlen(to);

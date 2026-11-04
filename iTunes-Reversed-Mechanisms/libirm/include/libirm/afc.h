@@ -50,6 +50,7 @@ extern "C" {
 #define IRM_AFC_OP_GETFILEINFO 0x0000000aull
 #define IRM_AFC_OP_GETDEVINFO 0x0000000bull
 #define IRM_AFC_OP_MAKEDIR 0x00000009ull
+#define IRM_AFC_OP_REMOVEPATH 0x00000008ull
 #define IRM_AFC_OP_FILEOPEN 0x0000000dull
 #define IRM_AFC_OP_OPENRES 0x0000000eull
 #define IRM_AFC_OP_READ 0x0000000full
@@ -112,6 +113,9 @@ int irm_afc_write_full(irm_afc_t *a, const char *path, const uint8_t *b,
 
 /* Создать каталог (рекурсии нет — родителя создаём отдельно). */
 int irm_afc_mkdir(irm_afc_t *a, const char *path);
+
+/* Удаление пути (файл/каталог; op 0x0008 — префлайт-очистка Airlock). */
+int irm_afc_remove(irm_afc_t *a, const char *path);
 
 /* Переименование/перемещение (Airlock → постоянный путь, E14 §3). */
 int irm_afc_rename(irm_afc_t *a, const char *from, const char *to);

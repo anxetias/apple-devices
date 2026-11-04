@@ -261,3 +261,9 @@ VERSION/SERVICE («com.apple.atc» по умолчанию; канал TLS — l
 - Makefile: vendored SQLite (../vendor/sqlite, -O2 -w, объект в
   build/sqlite3.o), линкуется в irmctl; юниты 5/5 OK; `-Wall
   -Wextra` чисто.
+
+## 8. Что дальше (шаг 9f)
+
+Реальный Delta с треком — закрыт в **E15** (`docs/evidence/E15-atc-insert.md`):
+grappa-подпись .cig, стадинг ops+cig, insert_track по карте rustunes,
+Airlock/FileComplete → SyncFinished, якерь 1 → 2 (post-verify).

@@ -131,3 +131,8 @@ ReadyForSync подтверждён кристально просто: пере�
 - libc-клиент пишем сами (C11/POSIX, свой bplist/LE32-фрейминг уже есть
   в libirm; алгоритм подписи не копируем — реализуем свой, на OpenSSL
   AES/HMAC-SHA1, что уже в зависимостях TLS).
+
+**UPDATE 9e/9f:** пустой Delta закрыт (E14); реальный Delta с треком —
+E15 (`docs/evidence/E15-atc-insert.md`): grappa (свой C-код на OpenSSL,
+самотест 4/4 PASS на векторах rustunes), insert_track, стейдж ops+.cig,
+Airlock → FileComplete → SyncFinished, якерь 1 → 2 in-DB.

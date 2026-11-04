@@ -15,10 +15,11 @@ LIB     = libirm/libirm.a
 LIB_HDRS = libirm/include/libirm/bplist.h libirm/include/libirm/mux.h \
 	   libirm/include/libirm/xmlplist.h libirm/include/libirm/lockdown.h \
 	   libirm/include/libirm/pairing.h libirm/include/libirm/tls.h \
-	   libirm/include/libirm/devicelink.h libirm/include/libirm/afc.h
+	   libirm/include/libirm/devicelink.h libirm/include/libirm/afc.h \
+	   libirm/include/libirm/grappa.h
 LIB_SRCS = libirm/src/bplist.c libirm/src/mux.c libirm/src/xmlplist.c \
 	   libirm/src/lockdown.c libirm/src/pairing.c libirm/src/tls.c \
-	   libirm/src/devicelink.c libirm/src/afc.c
+	   libirm/src/devicelink.c libirm/src/afc.c libirm/src/grappa.c
 LIB_OBJS = $(LIB_SRCS:%.c=%.o)
 
 # TLS (E04 §3-6) — OpenSSL из системы (pkg-config openssl).

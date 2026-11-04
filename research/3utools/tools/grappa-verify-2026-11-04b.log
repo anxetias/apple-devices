@@ -1,0 +1,6 @@
+reply: len=83 r0=01 r1=01 r18=40 (ожид. 01 01 40)
+D sha256 = 4ca851b96f09781e0343726b95baae4432907c0677f424ccf3c43f224710adc9
+K sha256 = d2749fb35036f40e0da79a17a8bebb9f92c27a3daf7b2aad374bb0d7f819d4ba
+sidecar len = 21
+sidecar sha256 = 2efa43e03dd99fe7cdd3742840e38f8ba61629807f7098917d8ba5548f049634
+OK: все шаги (CBC-dec → XOR-masks → ECB → HMAC-SHA1 сошлись без PaddingError)

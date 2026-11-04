@@ -2129,5 +2129,21 @@ HTTP-клиент a2-s.3u.com по запрятанному протоколу (
   `_MLDatabaseProperties.MLSyncClientSyncAnchor`.
 - Логи: `tools/*-2026-11-04b.log` (atc-handshake-run1/2 — в run2
   ReadyForSync; lk-dump-run1; atc-talk-atc2-run1; atc-sync-run16-v16/v17).
+- **Продолжение 9d (этот же вечер)**: повтор run3 с hex-печатью
+  `DeviceInfo.Grappa` прямо из разобранного bplist (`GRAPPA_REPLY(83)`)
+  — свежий телефонный ответ снова 83Б со структурой `01 01 … r18=0x40 …`
+  (PS-случайное тело). Причина XML-болезни: **баг `wb_b64` в
+  libirm/src/xmlplist.c** — рендер data-узла при остатке n%3∈{1,2} писал
+  NUL вместо b64-символа (run2-дамп выглядел «обрезанным»); исправлено,
+  юниту xmlw добавлены data-узлы всех остатков %3 → 6/6 OK. Дополнительно
+  локально (чистый OpenSSL+XOR, без телефона) проверена цепочка
+  расчётной подписи §11.4: D=AES-128-CBC-nopad(reply[19:83],
+  key=0x95×16, IV=reply[2:18]) → без PaddingError; K=ECB(…); sidecar
+  21Б — все шаги сошлись (печатались только sha256). Наш
+  GRAPPA_HOST_REQUEST == rustunes HOST_REQUEST байт-в-байт (sha256
+  6c3f39f3…348). Это расчётная способность, НЕ контракт-проверка
+  (та — только в mutation-фазе).
+- Логи продолжения: `tools/atc-handshake-run3-2026-11-04b.log`,
+  `tools/grappa-verify-2026-11-04b.log`.
 - Факт-документ: `docs/evidence/E13-atc-resolved.md` (+ индекс в README,
   E12 §5 переписана).

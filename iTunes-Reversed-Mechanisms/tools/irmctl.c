@@ -758,7 +758,11 @@ static int cmd_atc_talk(const char *path, const char *selector)
 	int fd = -1;
 	int svc_tls = 0;
 	int rc = 1;
-	if (atc_serve_open(lk, pair, path, device_id, "com.apple.atc",
+	/* Q4: IRMA_ATC_SERVICE — подмена имени сервиса (atc/atc2/...). */
+	const char *svc_env = getenv("IRMA_ATC_SERVICE");
+	const char *svc_name =
+		(svc_env && *svc_env) ? svc_env : "com.apple.atc";
+	if (atc_serve_open(lk, pair, path, device_id, svc_name,
 			   &fd, &svc_tls) == 0) {
 		printf(" приветствие сервера:\n");
 		atc_read_frames(fd, svc_tls, 3);
@@ -860,10 +864,14 @@ static irm_bp_node *atc_sync_params(int variant, const char *ver)
 	case 10:
 	case 11:
 	case 15:
+	case 16:
+	case 17:
 		anchors = irm_bp_dict();
 		if (!anchors ||
 		    irm_bp_dict_set(anchors, variant == 10 ? "Music" :
 						   "Media",
+				    variant == 17 ? irm_bp_string(
+							    "4294967295") :
 				    variant == 11 ? irm_bp_uint(0) :
 						    irm_bp_string("0")) !=
 			    0)
@@ -901,10 +909,10 @@ static irm_bp_node *atc_sync_params(int variant, const char *ver)
 						   "13.5.6.12");
 			if (!hi)
 				goto fail;
-			if (variant == 15) {
-				/* Гипотеза переговоров: хост отвечает
-				 * Grappa-капабилити внутри своего HostInfo
-				 * (зеркало Capabilities сервера). */
+			if (variant == 15 || variant == 16) {
+				/* Гипотеза переговоров: хост отвечает зеркалом
+				 * GrappaSupportInfo сервера; v16 — сиблинг
+				 * HostInfo (в Params), v15 — внутри HostInfo. */
 				irm_bp_node *gs = irm_bp_dict();
 				irm_bp_node *gi = irm_bp_dict();
 				if (!gs || !gi ||
@@ -915,9 +923,15 @@ static irm_bp_node *atc_sync_params(int variant, const char *ver)
 				    irm_bp_dict_set(gi, "protocolVersion",
 						    irm_bp_uint(1)) != 0 ||
 				    irm_bp_dict_set(gs, "GrappaSupportInfo",
-						    gi) != 0 ||
-				    irm_bp_dict_set(hi, "GrappaSupportInfo",
-						    gs) != 0) {
+						    gi) != 0) {
+					irm_bp_free(gs);
+					goto fail;
+				}
+				/* Зеркало Capabilities: v16 — сиблинг HostInfo
+				 * (в Params), v15 — внутри HostInfo. */
+				if (irm_bp_dict_set(
+					    variant == 16 ? p : hi,
+					    "GrappaSupportInfo", gs) != 0) {
 					irm_bp_free(gs);
 					goto fail;
 				}
@@ -978,7 +992,11 @@ static int cmd_atc_sync(const char *path, const char *selector,
 	int fd = -1;
 	int svc_tls = 0;
 	int rc = 1;
-	if (atc_serve_open(lk, pair, path, device_id, "com.apple.atc",
+	/* Q4: IRMA_ATC_SERVICE — подмена имени сервиса (atc/atc2/...). */
+	const char *svc_env = getenv("IRMA_ATC_SERVICE");
+	const char *svc_name =
+		(svc_env && *svc_env) ? svc_env : "com.apple.atc";
+	if (atc_serve_open(lk, pair, path, device_id, svc_name,
 			   &fd, &svc_tls) == 0) {
 		printf(" приветствие сервера:\n");
 		atc_read_frames(fd, svc_tls, 3);
@@ -1136,6 +1154,367 @@ static int cmd_syslog(const char *path, const char *selector,
 	return rc;
 }
 
+/* lk-dump: read-only GetValue выбранных доменов lockdown ВНУТРИ StartSession
+ * (без сессии часть ключей = GetProhibited, E11 §1). Цель: сохранённые
+ * библиотеки/LibraryID/синк-домены (гипотеза R1a для NegotiationFailed).
+ * Аргумент DOMAIN[/KEY] переопределяет список по умолчанию (пустой → всё). */
+static int cmd_lkdump(const char *path, const char *selector,
+		      const char *argd)
+{
+	uint32_t device_id = 0;
+	char udid[128] = "-";
+	if (find_device(path, selector, &device_id, udid, sizeof udid) != 0)
+		return 1;
+	printf("device: id=%u udid=%s\n", device_id, udid);
+	irm_pair_t *pair = NULL;
+	if (irm_pair_load(udid, &pair) != 0) {
+		fprintf(stderr, "lk-dump: %s\n", irm_pair_error());
+		return 1;
+	}
+	irm_lk_t *lk = irm_lk_open(path, device_id, IRM_LK_DEFAULT_PORT, 5);
+	if (!lk) {
+		fprintf(stderr, "lk-dump: lockdown: %s\n", irm_lk_error());
+		irm_pair_free(pair);
+		return 1;
+	}
+	irm_bp_node *qt = irm_lk_query_type(lk);
+	printf("checkin Type: %s\n", dash(qt ? str_of(qt, "Type") : NULL));
+	irm_bp_free(qt);
+	if (irm_lk_start_session(lk, pair) != 0) {
+		fprintf(stderr, "lk-dump: session: %s\n", irm_lk_error());
+		irm_lk_close(lk);
+		irm_pair_free(pair);
+		return 1;
+	}
+	int rc = 1;
+	/* Список доменов-кандидатов (R1a: per-library записи). Специфичный
+	 * DOMAIN[/KEY] из аргумента читается дополнительно. */
+	static const char *const doms[] = {
+		"com.apple.mobile.data_sync",
+		"com.apple.mobile.application_usage",
+		"com.apple.mobile.user_preferences",
+		"com.apple.mobile.wireless_lockdown",
+		"com.apple.mobile.internal",
+		"com.apple.mobile.persist",
+		NULL
+	};
+	size_t d = 0;
+	if (argd && *argd) {
+		char dom[256];
+		snprintf(dom, sizeof dom, "%s", argd);
+		char *slash = strchr(dom, '/');
+		const char *key = NULL;
+		if (slash) {
+			*slash = 0;
+			key = slash + 1;
+		}
+		irm_bp_node *v = irm_lk_get_value(lk, dom, key);
+		printf("=== %s/%s\n", dom, key ? key : "*");
+		if (v) {
+			uint8_t *xm = NULL;
+			size_t xn = 0;
+			if (irm_xml_write(v, &xm, &xn) == 0) {
+				fwrite(xm, 1, xn, stdout);
+				printf("\n");
+				free(xm);
+			}
+			irm_bp_free(v);
+		} else {
+			printf("  (ошибка: %s)\n", irm_lk_error());
+		}
+	}
+	for (; doms[d]; d++) {
+		irm_bp_node *v = irm_lk_get_value(lk, doms[d], NULL);
+		printf("=== %s\n", doms[d]);
+		if (v) {
+			uint8_t *xm = NULL;
+			size_t xn = 0;
+			if (irm_xml_write(v, &xm, &xn) == 0) {
+				fwrite(xm, 1, xn, stdout);
+				printf("\n");
+				free(xm);
+			}
+			irm_bp_free(v);
+		} else {
+			printf("  (ошибка: %s)\n", irm_lk_error());
+		}
+	}
+	rc = 0;
+	irm_lk_close(lk);
+	irm_pair_free(pair);
+	return rc;
+}
+
+/* ==================== atc-handshake (R2) ==================== */
+/* Точный протокол по опубликованным CONFIRMED-фактам rustunes
+ * (github.com/fbiba/rustunes, MIT, Feim Biba 2026; wire-серия
+ * §3–7, ссылки в E13):
+ *   - Envelope хоста: {Session, Command, [Params]} БЕЗ Type/Id;
+ *   - Ping {Session:1, Command:"Ping"} без Params;
+ *   - RequestingSync {Session:2, Params:{HostInfo{Type,Version,
+ *     WindowsOSVersion, SyncHostName, LibraryID(%016llX),
+ *     SyncedDataclasses:[Media], SyncedAssetTypes:[Music],
+ *     Wakeable:0-int, Grappa:data 84B}, DataclassAnchors{Media:"A",
+ *     VoiceMemo:"1"}, Dataclasses:[Media,Book,Keybag]}};
+ *   - фиксированный 84-байтовый Grappa-запрос — public-константа
+ *     go-tunes (через rustunes signing.rs §11.4);
+ *   - ожидаем ReadyForSync{Params:{DataclassAnchors,DeviceInfo{Grappa:data 83B}}}.
+ * Read-only: ничего не стадируем по AFC, FinishedSyncingMetadata
+ * НЕ шлём — телефон ничего не применяет (rustunes §14.3). */
+static const uint8_t GRAPPA_HOST_REQUEST[84] = {
+	0x01, 0x01, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
+	0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x04, 0x40,
+	0xbc, 0x27, 0x85, 0xe0, 0xdb, 0xf1, 0x66, 0x36, 0x1e, 0x07,
+	0x98, 0x0a, 0x5e, 0xa4, 0x8d, 0xba, 0x95, 0xb3, 0xb8, 0xea,
+	0x26, 0x5d, 0x62, 0xae, 0xfe, 0xa5, 0x1b, 0xb7, 0xb1, 0x90,
+	0xe0, 0xb7, 0x71, 0x26, 0x29, 0x0a, 0xd3, 0x9b, 0xb1, 0x3f,
+	0xec, 0xc0, 0x8c, 0x25, 0xa9, 0x56, 0x1c, 0x51, 0x7a, 0xc1,
+	0x1e, 0x64, 0x90, 0x5d, 0xa0, 0x29, 0xe6, 0x1b, 0xdf, 0xd0,
+	0xba, 0x22, 0xc3, 0x13
+};
+
+/* Конверт хоста: {Session, Command, [Params]} — БЕЗ Type/Id. */
+static irm_bp_node *atc_host_msg(uint64_t session, const char *command,
+				 irm_bp_node *params)
+{
+	irm_bp_node *m = irm_bp_dict();
+	if (!m)
+		return NULL;
+	if (irm_bp_dict_set(m, "Session", irm_bp_uint(session)) != 0 ||
+	    irm_bp_dict_set(m, "Command", irm_bp_string(command)) != 0)
+		goto fail;
+	if (params && irm_bp_dict_set(m, "Params", params) != 0)
+		goto fail;
+	return m;
+fail:
+	irm_bp_free(params);
+	irm_bp_free(m);
+	return NULL;
+}
+
+static int cmd_atc_handshake(const char *path, const char *selector)
+{
+	uint32_t device_id = 0;
+	char udid[128] = "-";
+	if (find_device(path, selector, &device_id, udid, sizeof udid) != 0)
+		return 1;
+	printf("device: id=%u udid=%s\n", device_id, udid);
+
+	irm_pair_t *pair = NULL;
+	if (irm_pair_load(udid, &pair) != 0) {
+		fprintf(stderr, "atc-handshake: %s\n", irm_pair_error());
+		return 1;
+	}
+	printf("pair: %s\n", pair->src);
+
+	irm_lk_t *lk = irm_lk_open(path, device_id, IRM_LK_DEFAULT_PORT, 5);
+	if (!lk) {
+		fprintf(stderr, "atc-handshake: lockdown: %s\n",
+			irm_lk_error());
+		irm_pair_free(pair);
+		return 1;
+	}
+	irm_bp_node *qt = irm_lk_query_type(lk);
+	printf("checkin Type: %s\n", dash(qt ? str_of(qt, "Type") : NULL));
+	irm_bp_free(qt);
+	if (irm_lk_start_session(lk, pair) != 0) {
+		fprintf(stderr, "atc-handshake: session: %s\n",
+			irm_lk_error());
+		irm_lk_close(lk);
+		irm_pair_free(pair);
+		return 1;
+	}
+	printf("session: TLS поднят на lockconn\n");
+
+	int fd = -1;
+	int svc_tls = 0;
+	int rc = 1;
+	const char *svc_env = getenv("IRMA_ATC_SERVICE");
+	const char *svc_name =
+		(svc_env && *svc_env) ? svc_env : "com.apple.atc";
+	if (atc_serve_open(lk, pair, path, device_id, svc_name,
+			   &fd, &svc_tls) != 0) {
+		irm_lk_close(lk);
+		irm_pair_free(pair);
+		return 1;
+	}
+
+	/* 1) Ping, Session 1 — читаем кадры по одному, останавливаемся
+	 * СРАЗУ на SyncAllowed (короткий idle-бюджет сервера). */
+	irm_bp_node *ping = atc_host_msg(1, "Ping", NULL);
+	if (!ping || atc_frame_write(fd, svc_tls, ping) != 0) {
+		fprintf(stderr, "atc-handshake: Ping: %s\n",
+			svc_tls ? "tls-ошибка" : strerror(errno));
+		irm_bp_free(ping);
+		goto close;
+	}
+	irm_bp_free(ping);
+
+	int got_syncallowed = 0;
+	for (int k = 1; k <= 10 && !got_syncallowed; k++) {
+		uint8_t lb[4];
+		if (svc_read_full_t(fd, svc_tls, lb, sizeof lb, 15) != 0)
+			break;
+		uint32_t len = (uint32_t)lb[0] | ((uint32_t)lb[1] << 8) |
+			       ((uint32_t)lb[2] << 16) | ((uint32_t)lb[3] << 24);
+		if (len < 8 || len > (8u << 20))
+			break;
+		uint8_t *body = (uint8_t *)malloc(len);
+		if (!body)
+			break;
+		if (svc_read_full_t(fd, svc_tls, body, len, 15) != 0) {
+			free(body);
+			break;
+		}
+		irm_bp_node *d = (memcmp(body, "bplist00", 8) == 0)
+					 ? irm_bp_read(body, len)
+					 : NULL;
+		free(body);
+		printf("  кадр %d: len=%u ", k, len);
+		const char *cmdc = d ? str_of(d, "Command") : NULL;
+		printf("Command=%s\n", dash(cmdc));
+		if (!d) {
+			break;
+		}
+		if (cmdc && strcmp(cmdc, "SyncAllowed") == 0) {
+			got_syncallowed = 1;
+		} else if (cmdc && strcmp(cmdc, "Ping") == 0) {
+			/* Телефонный Ping в idle-окне: отвечаем Pong. */
+			irm_bp_node *pong = atc_host_msg(1, "Pong", NULL);
+			if (pong)
+				atc_frame_write(fd, svc_tls, pong);
+			irm_bp_free(pong);
+		}
+		irm_bp_free(d);
+		if (!got_syncallowed)
+			continue;
+		break;
+	}
+	if (!got_syncallowed)
+		printf("  (SyncAllowed не увиден — идти по кадру)\n");
+
+	/* 2) RequestingSync, Session 2 — точный профиль Apple-хоста. */
+	irm_bp_node *info = irm_bp_dict();
+	irm_bp_node *sd_arr = irm_bp_array();
+	irm_bp_node *sat_arr = irm_bp_array();
+	irm_bp_node *anchors = irm_bp_dict();
+	irm_bp_node *fclasses = irm_bp_array();
+	irm_bp_node *params = irm_bp_dict();
+	if (!info || !sd_arr || !sat_arr || !anchors || !fclasses ||
+	    !params)
+		goto build_fail;
+
+	/* LibraryID: %016llX. env IRMA_ATC_LIBID переопределяет. */
+	char libid[17];
+	const char *lib_env = getenv("IRMA_ATC_LIBID");
+	if (lib_env && strlen(lib_env) == 16) {
+		snprintf(libid, sizeof libid, "%.16s", lib_env);
+	} else {
+		snprintf(libid, sizeof libid, "%016llX",
+			 (unsigned long long)0x7CEB3C99F2D94B21ull);
+	}
+	const char *ver_env = getenv("IRMA_ATC_VERSION");
+	const char *ver = (ver_env && *ver_env) ? ver_env : "13.2.4.123";
+	const char *anch_env = getenv("IRMA_ATC_ANCHOR");
+	char anch[16];
+	snprintf(anch, sizeof anch, "%s",
+		 (anch_env && *anch_env) ? anch_env : "1");
+	char hn[128];
+	hn[0] = 0;
+	gethostname(hn, sizeof hn);
+
+	if (irm_bp_dict_set(info, "Type", irm_bp_string("iTunes")) != 0 ||
+	    irm_bp_dict_set(info, "Version", irm_bp_string(ver)) != 0 ||
+	    irm_bp_dict_set(info, "WindowsOSVersion",
+			    irm_bp_string("10.0")) != 0 ||
+	    irm_bp_dict_set(info, "SyncHostName", irm_bp_string(hn)) != 0 ||
+	    irm_bp_dict_set(info, "LibraryID", irm_bp_string(libid)) != 0 ||
+	    irm_bp_dict_set(info, "Wakeable", irm_bp_uint(0)) != 0)
+		goto build_fail;
+	if (irm_bp_array_add(sd_arr, irm_bp_string("Media")) != 0 ||
+	    irm_bp_dict_set(info, "SyncedDataclasses", sd_arr) != 0)
+		goto build_fail;
+	sd_arr = NULL;
+	if (irm_bp_array_add(sat_arr, irm_bp_string("Music")) != 0 ||
+	    irm_bp_dict_set(info, "SyncedAssetTypes", sat_arr) != 0)
+		goto build_fail;
+	sat_arr = NULL;
+	if (irm_bp_dict_set(
+		    info, "Grappa",
+		    irm_bp_data(GRAPPA_HOST_REQUEST,
+				sizeof GRAPPA_HOST_REQUEST)) != 0)
+		goto build_fail;
+
+	if (irm_bp_dict_set(anchors, "Media", irm_bp_string(anch)) != 0 ||
+	    irm_bp_dict_set(anchors, "VoiceMemo", irm_bp_string("1")) != 0)
+		goto build_fail;
+	if (irm_bp_array_add(fclasses, irm_bp_string("Media")) != 0 ||
+	    irm_bp_array_add(fclasses, irm_bp_string("Book")) != 0 ||
+	    irm_bp_array_add(fclasses, irm_bp_string("Keybag")) != 0)
+		goto build_fail;
+	if (irm_bp_dict_set(params, "HostInfo", info) != 0)
+		goto build_fail;
+	info = NULL;
+	if (irm_bp_dict_set(params, "Dataclasses", fclasses) != 0)
+		goto build_fail;
+	fclasses = NULL;
+	if (irm_bp_dict_set(params, "DataclassAnchors", anchors) != 0)
+		goto build_fail;
+	anchors = NULL;
+
+	irm_bp_node *req = atc_host_msg(2, "RequestingSync", params);
+	params = NULL;
+	if (!req || atc_frame_write(fd, svc_tls, req) != 0) {
+		fprintf(stderr, "atc-handshake: RequestingSync: %s\n",
+			svc_tls ? "tls-ошибка" : strerror(errno));
+		irm_bp_free(req);
+		goto close;
+	}
+	{
+		uint8_t *out = NULL;
+		size_t on = 0;
+		if (irm_xml_write(req, &out, &on) == 0) {
+			printf(" отсылаем RequestingSync (Session=2):\n");
+			fwrite(out, 1, on, stdout);
+			printf("\n");
+			free(out);
+		}
+		irm_bp_free(req);
+	}
+
+	/* 3) Ждём ReadyForSync. Больше НИЧЕГО не шлём: session живёт,
+	 * телефон ничего не применяет — close = отмена, state-read-only. */
+	printf(" ожидание ReadyForSync (окна 12 с, до 8 кадр.):\n");
+	int stop = 0;
+	for (int w = 0; w < 4; w++) {
+		int nf = atc_read_frames_ext(fd, svc_tls, 8, 8u << 20,
+					     64 * 1024, 12, 2, &stop);
+		if (nf > 0)
+			break; /* нашли ответ — дамп уже напечатан */
+		if (stop == -3 || stop != -2)
+			break;
+		printf(" (окно %d: тишина)\n", w + 1);
+	}
+	rc = 0;
+	goto close;
+build_fail:
+	irm_bp_free(info);
+	irm_bp_free(sd_arr);
+	irm_bp_free(sat_arr);
+	irm_bp_free(anchors);
+	irm_bp_free(fclasses);
+	irm_bp_free(params);
+	fprintf(stderr, "atc-handshake: сбор кадра не удался\n");
+close:
+	if (svc_tls)
+		irm_tls_disarm(fd);
+	if (fd >= 0)
+		irm_mux_close(fd);
+	irm_lk_close(lk);
+	irm_pair_free(pair);
+	return rc;
+}
+
 static int cmd_atc_probe(const char *path, const char *selector)
 {
 	uint32_t device_id = 0;
@@ -1264,14 +1643,27 @@ static void usage(FILE *f)
 		"                                   (обследование ATC, шаг 8+)\n"
 		"  irmctl [-s SOCKET] atc-talk      клиентская последовательность ATC:\n"
 		"                                   HostInfo→Ping (read-only, E12)\n"
-		"  irmctl [-s SOCKET] atc-sync [1-15] проба RequestingSync (R1, E12):\n"
+		"  irmctl [-s SOCKET] atc-sync [1-17] проба RequestingSync (R1, E12):\n"
 		"                                   1=пусто (валидатор), 2=anchors,\n"
 		"                                   3=Dataclasses+anchors,\n"
 		"                                   4=3+HostInfo, 5=SyncDataClasses,\n"
 		"                                   6=SyncDataclasses, 7=+SyncTypes,\n"
 		"                                   10=Music, 11=anchors-uint,\n"
+		"                                   15=Grappa в HostInfo,\n"
+		"                                   16=Grappa-сиблинг,\n"
+		"                                   17=якорь 0xFFFFFFFF\n"
+		"  irmctl [-s SOCKET] atc-sync: env IRMA_ATC_SERVICE=имя (Q4 atc2),\n"
+		"                                    IRMA_ATC_VERSION, IRMA_ATC_SYNCED_DC,\n"
+		"                                    IRMA_ATC_SYNCED_TYPES\n"
 		"\n"
-		"  irmctl [-s SOCKET] syslog [сек]  сырой syslog_relay-поток (R1)\n");
+		"  irmctl [-s SOCKET] syslog [сек]  сырой syslog-поток (R1; на iOS 27 InvalidService)\n"
+		"  irmctl [-s SOCKET] atc-handshake read-only рукопожатие (R2, E13):\n"
+		"                                   Ping S1 → RS S2 → ReadyForSync;\n"
+		"                                   env IRMA_ATC_LIBID/ANCHOR/VERSION/SERVICE\n"
+		"  irmctl [-s SOCKET] lk-dump [ДОМЕН[/КЛЮЧ]]\n"
+		"                                   read-only GetValue доменов lockdown\n"
+		"                                   внутри StartSession (LibraryID/синк-домены,\n"
+		"                                   гипотеза R1a)\n");
 }
 
 int main(int argc, char **argv)
@@ -1311,7 +1703,7 @@ int main(int argc, char **argv)
 			char *endp = NULL;
 			long v = strtol(arg, &endp, 10);
 			if (arg[0] >= '1' && arg[0] <= '9' && endp &&
-			    !*endp && v >= 1 && v <= 15)
+			    !*endp && v >= 1 && v <= 17)
 				variant = (int)v;
 			else {
 				usage(stderr);
@@ -1324,6 +1716,12 @@ int main(int argc, char **argv)
 	if (strcmp(cmd, "syslog") == 0)
 		return cmd_syslog(path ? path : IRM_MUX_DEFAULT_SOCKET, NULL,
 				  arg);
+	if (strcmp(cmd, "lk-dump") == 0)
+		return cmd_lkdump(path ? path : IRM_MUX_DEFAULT_SOCKET, arg,
+				  NULL);
+	if (strcmp(cmd, "atc-handshake") == 0)
+		return cmd_atc_handshake(
+			path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
 	usage(stderr);
 	return 2;
 }

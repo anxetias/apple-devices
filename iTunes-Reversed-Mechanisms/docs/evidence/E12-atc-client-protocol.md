@@ -165,9 +165,14 @@ TLS: lbD-комбо (HostCertificate+HostPrivateKey, pin DeviceCertificate)
 
 ## 5. Открытые вопросы
 
-- **R1 (RequestingSync wire / переговоры)**: живая read-only проба
-  `atc-sync` 04.11 (варианты 1–15, логи traces
-  `atc-sync-runN-*.log`) установила:
+- **R1 (RequestingSync wire / переговоры) — ЗАКРЫТ через E13**:
+  public-проект rustunes (MIT, §1 E13) дал полный CONFIRMED-протокол;
+  наш `irmctl atc-handshake` повторил на iPhone12,1/iOS 27.2:
+  **Ping{Session:1} → приветствие → RequestingSync{Session:2 с точным
+  HostInfo-профилем + Grappa 84B} → ReadyForSync{Media:"1", Book:"0",
+  DeviceInfo.Grappa 83B}**. НИЖЕ — исторические факты пробы 04.11
+  (v1–v15; содержание слоя «NegotiationFailed» сейчас объясняется тем,
+  что Session-конверт/Profil HostInfo/Grappa отсутствовали):
   1. **Ошибка-таблица atcd расшифрована** (strings `56257+`, 25 имён,
      FUN_10032f390 → DAT_10074507c): 0=NoError, 1=GenericError,
      2=SessionFailure, 3=DeviceOutOfDate, **4=NegotiationFailed**,
@@ -176,31 +181,24 @@ TLS: lbD-комбо (HostCertificate+HostPrivateKey, pin DeviceCertificate)
      15=HostProtocolOutOfDate, 17=SyncServerFailed, 18=SyncBlocked …
      → **SyncFailed{ErrorCode:12} = DeviceProtocolOutOfDate**
      (+`RequiredVersion:"10.5.0.115"`), **{4} = NegotiationFailed**.
-  2. **Версия-шеврон**: RequestingSync проверяет `Params.HostInfo.Version`
-     (вложенный, не top-level HostInfo!) РАНЬШЕ всего остального;
-     «13.5.6.12» (старый corpus) → {12, RequiredVersion "10.5.0.115"};
-     без HostInfo в Params → тоже {12}. Версия «10.5.0.115» проходит
-     слой 1 (и top-level HostInfo с ней же получает SyncAllowed).
-  3. **Тайминг**: после `SyncAllowed` idle-бюджет сервера КОРОТКИЙ
-     (~10–15 с: Ping×2 → IdleExit); запрос надо слать сразу после
-     SyncAllowed. Поздний запрос в закрытое окно = мгновенный EOF без
-     сообщений (run2–run6, инвалидные пробы).
-  4. **Слой 2 = NegotiationFailed{4}** при: Dataclasses/SyncDataClasses/
-     SyncDataclasses (имя не важно), Media или Music, anchors
-     «"0"-строкой» или 0-числом, с яккерами/без, с SyncTypes/без,
-     SyncedAssetTypes ["Track","Playlist","Genius","Lyrics","Artwork"],
-     SyncedDataclasses=["Media"], GrappaSupportInfo внутри HostInfo.
-     НЕ проходит ни одна комбинация (≤15 вариантов).
-     Гипотезы на след. подход: (a) LibraryID не зарегистрирован у
-     atcd (негде взять «настоящую» библиотеку-домен — переговорам
-     не с чем сверяться); (b) требуется AirTrafficControl.framework
-     этап №2 (снятие фреймворка с мака/iTunes для дизасма);
-     (c) современный %HostInfo может иметь доп. ключи (corpus'а нет).
-  5. **syslog_relay на iOS 27 = InvalidService** (privat oslog;
-     device-логи недоступны этим способом).
-- **R2**: как выбирается ATSyncResetSync vs DeltaSync у сервера
-  при готовности (anchor 0 ⇒ полная перезагрузка, вероятно ResetSync).
-- **R3**: atc2 (E11 §4).
+     (rustunes главу 09: {12} = версия < порога или ≠ «IGNORE»;
+     {9} = LibraryID ≠ библиотека синка-в-процессе.)
+  2. **Версия-шеврон**: SyncFailed{12} при Version<«10.5.0.115».
+     Профиль Apple «13.2.4.123» допустим (числовое сравнение).
+  3. **Тайминг**: после SyncAllowed короткий idle-бюджет (~10–15 с,
+     Ping×2 → IdleExit); запрос посылать мгновенно.
+  4. **Слой NegotiationFailed{4}** держался при 15 комбинациях
+     контента — причина не в Params, а в Session-нумерации/конверте/
+     HostInfo-профиле/Grappa (см. E13 §2).
+  5. **syslog_relay на iOS 27 = InvalidService** (privat oslog).
+  6. Q4 atc2 — закрыт отрицательно: сервис тихий даже на HostInfo
+     (EOF; `atc-talk-atc2-run1-2026-11-04b.log`).
+  7. R1a (LibraryID в lockdown-доменах) закрыта: Media-регистраций нет
+     (`lk-dump-run1-2026-11-04b.log`).
+- **R2**: SyncTypes выбирает ХОСТ (не сервер): anchor mismatch →
+  Reset(2), иначе Delta(1); Linux-клиент всегда Delta. «PrepOnly (3)»
+  — не тестирован (rustunes §18-15).
+- **R3**: atc2 (E11 §4) — закрыт выше (молчит).
 - **R3**: atc2 (E11 §4).
 
 ## 6. Код по факту
@@ -217,8 +215,22 @@ TLS: lbD-комбо (HostCertificate+HostPrivateKey, pin DeviceCertificate)
   крупных кадров (`atc_summary`, кап 16 МБ). Механика: HostInfo →
   читаем ТОЛЬКО SyncAllowed → МГНОВЕННО RequestingSync (idle-бюджет),
   окна чтения по 20 с до EOF.
+- `tools/irmctl.c::atc-handshake` (R2, E13): точный wire-профиль rustunes
+  — host-конверт {Session,Command,Params} без Type/Id
+  (`atc_host_msg`), Ping{Session:1} → чтение кадров по одному до
+  SyncAllowed (случайный Ping телефона → наш Pong), RequestingSync
+  {Session:2 + Params{HostInfo{Type,Version 13.2.4.123
+  (env IRMA_ATC_VERSION), WindowsOSVersion 10.0, SyncHostName,
+  LibraryID %016llX (env IRMA_ATC_LIBID), Wakeable 0-u64,
+  SyncedDataclasses[Media], SyncedAssetTypes[Music], Grappa data 84B
+  = GRAPPA_HOST_REQUEST}, Dataclasses[Media,Book,Keybag],
+  DataclassAnchors{Media:»<env IRMA_ATC_ANCHOR, default 1>»,
+  VoiceMemo:»1»}}}}. Больше НИЧЕГО не отправляет (read-only; закрытие
+  = отмена; телефон ничего не применяет). env IRMA_ATC_SERVICE.
 - `tools/irmctl.c::syslog` — com.apple.mobile.syslog_relay (на iOS 27
   → InvalidService, оставлен для портативности).
+- `tools/irmctl.c::lk-dump` — read-only GetValue доменов lockdown
+  внутри StartSession (R1a-проба: Media-регистраций нет).
 - `libirm/src/tls.c`: SSL_read теперь трактует
   `SSL_ERROR_SYSCALL`+EAGAIN/EWOULDBLOCK/EINTR как «продолжить с
   poll» (иначе ложный EOF посреди живой сессии, run2-факт);

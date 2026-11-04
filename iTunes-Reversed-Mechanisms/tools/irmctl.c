@@ -13,7 +13,12 @@
 #include "libirm/mux.h"
 #include "libirm/pairing.h"
 #include "libirm/tls.h"
+#include "libirm/afc.h" /* E14: afc-ls/stat/music-id/atc-delta */
 #include "libirm/xmlplist.h"
+/* Vendored sqlite (../vendor/sqlite, Makefile даёт -I) — только для music-id:
+ * чтение ЛОКАЛЬНОЙ копии MediaLibrary.sqlitedb (на телефон sqlite не открываем,
+ * E14 §3). */
+#include "sqlite3.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -21,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
@@ -455,7 +461,7 @@ static void atc_summary(const irm_bp_node *d, int depth)
 
 /* Читает до max кадров [LE32 len][bplist00]: кадры <= dump_limit печатает
  * полным XML-дампом, крупные — структурой (depth); stop на мусоре.
- * Возврат: сколько dict-кадров прочитано; *stop (м不为 NULL): 0 = max
+ * Возврат: сколько dict-кадров прочитано; *stop (если не NULL): 0 = max
  * кадров; -2 = таймаут (сервер ждёт/готовится); -3 = EOF канала;
  * -4 = кадр вне границ; -5 = не plist-dict. */
 static int atc_read_frames_ext(int fd, int tls, int max, uint32_t cap,
@@ -1539,6 +1545,1002 @@ close:
 	return rc;
 }
 
+/* ==================== 9d+: общие конструкторы Params ==================== */
+
+/* LibraryID хоста: 16 UPPERCASE hex (%016llX). env IRMA_ATC_LIBID —
+ * 16 hex-знаков поверх (frpd-значение даёт irmctl music-id). */
+static void atc_host_libid(char libid[17])
+{
+	const char *e = getenv("IRMA_ATC_LIBID");
+	if (e && strlen(e) == 16) {
+		memcpy(libid, e, 16);
+	} else {
+		snprintf(libid, 17, "%016llX",
+			 (unsigned long long)0x7CEB3C99F2D94B21ull);
+	}
+	libid[16] = 0;
+}
+
+/* Params.RequestingSync: HostInfo{...} + Dataclasses[Media,Book,Keybag] +
+ * DataclassAnchors{Media:"A", VoiceMemo:"1"}. Используется и atc-handshake,
+ * и atc-delta (один и тот же wire-профиль Apple-хоста, E13 §2). */
+static irm_bp_node *atc_build_rs_params(const char *ver, const char *anch)
+{
+	irm_bp_node *info = irm_bp_dict();
+	irm_bp_node *sd_arr = irm_bp_array();
+	irm_bp_node *sat_arr = irm_bp_array();
+	irm_bp_node *anchors = irm_bp_dict();
+	irm_bp_node *fclasses = irm_bp_array();
+	irm_bp_node *params = irm_bp_dict();
+	if (!info || !sd_arr || !sat_arr || !anchors || !fclasses || !params)
+		goto fail;
+
+	char libid[17];
+	atc_host_libid(libid);
+	char hn[128];
+	hn[0] = 0;
+	gethostname(hn, sizeof hn);
+
+	if (irm_bp_dict_set(info, "Type", irm_bp_string("iTunes")) != 0 ||
+	    irm_bp_dict_set(info, "Version", irm_bp_string(ver)) != 0 ||
+	    irm_bp_dict_set(info, "WindowsOSVersion",
+			    irm_bp_string("10.0")) != 0 ||
+	    irm_bp_dict_set(info, "SyncHostName", irm_bp_string(hn)) != 0 ||
+	    irm_bp_dict_set(info, "LibraryID", irm_bp_string(libid)) != 0 ||
+	    irm_bp_dict_set(info, "Wakeable", irm_bp_uint(0)) != 0)
+		goto fail;
+	if (irm_bp_array_add(sd_arr, irm_bp_string("Media")) != 0 ||
+	    irm_bp_dict_set(info, "SyncedDataclasses", sd_arr) != 0)
+		goto fail;
+	sd_arr = NULL;
+	if (irm_bp_array_add(sat_arr, irm_bp_string("Music")) != 0 ||
+	    irm_bp_dict_set(info, "SyncedAssetTypes", sat_arr) != 0)
+		goto fail;
+	sat_arr = NULL;
+	if (irm_bp_dict_set(info, "Grappa",
+			    irm_bp_data(GRAPPA_HOST_REQUEST,
+					sizeof GRAPPA_HOST_REQUEST)) != 0)
+		goto fail;
+
+	if (irm_bp_dict_set(params, "HostInfo", info) != 0)
+		goto fail;
+	info = NULL;
+	if (irm_bp_dict_set(anchors, "Media", irm_bp_string(anch)) != 0 ||
+	    irm_bp_dict_set(anchors, "VoiceMemo", irm_bp_string("1")) != 0)
+		goto fail;
+	if (irm_bp_dict_set(params, "DataclassAnchors", anchors) != 0)
+		goto fail;
+	anchors = NULL;
+	if (irm_bp_array_add(fclasses, irm_bp_string("Media")) != 0 ||
+	    irm_bp_array_add(fclasses, irm_bp_string("Book")) != 0 ||
+	    irm_bp_array_add(fclasses, irm_bp_string("Keybag")) != 0)
+		goto fail;
+	if (irm_bp_dict_set(params, "Dataclasses", fclasses) != 0)
+		goto fail;
+	fclasses = NULL;
+	return params;
+fail:
+	irm_bp_free(info);
+	irm_bp_free(sd_arr);
+	irm_bp_free(sat_arr);
+	irm_bp_free(anchors);
+	irm_bp_free(fclasses);
+	irm_bp_free(params);
+	return NULL;
+}
+
+/* Params.FinishedSyncingMetadata: DataclassAnchors{Media:"A",VoiceMemo:"1"}
+ * + SyncTypes{Media:1, Book:0, Keybag:1} (E14 §4: у пустого Delta
+ * анкер НЕ растёт — остаётся A; уже сам Apple-хост не стадит файлы). */
+static irm_bp_node *atc_build_fsfm_params(const char *anch)
+{
+	irm_bp_node *anchors = irm_bp_dict();
+	irm_bp_node *types = irm_bp_dict();
+	irm_bp_node *params = irm_bp_dict();
+	if (!anchors || !types || !params)
+		goto fail;
+	if (irm_bp_dict_set(anchors, "Media", irm_bp_string(anch)) != 0 ||
+	    irm_bp_dict_set(anchors, "VoiceMemo", irm_bp_string("1")) != 0)
+		goto fail;
+	if (irm_bp_dict_set(types, "Media", irm_bp_uint(1)) != 0 ||
+	    irm_bp_dict_set(types, "Book", irm_bp_uint(0)) != 0 ||
+	    irm_bp_dict_set(types, "Keybag", irm_bp_uint(1)) != 0)
+		goto fail;
+	if (irm_bp_dict_set(params, "DataclassAnchors", anchors) != 0)
+		goto fail;
+	anchors = NULL;
+	if (irm_bp_dict_set(params, "SyncTypes", types) != 0)
+		goto fail;
+	types = NULL;
+	return params;
+fail:
+	irm_bp_free(anchors);
+	irm_bp_free(types);
+	irm_bp_free(params);
+	return NULL;
+}
+
+/* Читает кадры до ReadyForSync (телеметрия пропускается, телефонный Ping
+ * → наш Pong в его Session), печатает XML и GRAPPA_REPLY-hex; сводит
+ * анкер Media в *ready_anchor (dec-текст). 0 — Ready есть; прочее —
+ * EOF/таймаут/лимит.idle-бюджет сервера короткий (~10–15 c). */
+static int atc_wait_ready(int fd, int tls, char *ready_anchor,
+			  size_t ra_cap)
+{
+	for (int k = 1; k <= 12; k++) {
+		uint8_t lb[4];
+		if (svc_read_full_t(fd, tls, lb, sizeof lb, 15) != 0)
+			return -1;
+		uint32_t len = (uint32_t)lb[0] | ((uint32_t)lb[1] << 8) |
+			       ((uint32_t)lb[2] << 16) | ((uint32_t)lb[3] << 24);
+		if (len < 8 || len > (8u << 20))
+			return -1;
+		uint8_t *body = (uint8_t *)malloc(len);
+		if (!body)
+			return -1;
+		if (svc_read_full_t(fd, tls, body, len, 15) != 0) {
+			free(body);
+			return -1;
+		}
+		irm_bp_node *d = (memcmp(body, "bplist00", 8) == 0)
+					 ? irm_bp_read(body, len)
+					 : NULL;
+		free(body);
+		if (!d)
+			return -1;
+		const char *cmdc = str_of(d, "Command");
+		printf("  кадр %d: len=%u Command=%s\n", k, len,
+		       dash(cmdc));
+		if (cmdc && strcmp(cmdc, "ReadyForSync") == 0) {
+			if (len <= 64 * 1024) {
+				uint8_t *xm = NULL;
+				size_t xn = 0;
+				if (irm_xml_write(d, &xm, &xn) == 0) {
+					printf("  dump:\n");
+					fwrite(xm, 1, xn, stdout);
+					printf("\n");
+					free(xm);
+				}
+			}
+			/* DeviceInfo.Grappa — точные байты (для
+			 * расчётной подписи; E13 §3.1, только hex). */
+			{
+				const irm_bp_node *pr =
+					irm_bp_dict_get(d, "Params");
+				const irm_bp_node *di =
+					pr ? irm_bp_dict_get(pr, "DeviceInfo")
+					   : NULL;
+				const irm_bp_node *gr =
+					di ? irm_bp_dict_get(di, "Grappa")
+					   : NULL;
+				size_t gn = 0;
+				const uint8_t *gb =
+					(const uint8_t *)(gr ? irm_bp_data_ptr(
+								     gr, &gn)
+							     : NULL);
+				if (gb) {
+					printf("  GRAPPA_REPLY(%zu):", gn);
+					for (size_t i = 0; i < gn; i++)
+						printf(" %02x", gb[i]);
+					printf("\n");
+				}
+			}
+			const irm_bp_node *pr = irm_bp_dict_get(d, "Params");
+			const irm_bp_node *ancs =
+				pr ? irm_bp_dict_get(pr, "DataclassAnchors")
+				   : NULL;
+			const irm_bp_node *md =
+				ancs ? irm_bp_dict_get(ancs, "Media") : NULL;
+			if (md) {
+				size_t mn = 0;
+				const char *mv = irm_bp_string_ptr(md, &mn);
+				snprintf(ready_anchor, ra_cap, "%.*s",
+					 (int)(mn < ra_cap - 1 ? mn
+							       : ra_cap - 1),
+					 mv);
+			}
+			irm_bp_free(d);
+			return 0;
+		}
+		if (cmdc && strcmp(cmdc, "Ping") == 0) {
+			const irm_bp_node *sn = irm_bp_dict_get(d, "Session");
+			uint64_t ses = sn ? irm_bp_uint_value(sn) : 2;
+			irm_bp_node *pong = atc_host_msg(ses, "Pong", NULL);
+			if (pong)
+				atc_frame_write(fd, tls, pong);
+			irm_bp_free(pong);
+		}
+		irm_bp_free(d);
+	}
+	return -1;
+}
+
+/* ==================== AFC-команды (E14): afc-ls/stat + music-id ==================== */
+
+/* Рекурсивное создание ЛОКАЛЬНОГО каталога (scratch-копии для music-id). */
+static int irm_mkpath(const char *path)
+{
+	char tmp[768];
+	size_t ln = strlen(path);
+	if (ln == 0 || ln >= sizeof tmp)
+		return -1;
+	memcpy(tmp, path, ln + 1);
+	for (char *p = tmp + 1; *p; p++) {
+		if (*p != '/')
+			continue;
+		*p = 0;
+		if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
+			return -1;
+		*p = '/';
+	}
+	if (mkdir(tmp, 0755) != 0 && errno != EEXIST)
+		return -1;
+	return 0;
+}
+
+static int cmd_afc_ls(const char *path, const char *selector)
+{
+	uint32_t device_id = 0;
+	char udid[128] = "-";
+	if (find_device(path, selector, &device_id, udid, sizeof udid) != 0)
+		return 1;
+	printf("device: id=%u udid=%s\n", device_id, udid);
+
+	irm_pair_t *pair = NULL;
+	if (irm_pair_load(udid, &pair) != 0) {
+		fprintf(stderr, "afc-ls: %s\n", irm_pair_error());
+		return 1;
+	}
+	irm_lk_t *lk = irm_lk_open(path, device_id, IRM_LK_DEFAULT_PORT, 5);
+	if (!lk) {
+		fprintf(stderr, "afc-ls: lockdown: %s\n", irm_lk_error());
+		irm_pair_free(pair);
+		return 1;
+	}
+	if (irm_lk_start_session(lk, pair) != 0) {
+		fprintf(stderr, "afc-ls: session: %s\n", irm_lk_error());
+		irm_lk_close(lk);
+		irm_pair_free(pair);
+		return 1;
+	}
+	int fd = -1;
+	int tls = 0;
+	int rc = 1;
+	if (atc_serve_open(lk, pair, path, device_id, "com.apple.afc",
+			   &fd, &tls) != 0)
+		goto close;
+	irm_afc_t *afc;
+	afc = irm_afc_new(fd, tls, 15);
+	if (!afc)
+		goto close;
+
+	char **kvs = NULL;
+	size_t nk = 0;
+	if (irm_afc_devinfo(afc, &kvs, &nk) == 0) {
+		printf("devinfo:");
+		for (size_t i = 0; i < nk; i++)
+			printf(" %s", kvs[i]);
+		printf("\n");
+		for (size_t i = 0; i < nk; i++)
+			free(kvs[i]);
+		free(kvs);
+	} else {
+		printf("devinfo: %s\n", irm_afc_error());
+	}
+
+	char argbuf[512];
+	const char *dir = getenv("IRMA_AFC_PATH");
+	if (!dir || !*dir) {
+		snprintf(argbuf, sizeof argbuf, "/");
+		dir = argbuf;
+	}
+	printf("ls %s:\n", dir);
+	char **names = NULL;
+	size_t nn = 0;
+	if (irm_afc_dir_list(afc, dir, &names, &nn) == 0) {
+		for (size_t i = 0; i < nn; i++) {
+			size_t sz = 0;
+			int isdir = 0;
+			char full[768];
+			snprintf(full, sizeof full,
+				 dir[strlen(dir) - 1] == '/' ? "%s%s" : "%s/%s",
+				 dir, names[i]);
+			if (irm_afc_size_info(afc, full, &sz, &isdir) == 0)
+				printf("  %-8zu %s%s\n", sz, isdir ? "D " : "  ",
+				       names[i]);
+			else
+				printf("  ????     %s\n", names[i]);
+			free(names[i]);
+		}
+		free(names);
+	} else {
+		printf("  (%s)\n", irm_afc_error());
+	}
+	rc = 0;
+	irm_afc_free(afc);
+close:
+	if (tls)
+		irm_tls_disarm(fd);
+	if (fd >= 0)
+		irm_mux_close(fd);
+	irm_lk_close(lk);
+	irm_pair_free(pair);
+	return rc;
+}
+
+static int cmd_afc_stat(const char *path, const char *selector)
+{
+	uint32_t device_id = 0;
+	char udid[128] = "-";
+	if (find_device(path, selector, &device_id, udid, sizeof udid) != 0)
+		return 1;
+	printf("device: id=%u udid=%s\n", device_id, udid);
+
+	irm_pair_t *pair = NULL;
+	if (irm_pair_load(udid, &pair) != 0) {
+		fprintf(stderr, "afc-stat: %s\n", irm_pair_error());
+		return 1;
+	}
+	irm_lk_t *lk = irm_lk_open(path, device_id, IRM_LK_DEFAULT_PORT, 5);
+	if (!lk) {
+		fprintf(stderr, "afc-stat: lockdown: %s\n", irm_lk_error());
+		irm_pair_free(pair);
+		return 1;
+	}
+	if (irm_lk_start_session(lk, pair) != 0) {
+		fprintf(stderr, "afc-stat: session: %s\n", irm_lk_error());
+		irm_lk_close(lk);
+		irm_pair_free(pair);
+		return 1;
+	}
+	int fd = -1;
+	int tls = 0;
+	int rc = 1;
+	if (atc_serve_open(lk, pair, path, device_id, "com.apple.afc",
+			   &fd, &tls) != 0)
+		goto close;
+	irm_afc_t *afc;
+	afc = irm_afc_new(fd, tls, 15);
+	if (!afc)
+		goto close;
+
+	char argbuf[768];
+	const char *target = getenv("IRMA_AFC_PATH");
+	if (!target || !*target) {
+		snprintf(argbuf, sizeof argbuf,
+			 "iTunes_Control/iTunes/iTunesPrefs");
+		target = argbuf;
+	}
+	size_t sz = 0;
+	int isdir = 0;
+	if (irm_afc_size_info(afc, target, &sz, &isdir) == 0) {
+		printf("%s: size=%zu dir=%d\n", target, sz, isdir);
+	} else {
+		fprintf(stderr, "afc-stat: %s: %s\n", target, irm_afc_error());
+		goto close2;
+	}
+	printf("%s kvs:\n", target);
+	{
+		char **kvs = NULL;
+		size_t nk = 0;
+		if (irm_afc_file_info(afc, target, &kvs, &nk) == 0) {
+			for (size_t i = 0; i + 1 < nk; i += 2)
+				printf("  %s = %s\n", kvs[i], kvs[i + 1]);
+			for (size_t i = 0; i < nk; i++)
+				free(kvs[i]);
+			free(kvs);
+		}
+	}
+	rc = 0;
+close2:
+	irm_afc_free(afc);
+close:
+	if (tls)
+		irm_tls_disarm(fd);
+	if (fd >= 0)
+		irm_mux_close(fd);
+	irm_lk_close(lk);
+	irm_pair_free(pair);
+	return rc;
+}
+
+/* music-id (read-only): frpd-идентичность из iTunesPrefs (E14 §3:
+ * catalog_id LE64@[12..20], user_id LE64@[20..28], LibraryID =
+ * %016llX(catalog^user)) и якерь Media из MediaLibrary.sqlitedb
+ * (_MLDatabaseProperties.MLSyncClientSyncAnchor; копия читается дважды —
+ * стабильность, §2.2 rustunes; -wal копируется парой, -shm НЕ копируется). */
+static int cmd_music_id(const char *path, const char *selector)
+{
+	uint32_t device_id = 0;
+	char udid[128] = "-";
+	if (find_device(path, selector, &device_id, udid, sizeof udid) != 0)
+		return 1;
+	printf("device: id=%u udid=%s\n", device_id, udid);
+
+	irm_pair_t *pair = NULL;
+	if (irm_pair_load(udid, &pair) != 0) {
+		fprintf(stderr, "music-id: %s\n", irm_pair_error());
+		return 1;
+	}
+	irm_lk_t *lk = irm_lk_open(path, device_id, IRM_LK_DEFAULT_PORT, 5);
+	if (!lk) {
+		fprintf(stderr, "music-id: lockdown: %s\n", irm_lk_error());
+		irm_pair_free(pair);
+		return 1;
+	}
+	if (irm_lk_start_session(lk, pair) != 0) {
+		fprintf(stderr, "music-id: session: %s\n", irm_lk_error());
+		irm_lk_close(lk);
+		irm_pair_free(pair);
+		return 1;
+	}
+	int fd = -1;
+	int tls = 0;
+	int rc = 1;
+	if (atc_serve_open(lk, pair, path, device_id, "com.apple.afc",
+			   &fd, &tls) != 0) {
+		fprintf(stderr, "music-id: не удалось открыть com.apple.afc\n");
+		goto close;
+	}
+	irm_afc_t *afc;
+	afc = irm_afc_new(fd, tls, 20);
+	if (!afc) {
+		fprintf(stderr, "music-id: irm_afc_new: %s\n", irm_afc_error());
+		goto close;
+	}
+
+	/* --- iTunesPrefs (frpd): путь обязан быть АБСОЛЮТНЫМ --- */
+	char prefs_path[128];
+	snprintf(prefs_path, sizeof prefs_path,
+		 "/iTunes_Control/iTunes/iTunesPrefs");
+	uint8_t *p1 = NULL, *p2 = NULL;
+	size_t n1 = 0, n2 = 0;
+	if (irm_afc_read_full(afc, prefs_path, &p1, &n1) != 0) {
+		fprintf(stderr, "music-id: %s: %s\n", prefs_path,
+			irm_afc_error());
+		goto close2;
+	}
+	if (irm_afc_read_full(afc, prefs_path, &p2, &n2) != 0) {
+		fprintf(stderr, "music-id: повтор %s: %s\n", prefs_path,
+			irm_afc_error());
+		goto close2;
+	}
+	int stable = (n1 == n2 && (n1 == 0 || memcmp(p1, p2, n1) == 0));
+	printf("iTunesPrefs: %zu байт, повтор-чтение %s\n", n1,
+	       stable ? "совпало" : "РАЗЛИЧИЕ (дрейф)");
+	free(p2);
+	p2 = NULL;
+
+	if (n1 != 1232 || memcmp(p1, "frpd", 4) != 0) {
+		fprintf(stderr, "music-id: frpd ожидание 1232Б не сошлось "
+				"(%zu, magic %.4s)\n", n1, (char *)p1);
+		goto close2;
+	}
+	uint64_t v_maj = (uint64_t)p1[4] | ((uint64_t)p1[5] << 8);
+	uint64_t v_min = (uint64_t)p1[6] | ((uint64_t)p1[7] << 8);
+	uint64_t catalog = 0, user = 0;
+	memcpy(&catalog, p1 + 12, 8);
+	memcpy(&user, p1 + 20, 8);
+	printf("frpd: версия %llu.%llu configured=%u\n",
+	       (unsigned long long)v_maj, (unsigned long long)v_min,
+	       p1[8]);
+	printf("frpd: catalog_id=%016llX user_id=%016llX\n",
+	       (unsigned long long)catalog, (unsigned long long)user);
+	uint64_t xid = catalog ^ user;
+	char libid[17];
+	snprintf(libid, sizeof libid, "%016llX", (unsigned long long)xid);
+	printf("frpd: LibraryID=%s (= catalog_id^user_id)\n", libid);
+	if (catalog == 0 && user == 0)
+		/* Live-факт E14 §3: без Windows-AMP паспорта литералы не
+		 * записаны (медиатека девственная). Не отваливаемся:
+		 * якерь берём из DB-копии ниже, LIBID — env. */
+		printf("frpd: литералы catalog/user НЕЗАПОЛНЕНЫ (0) — "
+		       "LibraryID деривация не авторитетна; для "
+		       "IRMA_ATC_LIBID задаём env\n");
+	printf("exp: IRMA_ATC_LIBID=%s\n", libid);
+	free(p1);
+	p1 = NULL;
+
+	/* --- MediaLibrary.sqlitedb (+ -wal) --- */
+	const char *scratch = getenv("IRM_SCRATCH");
+	char scdir[512];
+	if (!scratch || !*scratch) {
+		snprintf(scdir, sizeof scdir, "/tmp/opencode/%s-music", udid);
+		scratch = scdir;
+	}
+	if (irm_mkpath(scratch) != 0) {
+		fprintf(stderr, "music-id: mkdir %s: %s\n", scratch,
+			strerror(errno));
+		goto close2;
+	}
+	const char *dbs[2] = { "MediaLibrary.sqlitedb",
+			       "MediaLibrary.sqlitedb-wal" };
+	for (int di = 0; di < 2; di++) {
+		char devp[160];
+		snprintf(devp, sizeof devp, "/iTunes_Control/iTunes/%s",
+			 dbs[di]);
+		uint8_t *a = NULL, *b = NULL;
+		size_t na = 0, nb = 0;
+		int have = (irm_afc_read_full(afc, devp, &a, &na) == 0);
+		if (!have) {
+			/* -wal может отсутствовать (checkpoint) — ок */
+			printf("%s: отсутствует (%s)\n", devp,
+			       irm_afc_error());
+			continue;
+		}
+		if (irm_afc_read_full(afc, devp, &b, &nb) != 0) {
+			fprintf(stderr, "music-id: повтор %s: %s\n", devp,
+				irm_afc_error());
+			free(a);
+			goto close2;
+		}
+		int st2 = (na == nb && (na == 0 || memcmp(a, b, na) == 0));
+		printf("%s: %zu байт, повтор %s\n", devp, na,
+		       st2 ? "совпало" : "ДРЕЙФ (WAL в движении)");
+		free(b);
+		b = NULL;
+		if (!st2) {
+			free(a);
+			/* третья попытка одной строкой */
+			if (irm_afc_read_full(afc, devp, &a, &na) != 0) {
+				fprintf(stderr, "music-id: 3-я: %s\n",
+					irm_afc_error());
+				goto close2;
+			}
+			printf("%s: 3-е чтение %zu байт (взять его)\n",
+			       devp, na);
+		}
+		char outp[640];
+		snprintf(outp, sizeof outp, "%s/%s", scratch, dbs[di]);
+		FILE *f = fopen(outp, "wb");
+		if (!f || fwrite(a, 1, na, f) != na) {
+			fprintf(stderr, "music-id: %s: записать локальную "
+					"копию: %s\n", outp, strerror(errno));
+			if (f)
+				fclose(f);
+			free(a);
+			goto close2;
+		}
+		fclose(f);
+		free(a);
+		a = NULL;
+		printf("  копия: %s\n", outp);
+	}
+	irm_afc_free(afc);
+	afc = NULL;
+	if (tls)
+		irm_tls_disarm(fd);
+	fd = -1;
+
+	/* --- якерь из локальной копии (vendored sqlite) --- */
+	{
+		char dbp[640];
+		snprintf(dbp, sizeof dbp, "%s/MediaLibrary.sqlitedb", scratch);
+		sqlite3 *db = NULL;
+		int rcs = sqlite3_open_v2(dbp, &db,
+					  SQLITE_OPEN_READWRITE, NULL);
+		if (rcs != SQLITE_OK) {
+			fprintf(stderr, "music-id: sqlite3_open %s: %s\n",
+				dbp, db ? sqlite3_errmsg(db) : "нет памяти");
+			if (db)
+				sqlite3_close(db);
+			goto close;
+		}
+		sqlite3_stmt *st = NULL;
+		rcs = sqlite3_prepare_v2(
+			db,
+			"SELECT key, value FROM _MLDatabaseProperties "
+			"ORDER BY key",
+			-1, &st, NULL);
+		if (rcs != SQLITE_OK) {
+			fprintf(stderr, "music-id: _MLDatabaseProperties: "
+					"%s\n", sqlite3_errmsg(db));
+			sqlite3_close(db);
+			goto close;
+		}
+		printf("_MLDatabaseProperties:\n");
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			const unsigned char *key = sqlite3_column_text(st, 0);
+			int vt = sqlite3_column_type(st, 1);
+			if (vt == SQLITE_TEXT) {
+				const unsigned char *val =
+					sqlite3_column_text(st, 1);
+				printf("  %s = %s\n",
+				       key ? (const char *)key : "?",
+				       val ? (const char *)val : "?");
+			} else {
+				/* blob/NULL/число печатаем пометкой типа —
+				 * сырые байты портят вывод (E14 §3). */
+				printf("  %s = <не текст: %s>\n",
+				       key ? (const char *)key : "?",
+				       vt == SQLITE_INTEGER ? "целое" :
+				       vt == SQLITE_BLOB    ? "блоб" :
+				       vt == SQLITE_NULL    ? "NULL" :
+							      "прочее");
+			}
+		}
+		sqlite3_finalize(st);
+		st = NULL;
+		const char *ic = 0;
+		rcs = sqlite3_prepare_v2(db,
+					 "PRAGMA integrity_check", -1,
+					 &st, NULL);
+		if (rcs == SQLITE_OK &&
+		    sqlite3_step(st) == SQLITE_ROW) {
+			ic = (const char *)sqlite3_column_text(st, 0);
+		}
+		printf("integrity_check: %s\n", ic ? ic : "?");
+		sqlite3_finalize(st);
+		sqlite3_close(db);
+		printf("exp: якерь Media (MLSyncClientSyncAnchor выше)\n");
+	}
+	rc = 0;
+	goto close;
+close2:
+	free(p1);
+	free(p2);
+	irm_afc_free(afc);
+close:
+	if (tls)
+		irm_tls_disarm(fd);
+	if (fd >= 0)
+		irm_mux_close(fd);
+	irm_lk_close(lk);
+	irm_pair_free(pair);
+	return rc;
+}
+
+/* atc-delta — ПУСТОЙ Delta-синк (E14 §4; docs/02 §8.3, §14.5 — CONFIRMED):
+ * у Apple staging всегда отсутствует → FinishedSyncingMetadata без файлов,
+ * якерь НЕ инкрементируется. Пользовательский контент не затрагивается.
+ * Порядок: (a) staging-проверка по AFC (директория пуста/отсутствует);
+ * (b) Ping S1 -> SyncAllowed -> RequestingSync S2 -> ReadyForSync, сверка
+ * якеря — при расхождении отмена БЕЗ FSFM (ничего не применено);
+ * (c) FSFM {Session:2, SyncTypes{Media:1,Book:0,Keybag:1}}; (d) чтение
+ * терминала: SyncFinished = успех (Params может отсутствовать), SyncFailed =
+ * печать ErrorCode, AssetManifest = полный дамп + СТОП без ответа
+ * (observe-only). Env как у atc-handshake: IRMA_ATC_LIBID/ANCHOR/VERSION/
+ * SERVICE. */
+static int cmd_atc_delta(const char *path, const char *selector)
+{
+	uint32_t device_id = 0;
+	char udid[128] = "-";
+	if (find_device(path, selector, &device_id, udid, sizeof udid) != 0)
+		return 1;
+	printf("device: id=%u udid=%s\n", device_id, udid);
+
+	irm_pair_t *pair = NULL;
+	if (irm_pair_load(udid, &pair) != 0) {
+		fprintf(stderr, "atc-delta: %s\n", irm_pair_error());
+		return 1;
+	}
+	printf("pair: %s\n", pair->src);
+
+	irm_lk_t *lk = irm_lk_open(path, device_id, IRM_LK_DEFAULT_PORT, 5);
+	if (!lk) {
+		fprintf(stderr, "atc-delta: lockdown: %s\n", irm_lk_error());
+		irm_pair_free(pair);
+		return 1;
+	}
+	if (irm_lk_start_session(lk, pair) != 0) {
+		fprintf(stderr, "atc-delta: session: %s\n", irm_lk_error());
+		irm_lk_close(lk);
+		irm_pair_free(pair);
+		return 1;
+	}
+
+	const char *ve = getenv("IRMA_ATC_VERSION");
+	const char *ver = (ve && *ve) ? ve : "13.2.4.123";
+	const char *ae = getenv("IRMA_ATC_ANCHOR");
+	const char *anch = (ae && *ae) ? ae : "1";
+	const char *sve = getenv("IRMA_ATC_SERVICE");
+	const char *svc = (sve && *sve) ? sve : "com.apple.atc";
+	printf("profile: ver=%s anchor=%s service=%s\n", ver, anch, svc);
+
+	int rc = 1;
+	int afd = -1;
+	int atls = 0;
+
+	/* (a) staging: директория обязана быть пустой или вовсе отсутствовать
+	 * (Apple-инвариант docs/02 §8.2; Apple-хост стадит только с файлами). */
+	{
+		int fd = -1;
+		int tls = 0;
+		if (atc_serve_open(lk, pair, path, device_id, "com.apple.afc",
+				   &fd, &tls) != 0) {
+			fprintf(stderr, "atc-delta: com.apple.afc не открыт\n");
+			goto close;
+		}
+		irm_afc_t *afc = irm_afc_new(fd, tls, 15);
+		if (!afc) {
+			if (tls)
+				irm_tls_disarm(fd);
+			irm_mux_close(fd);
+			goto close;
+		}
+		char **names = NULL;
+		size_t nn = 0;
+		/* Live-факт E14 (iPhone12,1/iOS 27.2): dir_list отдаёт и
+		 * "." / ".." — это НЕ staging-файлы; пустота = только они. */
+		size_t nfiles = 0;
+		if (irm_afc_dir_list(afc, "iTunes_Control/Sync/Media", &names,
+				     &nn) != 0) {
+			printf("staging /iTunes_Control/Sync/Media: "
+			       "отсутствует (%s) — ОК\n",
+			       irm_afc_error());
+		} else {
+			for (size_t i = 0; i < nn; i++) {
+				if (strcmp(names[i], ".") != 0 &&
+				    strcmp(names[i], "..") != 0) {
+					printf("  файл: %s\n", names[i]);
+					nfiles++;
+				}
+				free(names[i]);
+			}
+			free(names);
+			printf("staging /iTunes_Control/Sync/Media: "
+			       "%zu записей (файлов %zu)\n", nn, nfiles);
+			if (nfiles != 0) {
+				fprintf(stderr, "atc-delta: staging НЕ ПУСТ — "
+						"abort (инвариант §8.2; ничего "
+						"не применено)\n");
+				irm_afc_free(afc);
+				if (tls)
+					irm_tls_disarm(fd);
+				irm_mux_close(fd);
+				goto close;
+			}
+		}
+		irm_afc_free(afc);
+		if (tls)
+			irm_tls_disarm(fd);
+		irm_mux_close(fd);
+	}
+
+	/* (b) ATC-канал: Ping S1 -> ждём SyncAllowed (короткий idle-бюджет). */
+	if (atc_serve_open(lk, pair, path, device_id, svc, &afd, &atls) != 0)
+		goto close;
+	{
+		irm_bp_node *ping = atc_host_msg(1, "Ping", NULL);
+		if (!ping || atc_frame_write(afd, atls, ping) != 0) {
+			fprintf(stderr, "atc-delta: Ping: %s\n",
+				atls ? "tls-ошибка" : strerror(errno));
+			irm_bp_free(ping);
+			goto close;
+		}
+		irm_bp_free(ping);
+	}
+	{
+		int ok = 0;
+		for (int k = 1; k <= 10 && !ok; k++) {
+			uint8_t lb[4];
+			if (svc_read_full_t(afd, atls, lb, sizeof lb, 15) != 0)
+				break;
+			uint32_t len = (uint32_t)lb[0] |
+				       ((uint32_t)lb[1] << 8) |
+				       ((uint32_t)lb[2] << 16) |
+				       ((uint32_t)lb[3] << 24);
+			if (len < 8 || len > (8u << 20))
+				break;
+			uint8_t *body = (uint8_t *)malloc(len);
+			if (!body)
+				break;
+			if (svc_read_full_t(afd, atls, body, len, 15) != 0) {
+				free(body);
+				break;
+			}
+			irm_bp_node *d = (memcmp(body, "bplist00", 8) == 0)
+						 ? irm_bp_read(body, len)
+						 : NULL;
+			free(body);
+			const char *cmdc = d ? str_of(d, "Command") : NULL;
+			printf("  кадр %d: len=%u Command=%s\n", k, len,
+			       dash(cmdc));
+			if (!d)
+				break;
+			if (cmdc && strcmp(cmdc, "SyncAllowed") == 0) {
+				ok = 1;
+			} else if (cmdc && strcmp(cmdc, "Ping") == 0) {
+				const irm_bp_node *sn =
+					irm_bp_dict_get(d, "Session");
+				uint64_t ses = sn ? irm_bp_uint_value(sn) : 1;
+				irm_bp_node *pong =
+					atc_host_msg(ses, "Pong", NULL);
+				if (pong)
+					atc_frame_write(afd, atls, pong);
+				irm_bp_free(pong);
+			}
+			irm_bp_free(d);
+		}
+		if (!ok) {
+			fprintf(stderr, "atc-delta: SyncAllowed не пришёл — "
+					"abort до RequestingSync\n");
+			goto close;
+		}
+	}
+	/* (b2) RequestingSync Session=2 с якерем, равным отправленному. */
+	{
+		irm_bp_node *params = atc_build_rs_params(ver, anch);
+		if (!params) {
+			fprintf(stderr, "atc-delta: сбор Params не удался\n");
+			goto close;
+		}
+		irm_bp_node *req = atc_host_msg(2, "RequestingSync", params);
+		if (!req || atc_frame_write(afd, atls, req) != 0) {
+			fprintf(stderr, "atc-delta: RequestingSync: %s\n",
+				atls ? "tls-ошибка" : strerror(errno));
+			irm_bp_free(req);
+			goto close;
+		}
+		irm_bp_free(req);
+		printf(" отсылаем RequestingSync (Session=2, якерь %s)\n",
+		       anch);
+	}
+	/* (b3) ReadyForSync + сверка якеря: расхождение = отмена без FSFM. */
+	{
+		char ready_anchor[32] = "";
+		if (atc_wait_ready(afd, atls, ready_anchor,
+				   sizeof ready_anchor) != 0) {
+			fprintf(stderr, "atc-delta: ReadyForSync не получен\n");
+			goto close;
+		}
+		unsigned long long sA = strtoull(anch, NULL, 10);
+		unsigned long long rA =
+			ready_anchor[0] ? strtoull(ready_anchor, NULL, 10)
+					: 0ull;
+		printf(" anchor: sent=%llu ready=%llu (\"%s\" vs \"%s\")\n",
+		       sA, rA, anch, ready_anchor);
+		if (ready_anchor[0] == 0 || rA != sA) {
+			fprintf(stderr, "atc-delta: якерь ReadyForSync != "
+					"отправленного — ABORT БЕЗ FSFM "
+					"(ничего не применено)\n");
+			goto close;
+		}
+	}
+	/* (c) FSFM: пустой Delta — якерь тот же, файлов нет. */
+	{
+		irm_bp_node *params = atc_build_fsfm_params(anch);
+		if (!params) {
+			fprintf(stderr, "atc-delta: сбор FSFM Params не удался\n");
+			goto close;
+		}
+		irm_bp_node *fsfm = atc_host_msg(2, "FinishedSyncingMetadata",
+						 params);
+		if (!fsfm || atc_frame_write(afd, atls, fsfm) != 0) {
+			fprintf(stderr, "atc-delta: FSFM: %s\n",
+				atls ? "tls-ошибка" : strerror(errno));
+			irm_bp_free(fsfm);
+			goto close;
+		}
+		irm_bp_free(fsfm);
+		printf(" отсылаем FinishedSyncingMetadata (Session=2, "
+		       "пустой Delta)\n");
+	}
+	/* (d) терминал: телеметрия игнорируется; SyncFinished = успех;
+	 * SyncFailed = неудача с ErrorCode в dump; AssetManifest = полный
+	 * дамп и СТОП без ответа (observe-only, ничего не применено). */
+	{
+		int done = 0;
+		int failed = 0;
+		for (int k = 1; k <= 64 && !done; k++) {
+			uint8_t lb[4];
+			if (svc_read_full_t(afd, atls, lb, sizeof lb, 15) != 0) {
+				printf(" (тишина от телефона)\n");
+				break;
+			}
+			uint32_t len = (uint32_t)lb[0] |
+				       ((uint32_t)lb[1] << 8) |
+				       ((uint32_t)lb[2] << 16) |
+				       ((uint32_t)lb[3] << 24);
+			if (len < 8 || len > (8u << 20)) {
+				printf(" (аномальная длина кадра %u)\n", len);
+				failed = 1;
+				break;
+			}
+			uint8_t *body = (uint8_t *)malloc(len);
+			if (!body) {
+				printf(" (нет памяти под кадр)\n");
+				failed = 1;
+				break;
+			}
+			if (svc_read_full_t(afd, atls, body, len, 15) != 0) {
+				free(body);
+				failed = 1;
+				break;
+			}
+			irm_bp_node *d = (memcmp(body, "bplist00", 8) == 0)
+						 ? irm_bp_read(body, len)
+						 : NULL;
+			free(body);
+			if (!d) {
+				printf(" (кадр не удалось распарсить)\n");
+				failed = 1;
+				break;
+			}
+			const char *cmdc = str_of(d, "Command");
+			printf("  кадр %d: len=%u Command=%s\n", k, len,
+			       dash(cmdc));
+			if (cmdc && strcmp(cmdc, "Ping") == 0) {
+				const irm_bp_node *sn =
+					irm_bp_dict_get(d, "Session");
+				uint64_t ses = sn ? irm_bp_uint_value(sn) : 2;
+				irm_bp_node *pong =
+					atc_host_msg(ses, "Pong", NULL);
+				if (pong)
+					atc_frame_write(afd, atls, pong);
+				irm_bp_free(pong);
+				irm_bp_free(d);
+				continue;
+			}
+			if (cmdc && (strcmp(cmdc, "Progress") == 0 ||
+				     strcmp(cmdc, "SyncAllowed") == 0 ||
+				     strcmp(cmdc, "AssetMetrics") == 0 ||
+				     strcmp(cmdc, "InstalledAssets") == 0)) {
+				const irm_bp_node *sn =
+					irm_bp_dict_get(d, "Session");
+				printf("    телеметрия (Session=%llu)\n",
+				       sn ? (unsigned long long)
+						    irm_bp_uint_value(sn)
+					  : 0ull);
+				irm_bp_free(d);
+				continue;
+			}
+			/* Терминальные и незнакомые сообщения — полный XML. */
+			{
+				uint8_t *xm = NULL;
+				size_t xn = 0;
+				if (irm_xml_write(d, &xm, &xn) == 0) {
+					printf("  dump:\n");
+					fwrite(xm, 1, xn, stdout);
+					printf("\n");
+					free(xm);
+				}
+			}
+			if (!cmdc) {
+				failed = 1;
+			} else if (strcmp(cmdc, "SyncFinished") == 0) {
+				printf("atc-delta: SyncFinished — ПУСТОЙ Delta "
+				       "пройден; якерь не должен измениться "
+				       "(проверка: irmctl music-id)\n");
+				rc = 0;
+			} else if (strcmp(cmdc, "SyncFailed") == 0) {
+				fprintf(stderr, "atc-delta: SyncFailed — "
+						"ErrorCode в dump выше\n");
+				failed = 1;
+			} else if (strcmp(cmdc, "AssetManifest") == 0) {
+				printf("OBSERVE-ONLY: телефон прислал "
+				       "AssetManifest — дамп выше, ответа нет, "
+				       "ничего не применено\n");
+				rc = 0;
+			} else {
+				fprintf(stderr, "atc-delta: неожиданное "
+						"сообщение \"%s\" — СТОП без "
+						"ответа\n",
+					cmdc);
+				failed = 1;
+			}
+			done = 1;
+			irm_bp_free(d);
+		}
+		if (!done) {
+			fprintf(stderr, "atc-delta: терминал не получен "
+					"(SyncFinished/SyncFailed/"
+					"AssetManifest)\n");
+			rc = 1;
+		} else if (failed) {
+			rc = 1;
+		}
+	}
+close:
+	if (atls)
+		irm_tls_disarm(afd);
+	if (afd >= 0)
+		irm_mux_close(afd);
+	irm_lk_close(lk);
+	irm_pair_free(pair);
+	return rc;
+}
+
 static int cmd_atc_probe(const char *path, const char *selector)
 {
 	uint32_t device_id = 0;
@@ -1601,7 +2603,7 @@ static void print_get_value(irm_lk_t *lk, const char *domain, const char *key)
 		printf("  %-22s (%s-узел, u64=%llu)\n", key,
 		       irm_bp_type_of(val) == IRM_BP_UINT
 			       ? "uint"
-			       : "нестрокowy",
+			       : "нестроковый",
 		       (unsigned long long)irm_bp_uint_value(val));
 	} else {
 		printf("  %-22s (нет; %s)\n", key,
@@ -1684,6 +2686,16 @@ static void usage(FILE *f)
 		"  irmctl [-s SOCKET] atc-handshake read-only рукопожатие (R2, E13):\n"
 		"                                   Ping S1 → RS S2 → ReadyForSync;\n"
 		"                                   env IRMA_ATC_LIBID/ANCHOR/VERSION/SERVICE\n"
+		"  irmctl [-s SOCKET] afc-ls [ПУТЬ]  AFC: devinfo + список каталога\n"
+		"                                   (env IRMA_AFC_PATH, E14; read-only)\n"
+		"  irmctl [-s SOCKET] afc-stat       AFC: атрибутика пути (E14 §2)\n"
+		"  irmctl [-s SOCKET] music-id       frpd-идентичность + якерь Media\n"
+		"                                   (E14 §3; read-only; копии DB в scratch)\n"
+		"  irmctl [-s SOCKET] atc-delta      ПУСТОЙ Delta-синк (E14 §4, мутационн.\n"
+		"                                   шаг): staging-проверка → RS S2 →\n"
+		"                                   FSFM пустой → SyncFinished; якерь НЕ\n"
+		"                                   растёт; env IRMA_ATC_LIBID/ANCHOR/\n"
+		"                                   VERSION/SERVICE\n"
 		"  irmctl [-s SOCKET] lk-dump [ДОМЕН[/КЛЮЧ]]\n"
 		"                                   read-only GetValue доменов lockdown\n"
 		"                                   внутри StartSession (LibraryID/синк-домены,\n"
@@ -1746,6 +2758,14 @@ int main(int argc, char **argv)
 	if (strcmp(cmd, "atc-handshake") == 0)
 		return cmd_atc_handshake(
 			path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
+	if (strcmp(cmd, "afc-ls") == 0)
+		return cmd_afc_ls(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
+	if (strcmp(cmd, "afc-stat") == 0)
+		return cmd_afc_stat(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
+	if (strcmp(cmd, "music-id") == 0)
+		return cmd_music_id(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
+	if (strcmp(cmd, "atc-delta") == 0)
+		return cmd_atc_delta(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
 	usage(stderr);
 	return 2;
 }

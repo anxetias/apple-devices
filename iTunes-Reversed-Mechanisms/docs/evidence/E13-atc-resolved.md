@@ -115,6 +115,12 @@ ReadyForSync подтверждён кристально просто: пере�
   (data_sync = iCloud-аккаунты календарей/контактов; wireless_lockdown
   без WiFiSyncingLibraries) — R1a-гипотеза ложная, закрыта
   (traces `lk-dump-run1-2026-11-04b.log`).
+- Продолжение (согласие получено, шаг 9e выполнен): AFC-клиент +
+  идентичность + ЯКЕРЬ + ПУСТОЙ Delta-live — **E14**
+  (`docs/evidence/E14-afc-identity-empty-delta.md` + traces
+  `*-2026-11-04c.log`). Первый реальный прогон wire-пути целиком:
+  staging-инвариант → RS → Ready (якерь 1==1) → FSFM → AssetManifest
+  (observe-only) → якерь НЕ вырос (verified).
 
 ## 5. Сводка E12 -> E13 ошибок
 

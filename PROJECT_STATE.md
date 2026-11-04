@@ -849,3 +849,64 @@ apple-devices/
   sha256 производных (сырые ключи не выводились).
 - Артефакты: traces `atc-handshake-run3-2026-11-04b.log`,
   `grappa-verify-2026-11-04b.log`; E13 §3.1 дополнена.
+
+##### Шаг 9e: AFC-клиент + идентичность/якерь + ПУСТОЙ Delta (первый мутационный прогон)
+
+- Согласие пользователя на mutation-фазу получено («можно»). Первый
+  реальный мутационный прогон — **пустой Delta-синк** (staging у Apple
+  отсутствует, FSFM без инкремента якеря — CONFIRMED по rustunes
+  docs/02 §8.3/§14.5): живёт весь wire-путь, пользовательский контент
+  не трогает.
+- **AFC-модуль в libirm**: `libirm/include/libirm/afc.h` +
+  `libirm/src/afc.c` (чистый C11/POSIX; методы devinfo/dir_list/
+  file_info/size_info/read_full/write_full/mkdir/rename; обмен
+  «запрос → ОДИН ответ» Status/Data; Read до EOF чанками 1 МиБ;
+  Write-чанки ≤1 МиБ; отладка env IRM_AFC_DEBUG=1). Wire-фактура из
+  idevice 0.1.68 (crates.io dependency rustunes) + live-факты:
+  FileOpen-ответ приходит с op=0 (НЕ 0x0e!) и fd в
+  header_payload[0..8]; kv-пары ЧЕРЕДОВАНИЕМ (ключ\0значение\0...,
+  не «key=value»); dir_list всегда содержит «.»/«..» (пустая =
+  2 записи); пути АБСОЛЮТНЫЕ («/iTunes_Control/...»); st_ifmt =
+  «S_IFDIR»/«S_IFREG»; канал com.apple.afc на USB — БЕЗ TLS.
+- **music-id** (read-only): frpd адресца `/iTunes_Control/iTunes/
+  iTunesPrefs` (1232 Б, v1.25, configured=1, повтор-чтение совпало) —
+  НО catalog_id=user_id=0 на девственной медиатеке (литералы пишет
+  Windows-AMP; LibraryID-деривация НЕ авторитетна; рабочий LIBID
+  остаётся env-контрактом E13). DB `/iTunes_Control/iTunes/
+  MediaLibrary.sqlitedb` (+wal; -shm НЕ копия) копиями в
+  /tmp/opencode/<udid>-music с двукратной сверкой (совпало);
+  vendored sqlite (../vendor/sqlite, THREADSAFE=0, OMIT_LOAD_EXTENSION,
+  build/sqlite3.o) через локальную копию (RW для WAL-recovery):
+  integrity_check ok; **MLSyncClientSyncAnchor = 1 == Ready-якерь
+  Media:"1"** (сходство с E13). MLSyncClientLastSyncedRevision фоново
+  растёт (6814→8491) — якерь меняется ТОЛЬКО мутационной ATC-сессией.
+- **atc-delta (полный алгоритм)**: (a) staging по AFC: dir_list
+  /iTunes_Control/Sync/Media — пуст/отсутствует → ОК, файлы >0 → ABORT
+  (§8.2); (b) ATC TLS: Ping S1 → SyncAllowed → RequestingSync S2
+  (профиль E13, якерь env/1) → ReadyForSync; сверка якеря численно
+  (расхождение → ABORT до FSFM); (c) FSFM S2 {DataclassAnchors{Media:"A"
+  (не растёт), VoiceMemo:"1"}, SyncTypes{Media:1,Book:0,Keybag:1}};
+  (d) терминал: телеметрия Progress/AssetMetrics/InstalledAssets/
+  SyncAllowed пропускается; SyncFinished = успех; SyncFailed = печать
+  ErrorCode; AssetManifest = полный dump + СТОП БЕЗ ОТВЕТА
+  (observe-only).
+- **Результат run1 (первый мутационный прогон)**: весь путь прошёл
+  (staging пуст → RS S2 → Ready 1==1 с GRAPPA_REPLY 83Б → FSFM →
+  телефон прислал **AssetManifest**: AssetID 7773567125019000,
+  AssetType Music, AssetParts 4, IsDownload=true — телефонный
+  own-asset требует хост-загрузку; rustunes допускает оба терминала
+  пустого Delta). Ответа мы НЕ дали (observe-only) → close.
+  **Верификация no-op**: повторный music-id — якерь 1 (не вырос),
+  staging пуст; первый шаг мутационной фазы ничего не применил.
+- Юниты 5/5 OK; сборка чисто (-Wall -Wextra). Makefile: объект vendored
+  sqlite3.o (build/) линкуется в irmctl.
+- Артефакты: traces `afc-ls-smoke-2026-11-04c.log`,
+  `afc-stat-photos-2026-11-04c.log`, `afc-stat-prefs-2026-11-04c.log`,
+  `music-id-run1/verify-2026-11-04c.log`, `atc-delta-run1-2026-11-04c.log`;
+  факт-документ `docs/evidence/E14-afc-identity-empty-delta.md`
+  (+ индекс, E13 §4-ссылка).
+- **Дальше** (отдельная порция, mutation-фаза продолжается): реальный
+  Delta с треками — стадинг Sync_00000000.plist + .cig (подпись §11.4),
+  insert_track (полная карта item/avformat_info, docs/02 §9),
+  AssetManifest → Airlock → FileComplete → SyncFinished; якерь растёт
+  только реальным insert-файлом (A+1).

@@ -1,0 +1,149 @@
+device: id=1 udid=00008030-001C3128119A402E
+checkin Type: com.apple.mobile.lockdown
+=== com.apple.mobile.data_sync
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Domain</key>
+	<string>com.apple.mobile.data_sync</string>
+	<key>Request</key>
+	<string>GetValue</string>
+	<key>Value</key>
+	<dict>
+		<key>Bookmarks</key>
+		<dict>
+			<key>AccountNames</key>
+			<array>
+				<string>iCloud</string>
+			</array>
+			<key>Sources</key>
+			<array>
+				<string>iCloud</string>
+			</array>
+		</dict>
+		<key>Calendars</key>
+		<dict>
+			<key>AccountNames</key>
+			<array>
+				<string>iCloud</string>
+			</array>
+			<key>Sources</key>
+			<array>
+				<string>iCloud</string>
+			</array>
+		</dict>
+		<key>Contacts</key>
+		<dict>
+			<key>AccountNames</key>
+			<array>
+				<string>iCloud</string>
+			</array>
+			<key>Sources</key>
+			<array>
+				<string>iCloud</string>
+			</array>
+		</dict>
+		<key>Notes</key>
+		<dict>
+			<key>AccountNames</key>
+			<array>
+				<string>iCloud</string>
+			</array>
+			<key>Sources</key>
+			<array>
+				<string>iCloud</string>
+			</array>
+		</dict>
+	</dict>
+</dict>
+</plist>
+
+=== com.apple.mobile.application_usage
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Domain</key>
+	<string>com.apple.mobile.application_usage</string>
+	<key>Request</key>
+	<string>GetValue</string>
+	<key>Value</key>
+	<dict/>
+</dict>
+</plist>
+
+=== com.apple.mobile.user_preferences
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Domain</key>
+	<string>com.apple.mobile.user_preferences</string>
+	<key>Request</key>
+	<string>GetValue</string>
+	<key>Value</key>
+	<dict/>
+</dict>
+</plist>
+
+=== com.apple.mobile.wireless_lockdown
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Domain</key>
+	<string>com.apple.mobile.wireless_lockdown</string>
+	<key>Request</key>
+	<string>GetValue</string>
+	<key>Value</key>
+	<dict>
+		<key>BonjourFullServiceName</key>
+		<string>d6:b9:df:3a:52:6d@fe80::d4b9:dfff:fe3a:526d-supportsRP-26._apple-mobdev2._tcp.local.</string>
+		<key>EnableWifiConnections</key>
+		<true/>
+		<key>EnableWifiDebugging</key>
+		<false/>
+		<key>SupportsWifi</key>
+		<true/>
+		<key>SupportsWifiSyncing</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
+
+=== com.apple.mobile.internal
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Domain</key>
+	<string>com.apple.mobile.internal</string>
+	<key>Request</key>
+	<string>GetValue</string>
+	<key>Value</key>
+	<dict>
+		<key>CarrierBuild</key>
+		<false/>
+		<key>IsInternal</key>
+		<false/>
+		<key>UIBuild</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
+
+=== com.apple.mobile.persist
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Domain</key>
+	<string>com.apple.mobile.persist</string>
+	<key>Request</key>
+	<string>GetValue</string>
+	<key>Value</key>
+	<dict/>
+</dict>
+</plist>
+

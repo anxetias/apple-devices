@@ -1,0 +1,323 @@
+device: id=1 udid=00008030-001C3128119A402E
+pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+checkin Type: com.apple.mobile.lockdown
+session: TLS поднят на lockconn
+[com.apple.atc] port=54021 ssl=1
+  канал: TLS (lbD-комбо)
+ приветствие сервера:
+  кадр 1: len=184 magic=bplist00
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>Capabilities</string>
+	<key>Params</key>
+	<dict>
+		<key>GrappaSupportInfo</key>
+		<dict>
+			<key>version</key>
+			<integer>1</integer>
+			<key>deviceType</key>
+			<integer>0</integer>
+			<key>protocolVersion</key>
+			<integer>1</integer>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>205</integer>
+</dict>
+</plist>
+
+  кадр 2: len=146 magic=bplist00
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>InstalledAssets</string>
+	<key>Params</key>
+	<dict>
+		<key>Application</key>
+		<dict>
+			<key>_Deleted</key>
+			<array/>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>206</integer>
+</dict>
+</plist>
+
+  кадр 3: len=727 magic=bplist00
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>AssetMetrics</string>
+	<key>Params</key>
+	<dict>
+		<key>Ringtone</key>
+		<dict>
+			<key>_Count</key>
+			<integer>0</integer>
+			<key>_PhysicalSize</key>
+			<integer>0</integer>
+		</dict>
+		<key>Photo</key>
+		<dict>
+			<key>Photo</key>
+			<dict>
+				<key>_PurgeableSize</key>
+				<integer>0</integer>
+				<key>_PhysicalSize</key>
+				<integer>0</integer>
+				<key>_Count</key>
+				<integer>0</integer>
+			</dict>
+			<key>CameraRoll</key>
+			<dict>
+				<key>_PurgeableSize</key>
+				<integer>691975501</integer>
+				<key>_PhysicalSize</key>
+				<integer>1320498228</integer>
+				<key>_Count</key>
+				<integer>897</integer>
+			</dict>
+		</dict>
+		<key>Book</key>
+		<dict>
+			<key>_Count</key>
+			<integer>0</integer>
+			<key>_PhysicalSize</key>
+			<integer>69632</integer>
+		</dict>
+		<key>UserData</key>
+		<dict>
+			<key>_PurgeableSize</key>
+			<integer>2084638720</integer>
+			<key>_Count</key>
+			<integer>16224</integer>
+			<key>_PhysicalSize</key>
+			<integer>18963603456</integer>
+		</dict>
+		<key>_PhysicalSize</key>
+		<integer>116971110400</integer>
+		<key>_PurgeableSize</key>
+		<integer>5154792792</integer>
+		<key>_FreeSize</key>
+		<integer>72372379648</integer>
+		<key>Media</key>
+		<dict>
+			<key>Music</key>
+			<dict>
+				<key>_PhysicalSize</key>
+				<integer>38715392</integer>
+				<key>_Count</key>
+				<integer>3</integer>
+			</dict>
+		</dict>
+		<key>Application</key>
+		<dict>
+			<key>_PurgeableSize</key>
+			<integer>0</integer>
+			<key>_Count</key>
+			<integer>36</integer>
+			<key>_PhysicalSize</key>
+			<integer>10061012992</integer>
+		</dict>
+		<key>Logs</key>
+		<dict>
+			<key>_Count</key>
+			<integer>362</integer>
+			<key>_PhysicalSize</key>
+			<integer>39587840</integer>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>207</integer>
+</dict>
+</plist>
+
+  кадр 1: len=382 magic=bplist00
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>SyncAllowed</string>
+	<key>Params</key>
+	<dict>
+		<key>ManualSync</key>
+		<true/>
+		<key>EducationModeEnabled</key>
+		<false/>
+		<key>AppRemovalAllowed</key>
+		<true/>
+		<key>AutoSync</key>
+		<true/>
+		<key>PurgeAllowed</key>
+		<true/>
+		<key>DataProtected</key>
+		<false/>
+		<key>AppInstallationAllowed</key>
+		<true/>
+		<key>DisabledAssetTypes</key>
+		<array>
+			<string>Photo</string>
+			<string>Movie</string>
+			<string>TVEpisode</string>
+			<string>HomeVideo</string>
+		</array>
+		<key>SupportsFavorites</key>
+		<true/>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>208</integer>
+</dict>
+</plist>
+
+ отсылаем RequestingSync (Id=3, вариант 17):
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>RequestingSync</string>
+	<key>Params</key>
+	<dict>
+		<key>Dataclasses</key>
+		<array>
+			<string>Media</string>
+		</array>
+		<key>DataclassAnchors</key>
+		<dict>
+			<key>Media</key>
+			<string>4294967295</string>
+		</dict>
+		<key>HostInfo</key>
+		<dict>
+			<key>Type</key>
+			<string>iTunes</string>
+			<key>Version</key>
+			<string>10.5.0.115</string>
+			<key>MacOSVersion</key>
+			<string>15.8.2</string>
+			<key>SyncHostName</key>
+			<string>ubuntu</string>
+			<key>LibraryID</key>
+			<string>51120d9e-0000-0000-0000-000000000000</string>
+			<key>SyncedDataclasses</key>
+			<array/>
+			<key>SyncedAssetTypes</key>
+			<array/>
+			<key>Wakeable</key>
+			<false/>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>3</integer>
+</dict>
+</plist>
+
+ после RequestingSync:
+  кадр 1: len=124 magic=bplist00
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>SyncFailed</string>
+	<key>Params</key>
+	<dict>
+		<key>ErrorCode</key>
+		<integer>4</integer>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>209</integer>
+</dict>
+</plist>
+
+  кадр 2: len=90 magic=bplist00
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>Ping</string>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>210</integer>
+</dict>
+</plist>
+
+  кадр 3: len=90 magic=bplist00
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>Ping</string>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>211</integer>
+</dict>
+</plist>
+
+  кадр 4: len=94 magic=bplist00
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>IdleExit</string>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>212</integer>
+</dict>
+</plist>
+
+  обмен закрыт (EOF) — кадров больше нет
+ прочитано кадров: 4

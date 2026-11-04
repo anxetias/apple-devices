@@ -1,0 +1,47 @@
+device: id=1 udid=00008030-001C3128119A402E
+pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+checkin Type: com.apple.mobile.lockdown
+session: TLS поднят на lockconn
+[com.apple.atc2] port=54026 ssl=1
+  канал: TLS (lbD-комбо)
+ приветствие сервера:
+  обмен закрыт (EOF) — кадров больше нет
+ отсылаем HostInfo (Id=1):
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>HostInfo</string>
+	<key>Params</key>
+	<dict>
+		<key>Type</key>
+		<string>iTunes</string>
+		<key>Version</key>
+		<string>13.5.6.12</string>
+		<key>MacOSVersion</key>
+		<string>15.8.2</string>
+		<key>SyncHostName</key>
+		<string>ubuntu</string>
+		<key>LibraryID</key>
+		<string>62b46998-0000-0000-0000-000000000000</string>
+		<key>SyncedDataclasses</key>
+		<array/>
+		<key>SyncedAssetTypes</key>
+		<array/>
+		<key>Wakeable</key>
+		<false/>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>0</integer>
+	<key>Id</key>
+	<integer>1</integer>
+</dict>
+</plist>
+
+ после HostInfo:
+  обмен закрыт (EOF) — кадров больше нет
+ после Ping (Id=2):
+  обмен закрыт (EOF) — кадров больше нет

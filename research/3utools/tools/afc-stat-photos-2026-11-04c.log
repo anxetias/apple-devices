@@ -1,0 +1,11 @@
+device: id=1 udid=00008030-001C3128119A402E
+[com.apple.afc] port=54409 ssl=0
+  канал: сырой
+/Photos: size=64 dir=1
+/Photos kvs:
+  st_size = 64
+  st_blocks = 0
+  st_nlink = 2
+  st_ifmt = S_IFDIR
+  st_mtime = 1790433677000000000
+  st_birthtime = 1790433677000000000

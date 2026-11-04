@@ -1,0 +1,21 @@
+device: id=1 udid=00008030-001C3128119A402E
+[com.apple.afc] port=54330 ssl=0
+  канал: сырой
+devinfo: Model iPhone12,1 FSTotalBytes 116236783616 FSFreeBytes 71706189824 FSBlockSize 4096
+ls /:
+  512      D .
+  0          ..
+  160      D Airlock
+  192      D Downloads
+  224      D Books
+  64       D Photos
+  96       D Deferred
+  96       D Music
+  64       D EnhancedAudioSharedKeys
+  64       D Recordings
+  96       D Espresso
+  128      D DCIM
+  192      D iTunes_Control
+  256      D MediaAnalysis
+  864      D PhotoData
+  96       D AirFair

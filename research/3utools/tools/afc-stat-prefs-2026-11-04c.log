@@ -1,0 +1,11 @@
+device: id=1 udid=00008030-001C3128119A402E
+[com.apple.afc] port=54412 ssl=0
+  канал: сырой
+/iTunes_Control/iTunes/iTunesPrefs: size=1232 dir=0
+/iTunes_Control/iTunes/iTunesPrefs kvs:
+  st_size = 1232
+  st_blocks = 8
+  st_nlink = 1
+  st_ifmt = S_IFREG
+  st_mtime = 1793529394358433597
+  st_birthtime = 1793529394345999333

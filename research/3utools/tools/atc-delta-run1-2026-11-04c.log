@@ -1,0 +1,91 @@
+device: id=1 udid=00008030-001C3128119A402E
+pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+profile: ver=13.2.4.123 anchor=1 service=com.apple.atc
+[com.apple.afc] port=54392 ssl=0
+  канал: сырой
+staging /iTunes_Control/Sync/Media: 2 записей (файлов 0)
+[com.apple.atc] port=54394 ssl=1
+  канал: TLS (lbD-комбо)
+  кадр 1: len=93 Command=Pong
+  кадр 2: len=187 Command=Capabilities
+  кадр 3: len=149 Command=InstalledAssets
+  кадр 4: len=727 Command=AssetMetrics
+  кадр 5: len=386 Command=SyncAllowed
+ отсылаем RequestingSync (Session=2, якерь 1)
+  кадр 1: len=386 Command=SyncAllowed
+  кадр 2: len=149 Command=InstalledAssets
+  кадр 3: len=273 Command=ReadyForSync
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>ReadyForSync</string>
+	<key>Params</key>
+	<dict>
+		<key>DataclassAnchors</key>
+		<dict>
+			<key>Media</key>
+			<string>1</string>
+			<key>Book</key>
+			<string>0</string>
+		</dict>
+		<key>DeviceInfo</key>
+		<dict>
+			<key>Grappa</key>
+			<data>AQHy9JyYzuQiIS7ugIlGFmsxQHBc37v8UMYfUTMpKtxylxkNUc/AJLrzAGajYbrDeoa838o+5P5vUXsCSTWY+aGCAf3+TSvsyW/bxeDem/gqx7Q=</data>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>254</integer>
+</dict>
+</plist>
+
+  GRAPPA_REPLY(83): 01 01 f2 f4 9c 98 ce e4 22 21 2e ee 80 89 46 16 6b 31 40 70 5c df bb fc 50 c6 1f 51 33 29 2a dc 72 97 19 0d 51 cf c0 24 ba f3 00 66 a3 61 ba c3 7a 86 bc df ca 3e e4 fe 6f 51 7b 02 49 35 98 f9 a1 82 01 fd fe 4d 2b ec c9 6f db c5 e0 de 9b f8 2a c7 b4
+ anchor: sent=1 ready=1 ("1" vs "1")
+ отсылаем FinishedSyncingMetadata (Session=2, пустой Delta)
+  кадр 1: len=229 Command=AssetManifest
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>AssetManifest</string>
+	<key>Params</key>
+	<dict>
+		<key>AssetManifest</key>
+		<dict>
+			<key>Media</key>
+			<array>
+				<dict>
+					<key>Variant</key>
+					<dict>
+						<key>AssetParts</key>
+						<integer>4</integer>
+					</dict>
+					<key>AssetType</key>
+					<string>Music</string>
+					<key>AssetID</key>
+					<string>7773567125019000</string>
+					<key>IsDownload</key>
+					<true/>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>255</integer>
+</dict>
+</plist>
+
+OBSERVE-ONLY: телефон прислал AssetManifest — дамп выше, ответа нет, ничего не применено

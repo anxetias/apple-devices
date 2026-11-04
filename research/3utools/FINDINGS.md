@@ -2147,3 +2147,93 @@ HTTP-клиент a2-s.3u.com по запрятанному протоколу (
   `tools/grappa-verify-2026-11-04b.log`.
 - Факт-документ: `docs/evidence/E13-atc-resolved.md` (+ индекс в README,
   E12 §5 переписана).
+
+## Сессия 04.11 продолжение (9e): AFC client + идентичность/якерь + ПУСТОЙ Delta (live)
+
+- **Согласие пользователя на mutation-фазу получено** («можно»). Первый
+  реальный мутационный прогон по плану — пустой Delta-синк (CONFIRMED
+  statically: staging у Apple отсутствует, FSFM без инкремента якеря;
+  docs/02 §8.3/§14.5 rustunes). Он живёт весь wire-путь, не трогая
+  пользовательский контент.
+- **AFC-клиент в libirm написан по wire-фактам idevice 0.1.68**
+  (crates.io dependency rustunes): пакет = header 40Б LE (magic
+  "CFA6LPAA" = LE u64 0x4141504c36414643; entire_len; header_payload_len
+  = 40+len(hp); packet_num — автоинкремент с 0) + header_payload +
+  payload; обмен = «запрос → ОДИН ответ» (op Status 0x0001 с кодом LE64
+  в header_payload / op Data 0x0002). Ops: ReadDir=3, ReadFile=4,
+  WriteFile=5, WritePart=6, Truncate=7, RemovePath=8, MakeDir=9,
+  GetFileInfo=0xa, GetDevInfo=0xb, WriteFileAtom=0xc, FileOpen=0xd,
+  FileOpenRes=0xe, Read=0xf, Write=0x10, FileSeek=0x11, FileTell=0x12,
+  FileTellRes=0x13, FileClose=0x14, FileSetSize=0x15, GetConInfo=0x16,
+  SetConOptions=0x17, RenamePath=0x18. Режимы open: RdOnly=1, Rw=2,
+  WrOnly=3, Wr=4, Append=5, RdAppend=6. AFC на USB — БЕЗ TLS
+  (EnableServiceSSL=false; live: «канал: сырой»). Файл: `libirm/afc.{h,c}`
+  (методы devinfo/dir_list/file_info/size_info/read_full/write_full/
+  mkdir/rename; обмен Status/Data; Read-чанки 1 МиБ до EOF; Write-чанки
+  не более 1 МиБ; отладка `IRM_AFC_DEBUG=1`).
+- **LIVE-факты AFC (iPhone12,1/iOS 27.2)**, которых НЕТ в существующей
+  doc-фактуре:
+  (1) **FileOpen-ответ приходит с op=0 (НЕ 0x0e!) и fd в
+  header_payload[0..8]** — строгое сравнение op == FileOpenRes ложно-
+  неверно; idevice сам op НЕ проверяет;
+  (2) **kv-пары GetFileInfo/GetDevInfo — ЧЕРЕДОВАНИЕ, а не «key=value»**
+  (`ключ\0значение\0ключ\0...`, as_chunks::<2>);
+  (3) **dir_list всегда содержит «.» и «..»** — пустая директория = 2
+  записи;
+  (4) **пути АБСОЛЮТНЫЕ** (ведущий «/»; относительный → Status-ошибка);
+  (5) st_ifmt отдаётся «S_IFDIR»/«S_IFREG» (не NSFileType*).
+- **frpd-идентичность прочитана** (`iTunesPrefs`, путь
+  `/iTunes_Control/iTunes/iTunesPrefs`, ровно 1232 Б, повтор-чтение
+  байт-в-байт): v1.25, configured=1; НО **catalog_id = user_id = 0**
+  (LE64 @12..28) — на девственной медиатеке БЕЗ Windows-AMP паспорта
+  литералы НЕ записаны; деривация LibraryID (cat^usr) даёт нули и НЕ
+  авторитетна. Рабочий LibraryID — env IRMA_ATC_LIBID (как в E13).
+- **DB и якерь Media прочитаны**: `/iTunes_Control/iTunes/
+  MediaLibrary.sqlitedb` (1 564 672 Б) + `-wal` (902 312 Б → затем
+  1 062 992 Б телефонной жизнью) копиями в scratch с двукратным
+  чтением-сверкой (совпало по обоим); `-shm` НЕ копируется
+  (docs/04 §2.2). Локальную копию открыла vendored sqlite
+  (`vendor/sqlite/sqlite3.c`, THREADSAFE=0, OMIT_LOAD_EXTENSION,
+  объект в build/sqlite3.o): `PRAGMA integrity_check` = ok;
+  **`MLSyncClientSyncAnchor = 1`** — СОВПАДАЕТ с якрем Media:"1"
+  из ReadyForSync (E13). При этом `MLSyncClientLastSyncedRevision`
+  ФОНОМ растёт (6814 → 8491) БЕЗ нашего участия — якерь меняется
+  только мутационной ATC-сессией, не фоном.
+- **ПУСТОЙ Delta: live-прогон `irmctl atc-delta`** (первый мутационный
+  шаг; телефон iPhone12,1, iOS 27.2):
+  - staging-проверка по AFC: `/iTunes_Control/Sync/Media` — пуст
+    (2 записи «.»/«..», файлов 0) — Apple-инвариант §8.2 держится;
+  - канал `com.apple.atc` (TLS lbD-комбо); Ping S1 → Pong/Capabilities/
+    InstalledAssets/AssetMetrics/SyncAllowed;
+  - RequestingSync S2 (профиль E13, якерь «1») → SyncAllowed(повтор)/
+    InstalledAssets/**ReadyForSync** {DataclassAnchors Media:"1",Book:"0",
+    DeviceInfo.Grappa 83B}; сверка якеря численно: 1 == 1 — ПРОЙДЕНО;
+  - FSFM S2 {DataclassAnchors{Media:"1",VoiceMemo:"1"}, SyncTypes
+    {Media:1,Book:0,Keybag:1}} (якерь НЕ инкрементируется — файлы не
+    стадируются);
+  - **ТЕЛЕФОН ОТВЕТИЛ AssetManifest (229Б)**, а не SyncFinished:
+    Params.AssetManifest.Media[0] = {AssetID 7773567125019000,
+    AssetType Music, Variant.AssetParts 4, IsDownload true} — телефон
+    ПРИНЯЛ дельту и просит ЗАГРУЗИТЬ ОДИН OWN-asset (собственность
+    телефона, загруженный Apple Music контент). rustunes
+    `EmptyDeltaSession` допускает оба терминала (session.rs 336–394:
+    SyncFinished ИЛИ AssetManifest = пусто-дельта-ответ, не фейл);
+  - наш ответ — OBSERVE-ONLY: НИКАКОГО ответа, close; сессия отменена;
+  - **верификация no-op**: повторный `music-id`:
+    `MLSyncClientSyncAnchor = 1` (якерь НЕ вырос), staging пуст.
+    Первый шаг мутационной фазы ничего не применил, как и
+    задумано.
+- **Статус инструментария**: `irmctl` подкоманды `afc-ls`, `afc-stat`,
+  `music-id`, `atc-delta` (+ dispatch/usage); юниты `make test` 5/5 OK на
+  -Wall -Wextra чисто; vendored sqlite добавлена в сборку.
+- Логи: `tools/afc-ls-smoke-2026-11-04c.log`,
+  `afc-stat-photos-2026-11-04c.log`, `afc-stat-prefs-2026-11-04c.log`,
+  `music-id-run1-2026-11-04c.log`, `music-id-verify-2026-11-04c.log`,
+  `atc-delta-run1-2026-11-04c.log`.
+- Факт-документ: `docs/evidence/E14-afc-identity-empty-delta.md`
+  (+ индекс в README, E13 §4 дописана ссылка на E14).
+- **Следующий шаг** (по отдельной порции, всё ещё в mutation-фазе):
+  реальный Delta с треками — стадинг `Sync_00000000.plist` + `.cig`
+  (подпись §11.4 E13), insert_track с полной картой item/avformat_info
+  (docs/02 §9), AssetManifest → Airlock-загрузка → FileComplete →
+  SyncFinished; анкер растёт на A+1 только реальным insert-файлом.

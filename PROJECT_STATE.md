@@ -830,3 +830,22 @@ apple-devices/
   iTunesPrefs (frpd 1232B): catalog_id LE64@raw[12..20], user_id
   LE64@raw[20..28], LibraryID=%016llX(cat^usr); якорь:
   MediaLibrary.sqlitedb _MLDatabaseProperties.MLSyncClientSyncAnchor.
+
+##### Шаг 9d (прод.): run3 с hex-ответом, фикс wb_b64, локальная проверка подписи
+
+- Run3 повторного рукопожатия: добавлена hex-печать phone-ответа
+  `GRAPPA_REPLY(83): 01 01 … r18=0x40 …` прямо из bplist — свежая
+  PS-пара (меняется от запуска к запуску), структура корректна.
+- **Баг-фикс `libirm/src/xmlplist.c::wb_b64`**: рендер b64 data-узла
+  при остатке n%3∈{1,2} писал NUL вместо б64-символа и неверные
+  полубиты (run2 XML Grappa был «обрезан»: 111 vs 112). Юниты xmlw
+  дополнены data-узлами всех остатков %3 → **6/6 OK**; wire никогда
+  не страдал (reader tolerant), только наш XML-рендер.
+- Локальная цепочка §11.4 сошлась: AES-128-CBC-nopad decrypt
+  reply[19:83] (key 0x95×16, IV r[2:18]) без PaddingError → K=ECB →
+  sidecar 21Б (HMAC-SHA1⊕маски). GRAPPA_HOST_REQUEST == rustunes
+  HOST_REQUEST байт-в-байт. Расчётная способность есть; контракт-
+  проверка телефоном — только в mutation-фазе. Печатался только
+  sha256 производных (сырые ключи не выводились).
+- Артефакты: traces `atc-handshake-run3-2026-11-04b.log`,
+  `grappa-verify-2026-11-04b.log`; E13 §3.1 дополнена.

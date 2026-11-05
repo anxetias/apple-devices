@@ -4,6 +4,7 @@
 
 # собранные бины и тестовые фикстуры
 irmctl
+irm-fill
 tests/test_bplist
 tests/test_mux
 tests/test_xml

@@ -3343,6 +3343,66 @@ static int cmd_atc_insert(const char *path, const char *selector)
 	}
 	printf("batch: %u вставка(ок) в одном конверте\n", batch_n);
 
+	/* (o2) метаданные вставки: env-переопределения (смотрят GUI- и
+	 * прочие внешние транскоды): IRMA_ATC_TOTAL_MS (total_time_ms),
+	 * IRMA_ATC_RATE (сэмплрейт); samples = ms*rate/1000, если
+	 * IRMA_ATC_SAMPLES не задан явно. Дефолты — фикстура 9f
+	 * (100/4410/44100). */
+	unsigned total_ms = 100, rate = 44100;
+	uint64_t samples = 0;
+	{
+		const char *e = getenv("IRMA_ATC_TOTAL_MS");
+		if (e && *e) {
+			char *end = NULL;
+			unsigned long v = strtoul(e, &end, 10);
+			if (!end || end == e || *end || v == 0 ||
+			    v > 3600000UL) {
+				fprintf(stderr, "atc-insert: "
+						"IRMA_ATC_TOTAL_MS=%s вне "
+						"1..3600000\n",
+					e);
+				goto close;
+			}
+			total_ms = (unsigned)v;
+		}
+		e = getenv("IRMA_ATC_RATE");
+		if (e && *e) {
+			char *end = NULL;
+			unsigned long v = strtoul(e, &end, 10);
+			if (!end || end == e || *end || v < 8000 ||
+			    v > 192000) {
+				fprintf(stderr, "atc-insert: "
+						"IRMA_ATC_RATE=%s вне "
+						"8000..192000\n",
+					e);
+				goto close;
+			}
+			rate = (unsigned)v;
+		}
+		e = getenv("IRMA_ATC_SAMPLES");
+		if (e && *e) {
+			char *end = NULL;
+			unsigned long long v = strtoull(e, &end, 10);
+			if (!end || end == e || *end || v == 0 ||
+			    v > 1000000000ULL) {
+				fprintf(stderr, "atc-insert: "
+						"IRMA_ATC_SAMPLES=%s вне "
+						"1..1e9\n",
+					e);
+				goto close;
+			}
+			samples = v;
+		}
+	}
+	if (samples == 0)
+		samples = (uint64_t)total_ms * (uint64_t)rate / 1000ULL;
+	if (samples == 0) {
+		fprintf(stderr, "atc-insert: samples = 0\n");
+		goto close;
+	}
+	printf("метаданные: total_ms=%u rate=%u samples=%llu\n", total_ms,
+	       rate, (unsigned long long)samples);
+
 	/* (p) фикстура (валидный ALAC; берём из env; обязательно). */
 	if (!fixt || !*fixt) {
 		fprintf(stderr, "atc-insert: задай IRMA_ATC_FIXTURE=<файл "
@@ -3676,9 +3736,9 @@ static int cmd_atc_insert(const char *path, const char *selector)
 					.track_pid = (int64_t)tpids[i],
 					.album_pid = (int64_t)al,
 					.artist_pid = (int64_t)ar,
-					.total_time_ms = 100,
-					.samples = 4410,
-					.sample_rate = 44100,
+					.total_time_ms = total_ms,
+					.samples = samples,
+					.sample_rate = rate,
 					.number = batch_n == 1 ? 1 : i + 1,
 				};
 				irm_bp_node *opi = atc_op_insert_track(&td);

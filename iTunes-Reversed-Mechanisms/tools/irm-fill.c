@@ -1,11 +1,18 @@
 /* irm-fill — тестовое GTK4-приложение заливки музыки по ATC-протоколу
- * (шаг 9g; обёртка над irmctl). Сам wire-протокол остаётся в irmctl
- * (единственный источник wire-фактов 9e/9f/9g): GUI поднимает irmctl
- * как подпроцесс с env-переменными IRMA_ATC_* и показывает поток
- * stdout/stderr живьём в лог-виджет. Мутирующие прогоны — только
+ * (шаги 9g/9i; обёртка над irmctl). Сам wire-протокол остаётся в
+ * irmctl (единственный источник wire-фактов 9e/9f/9g): GUI поднимает
+ * irmctl как подпроцесс с env-переменными IRMA_ATC_* и показывает
+ * поток stdout/stderr живьём в лог-виджет. Мутирующие прогоны — только
  * явным нажатием кнопки (это и есть согласие пользователя в
  * интерфейсе); переключатель «только стадия» (IRMA_ATC_STAGE_ONLY=1)
  * по умолчанию ВКЛЮЧЁН — безопасный прогон без записей на телефон.
+ *
+ * 9i: фикстуры не-.m4a (.mp3, .flac …) перекодируются в ALAC .m4a
+ * автоматически: gst-launch-1.0 (avenc_alac + mp4mux) пишет tmp-файл,
+ * gst-discoverer-1.0 даёт длительность/сэмплрейт, они передаются
+ * irmctl через IRMA_ATC_TOTAL_MS/IRMA_ATC_RATE/IRMA_ATC_SAMPLES.
+ * irmctl ищется в env IRMFILL_IRMCTL, затем PATH, затем рядом с
+ * самим бинарником irm-fill (через /proc/self/exe).
  *
  * Сборка: pkg-config gtk4 libadwaita-1 (цель irm-fill в Makefile). */
 
@@ -14,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -35,6 +43,7 @@ typedef struct {
 	GtkButton *btn_clear;
 	GtkSpinButton *sp_batch;
 	GtkCheckButton *ck_stage;
+	GtkButton *btn_browse;
 	GtkEntry *en_fixture;
 	GtkEntry *en_libid;
 	GtkSpinner *spinner;
@@ -44,6 +53,13 @@ typedef struct {
 	GCancellable *cancel;
 	char *irmctl;
 	int busy;
+
+	/* 9i: автоматический транскод не-.m4a входов */
+	char *gst_launch;
+	char *gst_discover;
+	char *tc_src;
+	char *tc_dst;
+	char pending_cmd[32];
 } IrmFill;
 
 static IrmFill g_uf;
@@ -96,6 +112,7 @@ static void set_busy(int busy)
 	gtk_widget_set_sensitive(GTK_WIDGET(g_uf.ck_stage), busy == 0);
 	gtk_widget_set_sensitive(GTK_WIDGET(g_uf.en_fixture), busy == 0);
 	gtk_widget_set_sensitive(GTK_WIDGET(g_uf.en_libid), busy == 0);
+	gtk_widget_set_sensitive(GTK_WIDGET(g_uf.btn_browse), busy == 0);
 	gtk_spinner_set_spinning(g_uf.spinner, busy != 0);
 }
 
@@ -196,35 +213,97 @@ static void process_done(GObject *src, GAsyncResult *res, gpointer user)
 	set_busy(0);
 }
 
-/* ---- запуск irmctl ---- */
+/* ---- запуск irmctl и транскод-цепочка (9i) ---- */
 
 static gboolean fixture_ok(const char *fix)
 {
 	return fix && *fix && access(fix, R_OK) == 0;
 }
 
-static void run_irmctl(const char *subcmd, gboolean insert_shape)
+/* путь оканчивается на .m4a (без учёта регистра)? Остальное аудио
+ * (.mp3 .flac .wav …) сначала транскодируется в ALAC — его ждут и
+ * протокол, и телефон */
+static gboolean is_m4a(const char *p)
+{
+	size_t n = p ? strlen(p) : 0;
+	return n > 4 && g_ascii_strcasecmp(p + n - 4, ".m4a") == 0;
+}
+
+/* "0:03:44.928888888" → мс. Целочисленный разбор: scanf("%lf")
+ * зависит от локали (в ru ждёт запятую), а gst-discoverer печатает
+ * точку — поэтому вручную, без с плавающей строкой */
+static unsigned long long parse_clock_ms(const char *v)
+{
+	unsigned long long lead[2] = { 0, 0 }; /* часы, минуты */
+	unsigned nlead = 0;
+	unsigned long long cur = 0, ms = 0;
+	unsigned digits = 0;
+	gboolean saw = FALSE;
+	const char *p;
+
+	for (p = v; *p; p++) {
+		if (*p >= '0' && *p <= '9') {
+			cur = cur * 10u + (unsigned long long)(*p - '0');
+			saw = TRUE;
+			continue;
+		}
+		if (*p == ':' && saw && nlead < 2) {
+			lead[nlead++] = cur;
+			cur = 0;
+			saw = FALSE;
+			continue;
+		}
+		break;
+	}
+	unsigned long long sec = cur;
+	if (nlead == 1)
+		sec += lead[0] * 60u;
+	else if (nlead == 2)
+		sec += lead[0] * 3600u + lead[1] * 60u;
+	if (*p == '.' || *p == ',') {
+		for (p++; *p >= '0' && *p <= '9' && digits < 3; p++) {
+			ms = ms * 10u + (unsigned long long)(*p - '0');
+			digits++;
+		}
+	}
+	while (digits < 3) {
+		ms *= 10u;
+		digits++;
+	}
+	return sec * 1000u + ms;
+}
+
+static void log_file_size(const char *path)
+{
+	struct stat st;
+	if (stat(path, &st) != 0)
+		return;
+	gchar *s = g_format_size_full((guint64)st.st_size,
+				      G_FORMAT_SIZE_IEC_UNITS);
+	log_fmt("размер: %s (%llu Б)", s, (unsigned long long)st.st_size);
+	g_free(s);
+}
+
+/* ---- низкоуровневый запуск irmctl (busy управляет вызывающий) ---- */
+
+static void irmctl_spawn(const char *subcmd, const char *fixture_override,
+			 unsigned long long meta_ms, unsigned meta_rate)
 {
 	GError *err = NULL;
-
-	if (g_uf.busy) {
-		log_fmt("уже идёт прогон — дождитесь завершения");
-		return;
-	}
-	if (!g_uf.irmctl) {
-		log_fmt("irmctl не найден (env %s или PATH)",
-			IRMFILL_IRMCTL_ENV);
-		return;
-	}
-
 	gchar **env = g_get_environ();
-	if (insert_shape) {
+	gboolean is_insert = strcmp(subcmd, "atc-insert") == 0;
+
+	if (is_insert) {
 		const char *fix =
-			gtk_editable_get_text(GTK_EDITABLE(g_uf.en_fixture));
+			fixture_override
+				? fixture_override
+				: gtk_editable_get_text(
+					GTK_EDITABLE(g_uf.en_fixture));
 		if (!fixture_ok(fix)) {
 			log_fmt("фикстура недоступна: %s",
 				(fix && *fix) ? fix : "(пусто)");
 			g_strfreev(env);
+			set_busy(0);
 			return;
 		}
 		env = g_environ_setenv(env, "IRMA_ATC_FIXTURE", fix, TRUE);
@@ -237,10 +316,35 @@ static void run_irmctl(const char *subcmd, gboolean insert_shape)
 			batch = IRMFILL_BATCH_MAX;
 		snprintf(nb, sizeof nb, "%u", batch);
 		env = g_environ_setenv(env, "IRMA_ATC_BATCH_N", nb, TRUE);
-		if (gtk_check_button_get_active(g_uf.ck_stage))
+		gboolean stage = gtk_check_button_get_active(g_uf.ck_stage);
+		if (stage)
 			env = g_environ_setenv(env, "IRMA_ATC_STAGE_ONLY",
 					       "1", TRUE);
+		/* метаданные перекода (9i): длительность/сэмплрейт;
+		 * сэмплы irmctl считает сам (ms*rate/1000) */
+		if (meta_ms != 0) {
+			char bm[24], br[24], bs[24];
+			snprintf(bm, sizeof bm, "%llu", meta_ms);
+			snprintf(br, sizeof br, "%u", meta_rate);
+			snprintf(bs, sizeof bs, "%llu",
+				 meta_ms *
+					 (unsigned long long)meta_rate /
+					 1000ULL);
+			env = g_environ_setenv(env, "IRMA_ATC_TOTAL_MS",
+					       bm, TRUE);
+			env = g_environ_setenv(env, "IRMA_ATC_RATE", br,
+					       TRUE);
+			env = g_environ_setenv(env, "IRMA_ATC_SAMPLES",
+					       bs, TRUE);
+		}
+		log_fmt("    фикс=%s%s батч=%u%s", fix,
+			fixture_override ? " (перекод)" : "", batch,
+			stage ? " (STAGE-ONLY)" : "");
+		if (meta_ms != 0)
+			log_fmt("    метаданные: %llu мс, %u Гц",
+				meta_ms, meta_rate);
 	}
+
 	const char *libid =
 		gtk_editable_get_text(GTK_EDITABLE(g_uf.en_libid));
 	if (libid && *libid)
@@ -262,6 +366,7 @@ static void run_irmctl(const char *subcmd, gboolean insert_shape)
 		g_clear_error(&err);
 		g_object_unref(g_uf.cancel);
 		g_uf.cancel = NULL;
+		set_busy(0);
 		return;
 	}
 	g_uf.proc = sp;
@@ -272,20 +377,260 @@ static void run_irmctl(const char *subcmd, gboolean insert_shape)
 					    g_uf.cancel, stream_read_line,
 					    NULL);
 
-	set_busy(1);
 	log_fmt(">>> %s %s", g_uf.irmctl, subcmd);
-	if (insert_shape) {
-		const char *fix =
-			gtk_editable_get_text(GTK_EDITABLE(g_uf.en_fixture));
-		unsigned batch =
-			(unsigned)gtk_spin_button_get_value(g_uf.sp_batch);
-		log_fmt("    фикс=%s батч=%u%s", fix, batch,
-			gtk_check_button_get_active(g_uf.ck_stage)
-				? " (STAGE-ONLY)"
-				: "");
-	}
 	g_subprocess_wait_check_async(sp, g_uf.cancel, process_done,
 				      (gpointer)subcmd);
+}
+
+/* ---- верхнеуровневый запуск: проверки + busy ---- */
+
+static void run_irmctl_full(const char *subcmd, const char *fixture_override,
+			    unsigned long long meta_ms, unsigned meta_rate)
+{
+	if (g_uf.busy) {
+		log_fmt("уже идёт прогон — дождитесь завершения");
+		return;
+	}
+	if (!g_uf.irmctl) {
+		log_fmt("irmctl не найден (env %s, PATH или рядом с "
+			"бинарником irm-fill)",
+			IRMFILL_IRMCTL_ENV);
+		return;
+	}
+	set_busy(1);
+	irmctl_spawn(subcmd, fixture_override, meta_ms, meta_rate);
+}
+
+/* ---- транскод-цепочка 9i: не-.m4a → ALAC .m4a → gst-discoverer ---- */
+
+static void chain_paths_free(void)
+{
+	g_free(g_uf.tc_src);
+	g_free(g_uf.tc_dst);
+	g_uf.tc_src = NULL;
+	g_uf.tc_dst = NULL;
+}
+
+static void chain_fail(void)
+{
+	chain_paths_free();
+	set_busy(0);
+}
+
+/* куда положить перекод: /tmp/irm-fill-<чистое-имя>.m4a (имя источника
+ * чистится до безопасных символов: gst-launch парсит элементы по
+ * пробелам, а телефонному протоколу пробелы в wire-пути не нужны) */
+static gchar *tc_make_dst(const char *src)
+{
+	char *b = g_path_get_basename(src);
+	char *dot = strrchr(b, '.');
+	if (dot && dot != b)
+		*dot = 0;
+	for (char *q = b; *q; q++)
+		if (!g_ascii_isalnum((guchar)*q) && *q != '-' && *q != '_')
+			*q = '_';
+	if (!*b) {
+		g_free(b);
+		b = g_strdup("out");
+	}
+	gchar *name = g_strdup_printf("irm-fill-%s.m4a", b);
+	g_free(b);
+	return g_build_filename(g_get_tmp_dir(), name, NULL);
+}
+
+/* ступень 2: из вывода gst-discoverer — длительность и сэмплрейт */
+static void chain_discover_done(GObject *src, GAsyncResult *res,
+				gpointer user)
+{
+	(void)user;
+	GSubprocess *sp = G_SUBPROCESS(src);
+	char *txt = NULL;
+	char *etext = NULL;
+	GError *err = NULL;
+	gboolean ok = g_subprocess_communicate_utf8_finish(
+		sp, res, &txt, &etext, &err);
+	g_clear_object(&g_uf.proc);
+
+	if (!ok) {
+		log_fmt("gst-discoverer: %s", err ? err->message : "?");
+		if (txt && *txt) {
+			log_fmt("gst-discoverer сказал:");
+			log_fmt("%s", txt);
+		}
+		g_free(txt);
+		g_free(etext);
+		g_clear_error(&err);
+		chain_fail();
+		return;
+	}
+
+	const char *d = txt ? strstr(txt, "Duration:") : NULL;
+	const char *r = txt ? strstr(txt, "Sample rate:") : NULL;
+	if (!d || !r) {
+		log_fmt("gst-discoverer: не видно Duration/Sample rate");
+		if (txt && *txt) {
+			log_fmt("gst-discoverer сказал:");
+			log_fmt("%s", txt);
+		}
+		g_free(txt);
+		g_free(etext);
+		chain_fail();
+		return;
+	}
+	d += strlen("Duration:");
+	while (*d == ' ' || *d == '\t')
+		d++;
+	r += strlen("Sample rate:");
+	while (*r == ' ' || *r == '\t')
+		r++;
+	unsigned long long ms = parse_clock_ms(d);
+	unsigned rate = (unsigned)strtoul(r, NULL, 10);
+	g_free(txt);
+	g_free(etext);
+
+	if (ms == 0 || rate == 0) {
+		log_fmt("gst-discoverer: мусорные метаданные "
+			"(ms=%llu rate=%u)",
+			ms, rate);
+		chain_fail();
+		return;
+	}
+	log_fmt("метаданные перекода: %llu мс, %u Гц, ~%llu сэмплов",
+		ms, rate, ms * (unsigned long long)rate / 1000ULL);
+
+	irmctl_spawn(g_uf.pending_cmd, g_uf.tc_dst, ms, rate);
+	chain_paths_free();
+}
+
+static void chain_discover(void)
+{
+	GError *err = NULL;
+	const char *argv[] = { g_uf.gst_discover, g_uf.tc_dst, NULL };
+	GSubprocess *sp = g_subprocess_newv(
+		argv, G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+		G_SUBPROCESS_FLAGS_STDERR_MERGE,
+		&err);
+	if (!sp) {
+		log_fmt("запуск gst-discoverer: %s",
+			err ? err->message : "?");
+		g_clear_error(&err);
+		log_fmt("транскод прерван: gst-discoverer не запустился");
+		chain_fail();
+		return;
+	}
+	g_uf.proc = sp;
+	g_subprocess_communicate_utf8_async(sp, NULL, NULL,
+					    chain_discover_done, NULL);
+}
+
+/* ступень 1: результаты gst-launch (файл должен появиться) */
+static void chain_transcode_done(GObject *src, GAsyncResult *res,
+				 gpointer user)
+{
+	(void)user;
+	GSubprocess *sp = G_SUBPROCESS(src);
+	char *txt = NULL;
+	char *etext = NULL;
+	GError *err = NULL;
+	gboolean ok = g_subprocess_communicate_utf8_finish(
+		sp, res, &txt, &etext, &err);
+	g_clear_object(&g_uf.proc);
+
+	if (ok)
+		ok = g_uf.tc_dst && access(g_uf.tc_dst, R_OK) == 0;
+	if (!ok) {
+		log_fmt("транскод не удался: %s",
+			err ? err->message
+			    : "выходной файл не появился");
+		if (txt && *txt) {
+			log_fmt("gst-launch сказал:");
+			log_fmt("%s", txt);
+		}
+		g_free(txt);
+		g_free(etext);
+		g_clear_error(&err);
+		chain_fail();
+		return;
+	}
+	log_fmt("транскод готов");
+	log_file_size(g_uf.tc_dst);
+	g_free(txt);
+	g_free(etext);
+	chain_discover();
+}
+
+static void chain_transcode(void)
+{
+	GError *err = NULL;
+	gchar *srcLoc = g_strdup_printf("location=%s", g_uf.tc_src);
+	gchar *dstLoc = g_strdup_printf("location=%s", g_uf.tc_dst);
+	const char *argv[] = { g_uf.gst_launch, "-q",
+		"filesrc", srcLoc, "!", "decodebin",
+		"!", "audioconvert", "!", "audioresample",
+		"!", "avenc_alac", "!", "mp4mux", "!",
+		"filesink", dstLoc, NULL };
+	log_fmt("транскод ALAC идёт (avenc_alac + mp4mux), ждите…");
+	GSubprocess *sp = g_subprocess_newv(
+		argv, G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+		G_SUBPROCESS_FLAGS_STDERR_MERGE,
+		&err);
+	g_free(srcLoc);
+	g_free(dstLoc);
+	if (!sp) {
+		log_fmt("запуск gst-launch: %s", err ? err->message : "?");
+		g_clear_error(&err);
+		log_fmt("транскод прерван: gst-launch не запустился");
+		chain_fail();
+		return;
+	}
+	g_uf.proc = sp;
+	g_subprocess_communicate_utf8_async(sp, NULL, NULL,
+					    chain_transcode_done, NULL);
+}
+
+/* вход цепочки: источник уже проверен на доступность */
+static void chain_start(const char *src)
+{
+	if (!g_uf.irmctl) {
+		log_fmt("irmctl не найден (env %s, PATH или рядом с "
+			"бинарником irm-fill)",
+			IRMFILL_IRMCTL_ENV);
+		return;
+	}
+	if (!g_uf.gst_launch) {
+		log_fmt("транскод невозможен: нет gst-launch-1.0 в PATH");
+		return;
+	}
+	if (!g_uf.gst_discover) {
+		log_fmt("транскод невозможен: нет gst-discoverer-1.0 в PATH");
+		return;
+	}
+	g_uf.tc_src = g_strdup(src);
+	g_uf.tc_dst = tc_make_dst(src);
+	snprintf(g_uf.pending_cmd, sizeof g_uf.pending_cmd, "%s",
+		 "atc-insert");
+	set_busy(1);
+	log_fmt("«%s» — не .m4a; перекодирую в %s", g_uf.tc_src,
+		g_uf.tc_dst);
+	chain_transcode();
+}
+
+/* общая часть «Один трек» и «Пакет N →» (9i): .m4a уходит как есть,
+ * остальное — через цепочку транскода */
+static void on_insert_clicked(void)
+{
+	const char *fix =
+		gtk_editable_get_text(GTK_EDITABLE(g_uf.en_fixture));
+	if (!fixture_ok(fix)) {
+		log_fmt("фикстура недоступна: %s",
+			(fix && *fix) ? fix : "(пусто)");
+		return;
+	}
+	if (is_m4a(fix)) {
+		run_irmctl_full("atc-insert", NULL, 0, 0);
+		return;
+	}
+	chain_start(fix);
 }
 
 /* ---- обработчики кнопок ---- */
@@ -294,7 +639,7 @@ static void on_anchor_clicked(GtkButton *btn, gpointer user)
 {
 	(void)btn;
 	(void)user;
-	run_irmctl("music-id", FALSE);
+	run_irmctl_full("music-id", NULL, 0, 0);
 }
 
 static void on_one_clicked(GtkButton *btn, gpointer user)
@@ -302,14 +647,14 @@ static void on_one_clicked(GtkButton *btn, gpointer user)
 	(void)btn;
 	(void)user;
 	gtk_spin_button_set_value(g_uf.sp_batch, 1);
-	run_irmctl("atc-insert", TRUE);
+	on_insert_clicked();
 }
 
 static void on_batch_clicked(GtkButton *btn, gpointer user)
 {
 	(void)btn;
 	(void)user;
-	run_irmctl("atc-insert", TRUE);
+	on_insert_clicked();
 }
 
 static void on_clear_clicked(GtkButton *btn, gpointer user)
@@ -318,6 +663,67 @@ static void on_clear_clicked(GtkButton *btn, gpointer user)
 	(void)user;
 	gtk_text_buffer_set_text(g_uf.log_buf, "", -1);
 	gtk_label_set_text(g_uf.la_state, "якерь: (нет данных)");
+}
+
+/* выбор аудиофайла через нативный диалог (GtkFileDialog, GTK 4.10+) */
+static void on_open_audio_done(GObject *src, GAsyncResult *res,
+			       gpointer user)
+{
+	(void)user;
+	GError *err = NULL;
+	GFile *file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(src), res,
+						  &err);
+	if (!file) {
+		if (!g_error_matches(err, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+			log_fmt("обзор: %s",
+				err ? err->message : "файл не выбран");
+		g_clear_error(&err);
+		return;
+	}
+	gchar *path = g_file_get_path(file);
+	if (path) {
+		gtk_editable_set_text(GTK_EDITABLE(g_uf.en_fixture), path);
+		log_fmt("фикстура выбрана: %s", path);
+		g_free(path);
+	} else {
+		log_fmt("обзор: файл не локальный (только локальные пути)");
+	}
+	g_object_unref(file);
+}
+
+static void on_browse_clicked(GtkButton *btn, gpointer user)
+{
+	(void)btn;
+	(void)user;
+	GtkFileDialog *fd = gtk_file_dialog_new();
+	gtk_file_dialog_set_title(fd, "Выберите аудиофайл");
+
+	GtkFileFilter *f_all = gtk_file_filter_new();
+	gtk_file_filter_set_name(f_all,
+				 "аудио (.m4a .mp3 .flac .wav .aiff)");
+	gtk_file_filter_add_mime_type(f_all, "audio/x-m4a");
+	gtk_file_filter_add_mime_type(f_all, "audio/mp4");
+	gtk_file_filter_add_mime_type(f_all, "audio/mpeg");
+	gtk_file_filter_add_mime_type(f_all, "audio/flac");
+	gtk_file_filter_add_mime_type(f_all, "audio/x-wav");
+	gtk_file_filter_add_mime_type(f_all, "audio/x-aiff");
+
+	GtkFileFilter *f_m4a = gtk_file_filter_new();
+	gtk_file_filter_set_name(f_m4a, "ALAC .m4a");
+	gtk_file_filter_add_mime_type(f_m4a, "audio/x-m4a");
+	gtk_file_filter_add_mime_type(f_m4a, "audio/mp4");
+
+	GListStore *ls = g_list_store_new(GTK_TYPE_FILE_FILTER);
+	g_list_store_append(ls, f_all);
+	g_list_store_append(ls, f_m4a);
+	g_object_unref(f_all);
+	g_object_unref(f_m4a);
+	gtk_file_dialog_set_filters(fd, G_LIST_MODEL(ls));
+	g_object_unref(ls);
+
+	gtk_file_dialog_open(fd, GTK_WINDOW(g_uf.win), NULL,
+			     on_open_audio_done, NULL);
+	g_object_unref(fd);
 }
 
 /* закрытие окна при активном прогоне: дотягиваем ребенка вниз */
@@ -347,8 +753,30 @@ static void find_irmctl(void)
 		g_uf.irmctl = NULL;
 	}
 	gchar *path = g_find_program_in_path("irmctl");
-	if (path)
+	if (path) {
 		g_uf.irmctl = path;
+		return;
+	}
+	/* fallback 9i: рядом с самим бинарником — запуск из файлового
+	 * менеджера не имеет каталога сборки в PATH */
+	gchar *exe = g_file_read_link("/proc/self/exe", NULL);
+	if (exe) {
+		gchar *dir = g_path_get_dirname(exe);
+		gchar *ctl = g_build_filename(dir, "irmctl", NULL);
+		g_free(dir);
+		g_free(exe);
+		if (access(ctl, X_OK) == 0) {
+			g_uf.irmctl = ctl;
+			return;
+		}
+		g_free(ctl);
+	}
+}
+
+static void find_gst(void)
+{
+	g_uf.gst_launch = g_find_program_in_path("gst-launch-1.0");
+	g_uf.gst_discover = g_find_program_in_path("gst-discoverer-1.0");
 }
 
 static void build_ui(GtkApplication *app)
@@ -399,20 +827,28 @@ static void build_ui(GtkApplication *app)
 	gtk_grid_attach(GTK_GRID(panel), GTK_WIDGET(g_uf.spinner), 1, 1, 1,
 			1);
 
-	/* фикстура */
-	GtkWidget *la_fix = gtk_label_new("фикстура .m4a:");
+	/* фикстура: любое аудио; не-.m4a перекодируется сам */
+	GtkWidget *la_fix = gtk_label_new("фикстура аудио:");
 	gtk_label_set_xalign(GTK_LABEL(la_fix), 0.0);
 	gtk_grid_attach(GTK_GRID(panel), la_fix, 0, 2, 1, 1);
 	g_uf.en_fixture = GTK_ENTRY(gtk_entry_new());
 	gtk_entry_set_placeholder_text(g_uf.en_fixture,
-				       "путь к tone-alac.m4a …");
+				       "путь к .m4a / .mp3 / .flac …");
 	/* подсказка по умолчанию: значение из окружения */
 	const char *fixe = getenv("IRMA_ATC_FIXTURE");
 	if (fixe && *fixe)
 		gtk_editable_set_text(GTK_EDITABLE(g_uf.en_fixture), fixe);
 	gtk_widget_set_hexpand(GTK_WIDGET(g_uf.en_fixture), TRUE);
 	gtk_grid_attach(GTK_GRID(panel), GTK_WIDGET(g_uf.en_fixture), 1, 2,
-			2, 1);
+			1, 1);
+	g_uf.btn_browse = GTK_BUTTON(gtk_button_new_with_label("Обзор…"));
+	gtk_widget_set_tooltip_text(GTK_WIDGET(g_uf.btn_browse),
+				    "выбрать аудиофайл; mp3/flac "
+				    "перекодируются в ALAC автоматически");
+	g_signal_connect(g_uf.btn_browse, "clicked",
+			 G_CALLBACK(on_browse_clicked), NULL);
+	gtk_grid_attach(GTK_GRID(panel), GTK_WIDGET(g_uf.btn_browse), 2, 2,
+			1, 1);
 
 	/* один трек */
 	g_uf.btn_one = GTK_BUTTON(gtk_button_new_with_label("Один трек"));
@@ -494,9 +930,17 @@ static void build_ui(GtkApplication *app)
 	adw_application_window_set_content(g_uf.win, root);
 
 	find_irmctl();
-	log_fmt("irmctl: %s", g_uf.irmctl ? g_uf.irmctl : "НЕ НАЙДЕН "
-							  "(env IRMFILL_"
-							  "IRMCTL или PATH)");
+	find_gst();
+	log_fmt("irmctl: %s", g_uf.irmctl
+					  ? g_uf.irmctl
+					  : "НЕ НАЙДЕН (env IRMFILL_"
+					    "IRMCTL, PATH или рядом с "
+					    "бинарником irm-fill)");
+	log_fmt("транскод: gst-launch-1.0 %s, gst-discoverer-1.0 %s",
+		g_uf.gst_launch ? "есть" : "НЕТ",
+		g_uf.gst_discover ? "есть" : "НЕТ");
+	log_fmt("не-.m4a фикстуры (.mp3, .flac …) перекодируются в ALAC "
+		"автоматически");
 	log_fmt("мутирующие прогоны — только по нажатию кнопки; "
 		"«только стадия» по умолчанию ВКЛ (без записей)");
 
@@ -515,5 +959,7 @@ int main(int argc, char **argv)
 	int rc = g_application_run(G_APPLICATION(app), argc, argv);
 	g_object_unref(app);
 	g_free(g_uf.irmctl);
+	g_free(g_uf.gst_launch);
+	g_free(g_uf.gst_discover);
 	return rc;
 }

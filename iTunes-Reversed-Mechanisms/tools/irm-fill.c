@@ -82,6 +82,12 @@ typedef struct {
 	unsigned pl_skip; /* live-факт: срывы item'ов пропускаем */
 	GPtrArray *pl_files; /* выбранное: gchar* пути источника */
 	GPtrArray *pl_rows;  /* готовые строки: struct pl_row* */
+
+	/* 9l-live 12:47: конвейер порций (чанков) — разбивка плейлиста
+	 * на K строк per спавн irmctl; каждый чанк = своя ATC-сессия.
+	 * Элементы: struct pl_chunk*. Пуст ⇒ конвейера нет. */
+	GPtrArray *pl_chunks;
+	unsigned pl_chunk_idx;
 } IrmFill;
 
 /* готовая строка плейлиста (после транскода/меты; тексты уже с
@@ -218,6 +224,10 @@ static void stream_read_line(GObject *src, GAsyncResult *res,
 
 /* ---- завершение подпроцесса ---- */
 
+/* 9l-live: конвейер порций (чанков) — process_done ведёт очередь
+ * последовательных спавнов */
+static void pl_chunks_next(gboolean ok_prev);
+
 static void process_done(GObject *src, GAsyncResult *res, gpointer user)
 {
 	GSubprocess *sp = G_SUBPROCESS(src);
@@ -243,6 +253,14 @@ static void process_done(GObject *src, GAsyncResult *res, gpointer user)
 
 	if (strcmp(what, "music-id") == 0)
 		update_anchor_label();
+	if (g_uf.pl_chunks && strcmp(what, "atc-insert") == 0) {
+		/* 9l-live: идёт конвейер порций — после завершения
+		 * спавна этого чанка (rc учитываем) переходим к
+		 * следующей */
+		set_busy(1);
+		pl_chunks_next(ok);
+		return;
+	}
 	set_busy(0);
 }
 
@@ -655,6 +673,7 @@ static gchar *tc_make_dst(const char *src);
 static gchar *tc_make_dst2(const char *src, const char *uniq);
 static void pl_next_file(void);
 static void pl_finish(void);
+static void pl_chunks_next(gboolean ok_prev);
 
 /* live-факт 05.11: gst-launch может выйти rc=0 даже при ошибке пайпа
  * (ОШИБКА «Превышена дисковая квота» на tmpfs — файл остаётся без
@@ -706,8 +725,12 @@ static void pl_reset(void)
 		g_ptr_array_unref(g_uf.pl_files);
 	if (g_uf.pl_rows)
 		g_ptr_array_unref(g_uf.pl_rows);
+	if (g_uf.pl_chunks)
+		g_ptr_array_unref(g_uf.pl_chunks);
 	g_uf.pl_files = NULL;
 	g_uf.pl_rows = NULL;
+	g_uf.pl_chunks = NULL;
+	g_uf.pl_chunk_idx = 0;
 	g_uf.pl_active = FALSE;
 	g_uf.pl_idx = 0;
 	g_uf.pl_skip = 0;
@@ -805,8 +828,41 @@ static void pl_next_file(void)
 	chain_transcode();
 }
 
-/* очередь кончилась: TSV-файл из строк → один запуск irmctl с
- * IRMA_ATC_PLAYLIST */
+/* одна порция конвейера: свой TSV + свои артефакты (перекоды и
+ * обложки — для уборки после заливки живой сессией) */
+struct pl_chunk {
+	gchar *tsv;
+	GPtrArray *payloads; /* gchar*: перекоды и обложки */
+};
+
+static void pl_chunk_free(gpointer p)
+{
+	struct pl_chunk *c = p;
+	if (!c)
+		return;
+	if (c->payloads)
+		g_ptr_array_unref(c->payloads);
+	g_free(c->tsv);
+	g_free(c);
+}
+
+/* K треков на порцию (дефолт 10): IRMFILL_CHUNK переопределяет.
+ * live 12:45: 36 треков одним конвертом прошли rc=0, но провод
+ * съел 67 с (~16 МиБ/с) — порции дают более частый якерь/ops и
+ * не взрывают tmpfs (191 файл ≈ 5,7 ГиБ в 3,6 Г tmpfs не лезет). */
+static unsigned pl_chunk_k(void)
+{
+	const char *e = getenv("IRMFILL_CHUNK");
+	if (!e || !*e)
+		return 10;
+	int v = atoi(e);
+	if (v <= 0 || v > IRMFILL_BATCH_MAX)
+		return 10;
+	return (unsigned)v;
+}
+
+/* очередь кончилась: строки → порции по K → TSV на каждую →
+ * последовательные запуски irmctl (каждый ждёт rc предыдущего) */
 static void pl_finish(void)
 {
 	if (!g_uf.irmctl) {
@@ -822,41 +878,131 @@ static void pl_finish(void)
 		pl_abort("ни один файл не обработался");
 		return;
 	}
-	gchar *tsv = g_build_filename(g_get_tmp_dir(),
-				      "irm-fill-playlist.tsv", NULL);
-	FILE *f = fopen(tsv, "wb");
-	if (!f) {
-		log_fmt("плейлист %s: %s", tsv, g_strerror(errno));
-		g_free(tsv);
-		pl_abort("TSV-файл не открыт");
-		return;
+	unsigned K = pl_chunk_k();
+	unsigned nc = (unsigned)((nr + K - 1) / K);
+	g_uf.pl_chunks = g_ptr_array_new_with_free_func(pl_chunk_free);
+	for (unsigned ci = 0; ci < nc; ci++) {
+		guint from = (guint)ci * K;
+		guint to = from + K;
+		if (to > nr)
+			to = nr;
+		struct pl_chunk *c = g_new0(struct pl_chunk, 1);
+		c->payloads = g_ptr_array_new_with_free_func(g_free);
+		if (nc == 1)
+			c->tsv = g_build_filename(g_get_tmp_dir(),
+						  "irm-fill-playlist.tsv",
+						  NULL);
+		else
+			c->tsv = g_strdup_printf(
+				"%s/irm-fill-playlist-%u-%u-of-%u.tsv",
+				g_get_tmp_dir(), from + 1, to, nr);
+		FILE *f = fopen(c->tsv, "wb");
+		if (!f) {
+			log_fmt("плейлист %s: %s", c->tsv,
+				g_strerror(errno));
+			pl_chunk_free(c);
+			pl_reset();
+			pl_abort("TSV-файл не открыт");
+			return;
+		}
+		for (guint i = from; i < to; i++) {
+			struct pl_row *r =
+				g_ptr_array_index(g_uf.pl_rows, i);
+			char bs[32];
+			/* сэмплы считает GUI (мс*рейт/1000 — как одиночный
+			 * режим; пустое поле irmctl умеет вычислять сам,
+			 * запас пока не пригодился) */
+			snprintf(bs, sizeof bs, "%llu",
+				 r->ms * (unsigned long long)r->rate /
+					 1000ULL);
+			fprintf(f,
+				"%s\t%llu\t%u\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				r->dst, r->ms, r->rate, bs, r->title,
+				r->artist, r->album, r->genre, r->art);
+			/* артефакты чанка: перекод (+обложка) — на
+			 * уборку после живой заливки */
+			if (r->dst[0])
+				g_ptr_array_add(c->payloads,
+						g_strdup(r->dst));
+			if (r->art[0])
+				g_ptr_array_add(c->payloads,
+						g_strdup(r->art));
+		}
+		gboolean onefail = ferror(f) != 0;
+		if (fclose(f) != 0 || onefail) {
+			log_fmt("плейлист %s: запись не удалась", c->tsv);
+			pl_chunk_free(c);
+			pl_reset();
+			pl_abort("TSV не записан");
+			return;
+		}
+		g_ptr_array_add(g_uf.pl_chunks, c);
 	}
-	for (guint i = 0; i < nr; i++) {
-		struct pl_row *r = g_ptr_array_index(g_uf.pl_rows, i);
-		char bs[32];
-		/* сэмплы считает GUI (мс*рейт/1000 — как одиночный
-		 * режим; пустое поле irmctl умеет вычислять сам,
-		 * запас пока не пригодился) */
-		snprintf(bs, sizeof bs, "%llu",
-			 r->ms * (unsigned long long)r->rate / 1000ULL);
-		fprintf(f, "%s\t%llu\t%u\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			r->dst, r->ms, r->rate, bs,
-			r->title, r->artist, r->album, r->genre, r->art);
-	}
-	gboolean onefail = ferror(f) != 0;
-	if (fclose(f) != 0 || onefail) {
-		log_fmt("плейлист %s: запись не удалась", tsv);
-		g_free(tsv);
-		pl_abort("TSV не записан");
-		return;
-	}
-	log_fmt("плейлист готов: %u трек(ов) → %s (пропущено %u)",
-		(unsigned)nr, tsv, g_uf.pl_skip);
+	struct pl_chunk *c0 = g_ptr_array_index(g_uf.pl_chunks, 0);
+	log_fmt("плейлист готов: %u трек(ов), порций %u (первый TSV %s); "
+		"пропущено %u",
+		(unsigned)nr, nc, c0->tsv, g_uf.pl_skip);
 	chain_paths_free();
-	pl_reset(); /* строк больше не нужны — TSV уже на диске */
+	/* строки и очередь больше не нужны — их содержимое уже в TSV
+	 * и списках артефактов чанков; ПОРЦИИ (pl_chunks) сохраняем —
+	 * pl_reset здесь нельзя (он освободил бы их) */
+	if (g_uf.pl_files) {
+		g_ptr_array_unref(g_uf.pl_files);
+		g_uf.pl_files = NULL;
+	}
+	if (g_uf.pl_rows) {
+		g_ptr_array_unref(g_uf.pl_rows);
+		g_uf.pl_rows = NULL;
+	}
+	g_uf.pl_active = FALSE;
+	set_busy(1);
+	pl_chunks_next(TRUE);
+}
+
+/* конвейер порций: предыдущий чанк доведён (ok_prev = его rc),
+ * текущий спавнится. Живая сессия (не stage-only, rc=0) — артефакты
+ * чанка удаляем: телефон уже забрал содержимое, tmpfs не копим
+ * (live 12:27: 2,2 ГиБ перекодов доели tmpfs). */
+static void pl_chunks_next(gboolean ok_prev)
+{
+	guint n = g_uf.pl_chunks ? g_uf.pl_chunks->len : 0;
+	if (!ok_prev) {
+		/* срыв порции: НЕ спавним дальше (телефон мог отказать;
+		 * мутации прекращаем), артефакты не чистим — для
+		 * расследования */
+		log_fmt("конвейер порций: остановлен на %u из %u "
+			"(предыдущий чанк rc!=0)",
+			g_uf.pl_chunk_idx, n);
+		pl_reset();
+		set_busy(0);
+		return;
+	}
+	if (n > 1 && g_uf.pl_chunk_idx > 0) {
+		struct pl_chunk *prev =
+			g_ptr_array_index(g_uf.pl_chunks,
+					  g_uf.pl_chunk_idx - 1);
+		if (!gtk_check_button_get_active(g_uf.ck_stage)) {
+			for (guint i = 0; i < prev->payloads->len; i++)
+				unlink(g_ptr_array_index(prev->payloads,
+							 i));
+			log_fmt("порция %u/%u: артефакты убраны (%u шт)",
+				g_uf.pl_chunk_idx, n,
+				prev->payloads->len);
+		}
+		unlink(prev->tsv);
+	}
+	if (g_uf.pl_chunk_idx >= n) {
+		log_fmt("конвейер порций завершён: %u подряд", n);
+		pl_reset();
+		set_busy(0);
+		return;
+	}
+	struct pl_chunk *c = g_ptr_array_index(g_uf.pl_chunks,
+					       g_uf.pl_chunk_idx);
+	log_fmt("порция %u/%u: %s", g_uf.pl_chunk_idx + 1, n, c->tsv);
 	/* spawn при провале сам снимет busy и отчистится */
-	irmctl_spawn("atc-insert", NULL, 0, 0, tsv);
-	g_free(tsv);
+	irmctl_spawn("atc-insert", NULL, 0, 0, c->tsv);
+	g_uf.pl_chunk_idx++;
 }
 
 /* выбор нескольких файлов (GtkFileDialog open_multiple): безопасность

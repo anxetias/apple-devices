@@ -1,0 +1,326 @@
+GUI-лог живого прогона irm-fill (9i, 2026-11-05): скопирован из виджета
+приложения пользователем, дословно. Скриншот телефона (Медиатека,
+альбом «IRM Tones», трек играл, «1 песня, 3 минуты») приложен чатом;
+часть «трек назывался skrillex, ISOxo - fuze» = замечание пользователя:
+заголовок остался фирменным «IRM Tone», т.к. ирмctl ещё не принимал
+теги источника (реализовано в 9j).
+
+[10:07:27] irmctl: /home/saitexna/apple-devices/iTunes-Reversed-Mechanisms/irmctl
+[10:07:27] транскод: gst-launch-1.0 есть, gst-discoverer-1.0 есть
+[10:07:27] не-.m4a фикстуры (.mp3, .flac …) перекодируются в ALAC автоматически
+[10:07:27] мутирующие прогоны — только по нажатию кнопки; «только стадия» по умолчанию ВКЛ (без записей)
+[10:07:43] >>> /home/saitexna/apple-devices/iTunes-Reversed-Mechanisms/irmctl music-id
+[10:07:43] device: id=1 udid=00008030-001C3128119A402E
+[10:07:43] [com.apple.afc] port=57747 ssl=0
+[10:07:43]   канал: сырой
+[10:07:43] iTunesPrefs: 1232 байт, повтор-чтение совпало
+[10:07:43] frpd: версия 1.25 configured=1
+[10:07:43] frpd: catalog_id=0000000000000000 user_id=0000000000000000
+[10:07:43] frpd: LibraryID=0000000000000000 (= catalog_id^user_id)
+[10:07:43] frpd: литералы catalog/user НЕЗАПОЛНЕНЫ (0) — LibraryID деривация не авторитетна; для IRMA_ATC_LIBID задаём env
+[10:07:43] exp: IRMA_ATC_LIBID=0000000000000000
+[10:07:43] /iTunes_Control/iTunes/MediaLibrary.sqlitedb: 1564672 байт, повтор совпало
+[10:07:43]   копия: /tmp/opencode/00008030-001C3128119A402E-music/MediaLibrary.sqlitedb
+[10:07:43] /iTunes_Control/iTunes/MediaLibrary.sqlitedb-wal: 935272 байт, повтор совпало
+[10:07:43]   копия: /tmp/opencode/00008030-001C3128119A402E-music/MediaLibrary.sqlitedb-wal
+[10:07:43] _MLDatabaseProperties:
+[10:07:43]   MLArtistHeroImageImportDatabaseRevision = 8632
+[10:07:43]   MLArtistHeroImageImportDate = 814986811.26064706
+[10:07:43]   MLCloudDatabaseUserVersion = 810010
+[10:07:43]   MLJaliscoAccountID = 18715467998
+[10:07:43]   MLJaliscoDatabaseRevision = 2
+[10:07:43]   MLJaliscoLastSupportedMediaKinds = 1,32,65536,4194304
+[10:07:43]   MLJaliscoNeedsUpdateForTokens = 0
+[10:07:43]   MLMaintenanceTaskOperationDate = 815482630.27966201
+[10:07:43]   MLSiriIndexValidityRevision = 0
+[10:07:43]   MLSortMapUnicodeVersion = <не текст: блоб>
+[10:07:43]   MLStorefrontID = 143565-16,29
+[10:07:43]   MLSyncClientGenerationID = -3295315549368266966
+[10:07:43]   MLSyncClientLastSyncedRevision = 8631
+[10:07:43]   MLSyncClientSyncAnchor = 6
+[10:07:43]   MPExplicitContentAllowedBoolean = 1
+[10:07:43]   OrderingLanguage = ru-BY
+[10:07:43]   _UUID = 9EF64D64-5012-4146-8A21-1A51A314AC20
+[10:07:43]   autoCreatedSmartPlaylistsDeleted = 1
+[10:07:43]   createdBuiltInSmartPlaylists = 1
+[10:07:43] integrity_check: ok
+[10:07:43] exp: якерь Media (MLSyncClientSyncAnchor выше)
+[10:08:02] фикстура выбрана: /home/saitexna/Музыка/01 Skrillex & ISOxo - fuze.mp3
+[10:08:10] «/home/saitexna/Музыка/01 Skrillex & ISOxo - fuze.mp3» — не .m4a; перекодирую в /tmp/irm-fill-01_Skrillex___ISOxo_-_fuze.m4a
+[10:08:10] транскод ALAC идёт (avenc_alac + mp4mux), ждите…
+[10:08:12] транскод готов
+[10:08:12] размер: 24,4 МиБ (25564416 Б)
+[10:08:12] метаданные перекода: 188579 мс, 44100 Гц, ~8316333 сэмплов
+[10:08:12]     фикс=/tmp/irm-fill-01_Skrillex___ISOxo_-_fuze.m4a (перекод) батч=1 (STAGE-ONLY)
+[10:08:12]     метаданные: 188579 мс, 44100 Гц
+[10:08:12] >>> /home/saitexna/apple-devices/iTunes-Reversed-Mechanisms/irmctl atc-insert
+[10:08:12] device: id=1 udid=00008030-001C3128119A402E
+[10:08:12] pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+[10:08:12] batch: 1 вставка(ок) в одном конверте
+[10:08:12] метаданные: total_ms=188579 rate=44100 samples=8316333
+[10:08:12] fixture: /tmp/irm-fill-01_Skrillex___ISOxo_-_fuze.m4a (25564416 Б)
+[10:08:12] [com.apple.afc] port=57751 ssl=0
+[10:08:12]   канал: сырой
+[10:08:12] staging /iTunes_Control/Sync/Media: пуст (ок)
+[10:08:12] DB-копия: /tmp/opencode/00008030-001C3128119A402E-music/MediaLibrary.sqlitedb (с -wal)
+[10:08:12] integrity_check: ok
+[10:08:12] atc-insert: rc=0
+[10:08:12] каталог: db_pid=860019141250340 primary_container_pid=460217054914055021
+[10:08:12] якерь: A=6 → FSFM A+1=7
+[10:08:12] PID-набор: 907 значений
+[10:08:12] PIDs: album=7166151833810736573 artist=9106727539618731767; треков 1: 2681368006062250833
+[10:08:12] ops-файл: 1075 байт (head: 62 70 6c 69 73 74 30 30 d3 01 03 55 02 04 56 58 72 65 76 69 73 69 6f 6e...)
+[10:08:12] [com.apple.atc] port=57753 ssl=1
+[10:08:12]   канал: TLS (lbD-комбо)
+[10:08:12]   кадр 1: len=94 Command=Pong
+[10:08:12]   кадр 2: len=188 Command=Capabilities
+[10:08:12]   кадр 3: len=150 Command=InstalledAssets
+[10:08:12]   кадр 4: len=728 Command=AssetMetrics
+[10:08:12]   кадр 5: len=387 Command=SyncAllowed
+[10:08:12]  отсылаем RequestingSync (Session=2, якерь 6)
+[10:08:12]   кадр 1: len=387 Command=SyncAllowed
+[10:08:12]   кадр 2: len=150 Command=InstalledAssets
+[10:08:12]   кадр 3: len=274 Command=ReadyForSync
+[10:08:12]   dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>ReadyForSync</string>
+	<key>Params</key>
+	<dict>
+		<key>DataclassAnchors</key>
+		<dict>
+			<key>Media</key>
+			<string>6</string>
+			<key>Book</key>
+			<string>0</string>
+		</dict>
+		<key>DeviceInfo</key>
+		<dict>
+			<key>Grappa</key>
+			<data>AQEpsX8/nmRCQv3c8o9A+fpjQMehDANKPNXy0a9NV219XnFBL9Zyk24fiFNIW6Y6Dg0PemmSl4cTEVeCCwk+5hJu8ONXp0iYieiY0cs7viYl8to=</data>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>365</integer>
+</dict>
+</plist>
+
+[10:08:12]   GRAPPA_REPLY(83): 01 01 29 b1 7f 3f 9e 64 42 42 fd dc f2 8f 40 f9 fa 63 40 c7 a1 0c 03 4a 3c d5 f2 d1 af 4d 57 6d 7d 5e 71 41 2f d6 72 93 6e 1f 88 53 48 5b a6 3a 0e 0d 0f 7a 69 92 97 87 13 11 57 82 0b 09 3e e6 12 6e f0 e3 57 a7 48 98 89 e8 98 d1 cb 3b be 26 25 f2 da
+[10:08:12]  anchor: sent=6 ready=6
+[10:08:12] sidecar .cig: 0x01 + HMAC-SHA1⊕mask (21 б): 01 1a d6 1b 84 25 f0 f8 d4 fd b6 d3 04 c6 8e 82 f8 05 d8 04 8c
+[10:08:12] STAGE-ONLY: подпись сверена; записей на телефон НЕ делаем, сессию отменяем (close) — телефон потребляет файлы ТОЛЬКО на FSFM (§14.3)
+[10:08:27] «/home/saitexna/Музыка/01 Skrillex & ISOxo - fuze.mp3» — не .m4a; перекодирую в /tmp/irm-fill-01_Skrillex___ISOxo_-_fuze.m4a
+[10:08:27] транскод ALAC идёт (avenc_alac + mp4mux), ждите…
+[10:08:29] транскод готов
+[10:08:29] размер: 24,4 МиБ (25564416 Б)
+[10:08:29] метаданные перекода: 188579 мс, 44100 Гц, ~8316333 сэмплов
+[10:08:29]     фикс=/tmp/irm-fill-01_Skrillex___ISOxo_-_fuze.m4a (перекод) батч=1 (STAGE-ONLY)
+[10:08:29]     метаданные: 188579 мс, 44100 Гц
+[10:08:29] >>> /home/saitexna/apple-devices/iTunes-Reversed-Mechanisms/irmctl atc-insert
+[10:08:29] device: id=1 udid=00008030-001C3128119A402E
+[10:08:29] pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+[10:08:29] batch: 1 вставка(ок) в одном конверте
+[10:08:29] метаданные: total_ms=188579 rate=44100 samples=8316333
+[10:08:29] fixture: /tmp/irm-fill-01_Skrillex___ISOxo_-_fuze.m4a (25564416 Б)
+[10:08:29] [com.apple.afc] port=57759 ssl=0
+[10:08:29]   канал: сырой
+[10:08:29] staging /iTunes_Control/Sync/Media: пуст (ок)
+[10:08:29] DB-копия: /tmp/opencode/00008030-001C3128119A402E-music/MediaLibrary.sqlitedb (с -wal)
+[10:08:29] integrity_check: ok
+[10:08:29] каталог: db_pid=860019141250340 primary_container_pid=460217054914055021
+[10:08:29] якерь: A=6 → FSFM A+1=7
+[10:08:29] atc-insert: rc=0
+[10:08:29] PID-набор: 907 значений
+[10:08:29] PIDs: album=2741926348982403813 artist=5124465168395381032; треков 1: 3168409261341666894
+[10:08:29] ops-файл: 1075 байт (head: 62 70 6c 69 73 74 30 30 d3 01 03 55 02 04 56 58 72 65 76 69 73 69 6f 6e...)
+[10:08:29] [com.apple.atc] port=57761 ssl=1
+[10:08:29]   канал: TLS (lbD-комбо)
+[10:08:29]   кадр 1: len=94 Command=Pong
+[10:08:29]   кадр 2: len=188 Command=Capabilities
+[10:08:29]   кадр 3: len=150 Command=InstalledAssets
+[10:08:29]   кадр 4: len=699 Command=AssetMetrics
+[10:08:29]   кадр 5: len=387 Command=SyncAllowed
+[10:08:29]  отсылаем RequestingSync (Session=2, якерь 6)
+[10:08:29]   кадр 1: len=387 Command=SyncAllowed
+[10:08:29]   кадр 2: len=150 Command=InstalledAssets
+[10:08:29]   кадр 3: len=274 Command=ReadyForSync
+[10:08:29]   dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>ReadyForSync</string>
+	<key>Params</key>
+	<dict>
+		<key>DataclassAnchors</key>
+		<dict>
+			<key>Media</key>
+			<string>6</string>
+			<key>Book</key>
+			<string>0</string>
+		</dict>
+		<key>DeviceInfo</key>
+		<dict>
+			<key>Grappa</key>
+			<data>AQHzbib2rvCVxt32C9YNRIlLQI4f8Bhd6tYLCKjHyLFtGL/TmzR/Gb7fwVl9JpktZC7QTEEUDHXzUFx4zaMrqFfcc1btAAr49+jPsPZcZ13iGj8=</data>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>374</integer>
+</dict>
+</plist>
+
+[10:08:29]   GRAPPA_REPLY(83): 01 01 f3 6e 26 f6 ae f0 95 c6 dd f6 0b d6 0d 44 89 4b 40 8e 1f f0 18 5d ea d6 0b 08 a8 c7 c8 b1 6d 18 bf d3 9b 34 7f 19 be df c1 59 7d 26 99 2d 64 2e d0 4c 41 14 0c 75 f3 50 5c 78 cd a3 2b a8 57 dc 73 56 ed 00 0a f8 f7 e8 cf b0 f6 5c 67 5d e2 1a 3f
+[10:08:29]  anchor: sent=6 ready=6
+[10:08:29] sidecar .cig: 0x01 + HMAC-SHA1⊕mask (21 б): 01 6d 76 63 34 e4 8a 06 45 43 13 5d e8 96 5d e9 ae 6f 4a 5c 64
+[10:08:29] STAGE-ONLY: подпись сверена; записей на телефон НЕ делаем, сессию отменяем (close) — телефон потребляет файлы ТОЛЬКО на FSFM (§14.3)
+[10:08:42] «/home/saitexna/Музыка/01 Skrillex & ISOxo - fuze.mp3» — не .m4a; перекодирую в /tmp/irm-fill-01_Skrillex___ISOxo_-_fuze.m4a
+[10:08:42] транскод ALAC идёт (avenc_alac + mp4mux), ждите…
+[10:08:43] транскод готов
+[10:08:43] размер: 24,4 МиБ (25564416 Б)
+[10:08:43] метаданные перекода: 188579 мс, 44100 Гц, ~8316333 сэмплов
+[10:08:43]     фикс=/tmp/irm-fill-01_Skrillex___ISOxo_-_fuze.m4a (перекод) батч=1
+[10:08:43]     метаданные: 188579 мс, 44100 Гц
+[10:08:43] >>> /home/saitexna/apple-devices/iTunes-Reversed-Mechanisms/irmctl atc-insert
+[10:08:46] device: id=1 udid=00008030-001C3128119A402E
+[10:08:46] pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+[10:08:46] batch: 1 вставка(ок) в одном конверте
+[10:08:46] метаданные: total_ms=188579 rate=44100 samples=8316333
+[10:08:46] fixture: /tmp/irm-fill-01_Skrillex___ISOxo_-_fuze.m4a (25564416 Б)
+[10:08:46] [com.apple.afc] port=57764 ssl=0
+[10:08:46]   канал: сырой
+[10:08:46] staging /iTunes_Control/Sync/Media: пуст (ок)
+[10:08:46] DB-копия: /tmp/opencode/00008030-001C3128119A402E-music/MediaLibrary.sqlitedb (с -wal)
+[10:08:46] integrity_check: ok
+[10:08:46] каталог: db_pid=860019141250340 primary_container_pid=460217054914055021
+[10:08:46] якерь: A=6 → FSFM A+1=7
+[10:08:46] PID-набор: 907 значений
+[10:08:46] PIDs: album=6593747276564035373 artist=5192772610286210097; треков 1: 1945236750667223080
+[10:08:46] ops-файл: 1075 байт (head: 62 70 6c 69 73 74 30 30 d3 01 03 55 02 04 56 58 72 65 76 69 73 69 6f 6e...)
+[10:08:46] [com.apple.atc] port=57766 ssl=1
+[10:08:46]   канал: TLS (lbD-комбо)
+[10:08:46]   кадр 1: len=94 Command=Pong
+[10:08:46]   кадр 2: len=188 Command=Capabilities
+[10:08:46]   кадр 3: len=150 Command=InstalledAssets
+[10:08:46]   кадр 4: len=699 Command=AssetMetrics
+[10:08:46]   кадр 5: len=387 Command=SyncAllowed
+[10:08:46]  отсылаем RequestingSync (Session=2, якерь 6)
+[10:08:46]   кадр 1: len=387 Command=SyncAllowed
+[10:08:46]   кадр 2: len=150 Command=InstalledAssets
+[10:08:46]   кадр 3: len=274 Command=ReadyForSync
+[10:08:46]   dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>ReadyForSync</string>
+	<key>Params</key>
+	<dict>
+		<key>DataclassAnchors</key>
+		<dict>
+			<key>Media</key>
+			<string>6</string>
+			<key>Book</key>
+			<string>0</string>
+		</dict>
+		<key>DeviceInfo</key>
+		<dict>
+			<key>Grappa</key>
+			<data>AQHboTuq1denHuRWqcy+nESsQNBB3iFh99bmRsSn/ua9Y1fLLgWHsQEwmSM0llfUuNLTgTuIwuRxF505BDPavW6pMm42Ay+BmiJe4tAYgcbPJPU=</data>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>383</integer>
+</dict>
+</plist>
+
+[10:08:46]   GRAPPA_REPLY(83): 01 01 db a1 3b aa d5 d7 a7 1e e4 56 a9 cc be 9c 44 ac 40 d0 41 de 21 61 f7 d6 e6 46 c4 a7 fe e6 bd 63 57 cb 2e 05 87 b1 01 30 99 23 34 96 57 d4 b8 d2 d3 81 3b 88 c2 e4 71 17 9d 39 04 33 da bd 6e a9 32 6e 36 03 2f 81 9a 22 5e e2 d0 18 81 c6 cf 24 f5
+[10:08:46]  anchor: sent=6 ready=6
+[10:08:46] sidecar .cig: 0x01 + HMAC-SHA1⊕mask (21 б): 01 dd a4 af a7 84 74 c2 57 e6 8b 60 b0 c2 17 76 aa 8e 02 61 c2
+[10:08:46] стейдж: Sync_00000000.plist (1075 Б) + .plist.cig (21 Б) — готово; телефон потребляет их ТОЛЬКО на FSFM
+[10:08:46]  отсылаем FinishedSyncingMetadata (Session=2, якерь 7)
+[10:08:46]   кадр 1: len=141 Command=Progress
+[10:08:46]     телеметрия (игнор)
+[10:08:46]   кадр 2: len=141 Command=Progress
+[10:08:46]     телеметрия (игнор)
+[10:08:46]   кадр 3: len=233 Command=AssetManifest
+[10:08:46]   dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>AssetManifest</string>
+	<key>Params</key>
+	<dict>
+		<key>AssetManifest</key>
+		<dict>
+			<key>Media</key>
+			<array>
+				<dict>
+					<key>Variant</key>
+					<dict>
+						<key>AssetParts</key>
+						<integer>5</integer>
+					</dict>
+					<key>AssetType</key>
+					<string>Music</string>
+					<key>AssetID</key>
+					<string>1945236750667223080</string>
+					<key>IsDownload</key>
+					<true/>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>386</integer>
+</dict>
+</plist>
+
+[10:08:46] манифест: own (1), в порядке манифеста: 1945236750667223080; бэклог-аудио=0 ancillary=0
+[10:08:46]   ассет: staged /Airlock/Media/1945236750667223080.m4a → bare /Airlock/Media/1945236750667223080 (25564416 Б), постоянный путь iTunes_Control/Music/F30/ZBRO.m4a
+[10:08:46]  отсылаем FileComplete (AssetID=1945236750667223080, AssetPath=iTunes_Control/Music/F30/ZBRO.m4a)
+[10:08:46]   кадр 4: len=102 Command=SyncFinished
+[10:08:46] atc-insert: rc=0
+[10:08:46]   dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>SyncFinished</string>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>387</integer>
+</dict>
+</plist>
+
+[10:08:46] atc-insert: SYNC FINISHED — применено; якерь обязан быть A+1 (проверка: irmctl music-id)
+дополнительно (CLI, после): irmctl music-id → MLSyncClientSyncAnchor = 7
+дополнительно (CLI, 9j-регрессия): atc-insert STAGE-ONLY с env-тегами —
+  якерь sent=7 ready=7; atc-insert-stage-tags-2026-11-05.log

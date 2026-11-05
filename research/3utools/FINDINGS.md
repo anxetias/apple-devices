@@ -2437,3 +2437,84 @@ HTTP-клиент a2-s.3u.com по запрятанному протоколу (
   в GUI; библиотека libirm; отдельная порция работы ПОСЛЕ пакета);
 - ROT-reset синк, ancillary-only сессия, idempotence повторов — по мере
   надобности для GUI-прототипа.
+
+## Сессия 05.11 (9h–9j): GUI irm-fill — реальная заливка из окна (live)
+
+### 9h/9i.1 Код (обёртка GUI)
+
+- `tools/irm-fill.c` (GTK4/libadwaita, ветка music-mac-state apple-devices):
+  GUI — ТОЛЬКО обёртка над irmctl-подпроцессом (env IRMA_ATC_*; wire-
+  факты не трогаем); busy-блокировка, живой лог, STAGE-ONLY дефолт;
+  close окна → force_exit.
+- 9i: авто-поиск irmctl (env IRMFILL_IRMCTL → PATH → каталог бинарника
+  через /proc/self/exe — запуск из Nautilus без PATH-каталога сборки
+  работал); авто-транскод не-.m4a: gst-launch -q filesrc → decodebin →
+  audioconvert → audioresample → avenc_alac → mp4mux → filesink
+  (/tmp/irm-fill-<чистое-имя>.m4a; argv БЕЗ шелла — пробелы в путях
+  gst-launch парсит нормально, проверено на «01 Lost in a Wave.mp3»);
+  gst-discoverer-1.0 CLI печатает Duration/Sample rate НО НЕ ТЕГИ
+  (синтетика + реальные файлы); парсер длительности целочисленный
+  (scanf %lf в ru-локали ждёт запятую, gst печатает точку);
+  кнопка «Обзор…» = GtkFileDialog (GTK 4.10+).
+- 9j: env IRMA_ATC_TITLE/ARTIST/ALBUM/GENRE (читается в cmd_atc_insert
+  через env_san: контроль-символы выкинуты, обрезка пробелов, cap 255
+  по границе utf8; пусто = прежние фирменные дефолты IRM Tone/IRM/
+  IRM Tones/Test; пакет >1 добавляет " %u" к title по образцу);
+  GUI читает теги ИСТОЧНИКА через TagLib C-биндинги (taglib_c):
+  gst-discoverer теги не даёт, mp4mux теги так и не пишет (taginject
+  перед/после энкодером — строки в файл не легли), TagLib читает всё.
+
+### 9i.2 Live-факты (01 Skrillex & ISOxo - fuze.mp3; якерь до = 6)
+
+- GUI-цепочка целиком: выбор файла «Обзор…» → транскод MP3→ALAC
+  25564416 Б (потрачено ~2 с) → gst-discoverer: 188579 мс, 44100 Гц
+  (~8316333 сэмплов) → irmctl с env IRMA_ATC_TOTAL_MS/RATE — wire
+  вставка получила total_ms=188579 rate=44100 samples=8316333.
+- **Телефон применил метаданные вставки как есть**: приложение
+  показывает «1 песня, 3 минуты» (188579 мс ≈ 3:09) — CONFIRMED
+  экранным скриншотом; якерь 6→7 подтверждён CLI music-id после.
+- Трек у пользователя назывался «skrillex, ISOxo - fuze» — но в
+  телефон легло фирменное «IRM Tone»: теги источника в 9i ещё не
+  передавались (для этого 9j).
+- STAGE-ONLY прогоны (2 шт): staging пуст, якерь sent=6 ready=6,
+  записей нет — пере-проверка политики.
+- Полный прогон (один, стейдж снят — клик пользователя):
+  ops-конверт 1075 Б в staging (Sync_00000000.plist + .plist.cig
+  21 Б) → FSFM: AssetManifest own=1 (AssetID=1945236750667223080,
+  **AssetParts=5** для 24.4 МиБ аудио, IsDownload=true, бэклог 0,
+  ancillary 0) → файл отдал через Airlock (m4a → bare по-телефонному)
+  → FileComplete с AssetPath=iTunes_Control/Music/F30/ZBRO.m4a
+  (постоянный путь ВЫБРАЛ ТЕЛЕФОН — F30/ZBRO) → телефон ответил
+  **SyncFinished → якерь 6→7**. Без ancillary-бэклога подвисания
+  Ping×2/IdleExit НЕТ — пристройка «чистая сессия» работает стабильно
+  (E16-паттерн run4 воспроизведён).
+- ПИДы: album/artist/трек генерируются заново КАЖДЫЙ прогон (3
+  разных набора между прогонов — так и задумано: PID-набор из
+  занятых; item_pid телефон переписывает внутренними).
+
+### 9j.3 Проверки (без телефона)
+
+- taglib_c уверенно читает теги реальных MP3: mp3 «fuze»/
+  «Skrillex & ISOxo»/«hit me where it hurts x»/«Hardgroove Techno /
+  Dubstep / …»; другой трек: «Lost in a Wave»/LANDMVRKS. Наши
+  транскоды .m4a без тегов (ожидаемо — mp4mux их не пишет).
+- STAGE-ONLY регрессия с тегами: wire-строки приняты, ops собран,
+  сигнатура сверена (atc-insert-stage-tags-2026-11-05.log; якерь
+  sent=7 ready=7).
+- LLVM: -Wall -Wextra чисто (чужой pedantic gtk-заголовок вне счёта),
+  юниты 5/5, boot-смок 6 с (0 CRITICAL), скан мусорных символов чист.
+
+### 9i/9j.4 Логи (research/3utools/tools/, серия `-2026-11-05`)
+
+- `irm-fill-gui-fill-2026-11-05.log` — GUI-лог живого прогона (2
+  STAGE-ONLY + 1 полный, дословно из виджета);
+- `atc-insert-stage-tags-2026-11-05.log` — CLI STAGE-ONLY с env-тегами.
+
+### 9i/9j.5 Что дальше
+
+- Живой прогон 9j (теги источника → телефон): выбрать трек с тегами,
+  снять STAGE-ONLY, один трек — проверить «fuze — Skrillex & ISOxo»
+  и альбом «hit me where it hurts x» в приложении.
+- Рот-reset синк; ancillary-only сессия (artwork-желание FileError 16)
+  остаётся открытым фактом E16 (решение — только для GUI-прототипа —
+  у нас бэклог нулевой).

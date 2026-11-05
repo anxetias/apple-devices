@@ -1,0 +1,62 @@
+device: id=1 udid=00008030-001C3128119A402E
+pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+batch: 1 вставка(ок) в одном конверте
+метаданные: total_ms=188579 rate=44100 samples=8316333
+теги источника: title=fuze artist=Skrillex & ISOxo album=hit me where it hurts x
+fixture: /tmp/irm-fill-01_Skrillex___ISOxo_-_fuze.m4a (25564416 Б)
+[com.apple.afc] port=57806 ssl=0
+  канал: сырой
+staging /iTunes_Control/Sync/Media: пуст (ок)
+DB-копия: /tmp/opencode/00008030-001C3128119A402E-music/MediaLibrary.sqlitedb (с -wal)
+integrity_check: ok
+каталог: db_pid=860019141250340 primary_container_pid=460217054914055021
+якерь: A=7 → FSFM A+1=8
+PID-набор: 909 значений
+PIDs: album=306314651746844047 artist=3831928611034686450; треков 1: 1209582463401878415
+ops-файл: 1154 байт (head: 62 70 6c 69 73 74 30 30 d3 01 03 55 02 04 56 58 72 65 76 69 73 69 6f 6e...)
+[com.apple.atc] port=57808 ssl=1
+  канал: TLS (lbD-комбо)
+  кадр 1: len=94 Command=Pong
+  кадр 2: len=188 Command=Capabilities
+  кадр 3: len=150 Command=InstalledAssets
+  кадр 4: len=728 Command=AssetMetrics
+  кадр 5: len=387 Command=SyncAllowed
+ отсылаем RequestingSync (Session=2, якерь 7)
+  кадр 1: len=387 Command=SyncAllowed
+  кадр 2: len=150 Command=InstalledAssets
+  кадр 3: len=274 Command=ReadyForSync
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>ReadyForSync</string>
+	<key>Params</key>
+	<dict>
+		<key>DataclassAnchors</key>
+		<dict>
+			<key>Media</key>
+			<string>7</string>
+			<key>Book</key>
+			<string>0</string>
+		</dict>
+		<key>DeviceInfo</key>
+		<dict>
+			<key>Grappa</key>
+			<data>AQF93efgag6He4E0nvtMqXmkQCHFcdxtGMlxv2qCproCK0QXjZvlqngs41ubc0oE6+lQ8QfW+6UMjHMmWXuV2F8O+M1NS7mXmmuE21MswmXrNMY=</data>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>405</integer>
+</dict>
+</plist>
+
+  GRAPPA_REPLY(83): 01 01 7d dd e7 e0 6a 0e 87 7b 81 34 9e fb 4c a9 79 a4 40 21 c5 71 dc 6d 18 c9 71 bf 6a 82 a6 ba 02 2b 44 17 8d 9b e5 aa 78 2c e3 5b 9b 73 4a 04 eb e9 50 f1 07 d6 fb a5 0c 8c 73 26 59 7b 95 d8 5f 0e f8 cd 4d 4b b9 97 9a 6b 84 db 53 2c c2 65 eb 34 c6
+ anchor: sent=7 ready=7
+sidecar .cig: 0x01 + HMAC-SHA1⊕mask (21 б): 01 d6 13 ff cd 70 50 a0 ea df a9 11 c4 68 ff 01 a2 51 03 1c 92
+STAGE-ONLY: подпись сверена; записей на телефон НЕ делаем, сессию отменяем (close) — телефон потребляет файлы ТОЛЬКО на FSFM (§14.3)

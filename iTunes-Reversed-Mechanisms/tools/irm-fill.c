@@ -61,6 +61,14 @@ typedef struct {
 	GtkEntry *en_libid;
 	GtkSpinner *spinner;
 
+	/* окно прогресса пакетной заливки (владелец 05.11): отдельное
+	 * окно с прогресс-баром и кнопкой отмены; собирается лениво,
+	 * живёт между пакетами (hide, не destroy) */
+	GtkWindow *win_prog;
+	GtkProgressBar *pb_prog;
+	GtkLabel *la_prog;
+	GtkButton *btn_prog_cancel;
+
 	GSubprocess *proc;
 	GDataInputStream *stream;
 	GCancellable *cancel;
@@ -97,6 +105,8 @@ typedef struct {
 	gboolean pl_active;
 	unsigned pl_idx;
 	unsigned pl_skip; /* live-факт: срывы item'ов пропускаем */
+	unsigned pl_rows_done; /* доведено до строки/скипа — прогресс
+				* окна (владелец 05.11) */
 	GPtrArray *pl_files; /* выбранное: gchar* пути источника */
 	GPtrArray *pl_rows;  /* готовые строки: struct pl_row* */
 
@@ -877,6 +887,7 @@ static void pl_reset(void)
 	g_uf.pl_skip = 0;
 	g_uf.pl_running = 0;
 	g_uf.pl_tct = 0;
+	g_uf.pl_rows_done = 0;
 	memset(g_uf.pl_alive, 0, sizeof g_uf.pl_alive);
 	g_uf.pl_gen++; /* старым async-колбэкам job больше не его */
 }
@@ -885,8 +896,117 @@ static void pl_reset(void)
 static void pl_abort(const char *why)
 {
 	log_fmt("пакет прерван: %s", why);
+	/* окно прогресса гасим — пакет не идёт */
+	if (g_uf.win_prog)
+		gtk_widget_set_visible(GTK_WIDGET(g_uf.win_prog), FALSE);
 	pl_reset();
 	set_busy(0);
+}
+
+/* ---- окно прогресса пакетной заливки (владелец 05.11) ---- */
+
+/* обновление: доля = доведённые до строки/скипа файлы ÷ весь пакет;
+ * в подписи — порции и чем занят конвейер */
+static void pl_progress_update(void)
+{
+	if (!g_uf.win_prog || !g_uf.pl_active)
+		return;
+	unsigned total = g_uf.pl_files ? (unsigned)g_uf.pl_files->len : 0;
+	if (total == 0)
+		return;
+	gtk_progress_bar_set_fraction(
+		g_uf.pb_prog,
+		(double)g_uf.pl_rows_done / (double)total);
+	char txt[180];
+	snprintf(txt, sizeof txt,
+		 "обработано %u из %u; порция %u/%u%s",
+		 g_uf.pl_rows_done, total, g_uf.pl_chunk_num,
+		 g_uf.pl_chunk_total,
+		 g_uf.pl_inflight ? " — заливка на телефон…"
+				  : " — пайплайн в работе…");
+	gtk_label_set_text(g_uf.la_prog, txt);
+}
+
+/* отмена пакета: кнопка «Отмена» в окне прогресса (и его закрытие —
+ * тот же выбор). Гасим заливающий подпроцесс и всю машину пакета:
+ * транкоды гасит pl_reset (tc_procs force_exit), job'ы подберут
+ * async-колбэки по поколению (в pl_reset растёт pl_gen). Телефон НЕ
+ * откатываем: это отмена НАШЕЙ машины; залитая часть остаётся. */
+static gboolean on_progress_close(GtkWindow *win, gpointer user);
+
+static void pl_cancel(const char *why)
+{
+	if (!g_uf.pl_active)
+		return;
+	if (g_uf.proc) /* заливающийся atc-insert текущей порции */
+		g_subprocess_force_exit(g_uf.proc);
+	pl_abort(why);
+}
+
+static void on_progress_cancel_clicked(GtkButton *btn, gpointer user)
+{
+	(void)btn;
+	(void)user;
+	pl_cancel("кнопка Отмена");
+}
+
+static gboolean on_progress_close(GtkWindow *win, gpointer user)
+{
+	(void)win;
+	(void)user;
+	/* закрытие окна = отмена при живом пакете; без пакета — просто
+	 * спрятать (окно переиспользуется, не уничтожаем) */
+	if (g_uf.pl_active) {
+		pl_cancel("окно прогресса закрыто");
+		return TRUE; /* спрятать нас сами (pl_abort) */
+	}
+	gtk_widget_set_visible(GTK_WIDGET(g_uf.win_prog), FALSE);
+	return TRUE;
+}
+
+/* окно лениво собирается при первом пакете и живёт дальше */
+static void pl_progress_show(void)
+{
+	if (!g_uf.win_prog) {
+		GtkWidget *w = gtk_window_new();
+		gtk_window_set_title(GTK_WINDOW(w), "Заливка пакета — "
+						     "прогресс");
+		gtk_window_set_resizable(GTK_WINDOW(w), FALSE);
+		gtk_window_set_transient_for(GTK_WINDOW(w),
+					     GTK_WINDOW(g_uf.win));
+		GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+		gtk_widget_set_margin_top(box, 12);
+		gtk_widget_set_margin_bottom(box, 12);
+		gtk_widget_set_margin_start(box, 16);
+		gtk_widget_set_margin_end(box, 16);
+		g_uf.la_prog = GTK_LABEL(gtk_label_new("пайплайн:"));
+		gtk_label_set_xalign(g_uf.la_prog, 0.0);
+		gtk_box_append(GTK_BOX(box), GTK_WIDGET(g_uf.la_prog));
+		g_uf.pb_prog = GTK_PROGRESS_BAR(gtk_progress_bar_new());
+		gtk_widget_set_hexpand(GTK_WIDGET(g_uf.pb_prog), TRUE);
+		gtk_widget_set_size_request(GTK_WIDGET(g_uf.pb_prog), 420,
+					    -1);
+		gtk_box_append(GTK_BOX(box), GTK_WIDGET(g_uf.pb_prog));
+		GtkWidget *hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+		g_uf.btn_prog_cancel = GTK_BUTTON(
+			gtk_button_new_with_label("Отмена"));
+		gtk_widget_set_tooltip_text(
+			GTK_WIDGET(g_uf.btn_prog_cancel),
+			"прервать конвейер: транкоды и залитие "
+			"останавливаются; уже залитые на телефон части "
+			"остаются");
+		g_signal_connect(g_uf.btn_prog_cancel, "clicked",
+				 G_CALLBACK(on_progress_cancel_clicked),
+				 NULL);
+		gtk_box_append(GTK_BOX(hb), GTK_WIDGET(g_uf.btn_prog_cancel));
+		gtk_box_append(GTK_BOX(box), hb);
+		gtk_window_set_child(GTK_WINDOW(w), box);
+		g_signal_connect(w, "close-request",
+				 G_CALLBACK(on_progress_close), NULL);
+		g_uf.win_prog = GTK_WINDOW(w);
+	}
+	gtk_widget_set_visible(GTK_WIDGET(g_uf.win_prog), TRUE);
+	pl_progress_update();
 }
 
 static void pl_job_free(struct pl_job *j)
@@ -945,6 +1065,8 @@ static void pl_job_fail(struct pl_job *j, const char *why)
 	chain_paths_free();
 	pl_job_free(j);
 	g_uf.pl_skip++;
+	g_uf.pl_rows_done++;
+	pl_progress_update();
 	g_uf.pl_running--;
 	pl_advance();
 }
@@ -1091,6 +1213,7 @@ static void pl_row_done(const char *dst, unsigned long long ms,
 	tsv_field(r->genre, sizeof r->genre, j ? j->genre : g_uf.tag_genre);
 	tsv_field(r->art, sizeof r->art, j ? j->art : g_uf.art_path);
 	g_ptr_array_add(g_uf.pl_rows, r);
+	g_uf.pl_rows_done++; /* прогресс окна: файл доведён до строки */
 	gchar *rbase = g_path_get_basename(r->dst);
 	log_fmt("    строка готова [файл #%u]: %llu мс, %u Гц, «%s», "
 		"обложка %s, файл ← %s",
@@ -1105,6 +1228,7 @@ static void pl_row_done(const char *dst, unsigned long long ms,
 	if (g_uf.pl_rows->len >= (guint)pl_chunk_k() &&
 	    !g_uf.pl_inflight && pl_flush_mature())
 		pl_flush_chunk();
+	pl_progress_update();
 	pl_advance();
 }
 
@@ -1135,11 +1259,15 @@ static void pl_advance(void)
 			/* таб в пути разобьёт колонки TSV */
 			log_fmt("  пропущен — таб в пути: %s", src);
 			g_uf.pl_skip++;
+			g_uf.pl_rows_done++;
+			pl_progress_update();
 			continue;
 		}
 		if (!fixture_ok(src)) {
 			log_fmt("  пропущен — недоступен: %s", src);
 			g_uf.pl_skip++;
+			g_uf.pl_rows_done++;
+			pl_progress_update();
 			continue;
 		}
 		struct pl_job *j = pl_job_new(src, g_uf.pl_idx,
@@ -1205,6 +1333,10 @@ static void pl_finish(void)
 			log_fmt("конвейер завершён: залито порций %u, "
 				"пропущено %u",
 				g_uf.pl_chunk_num, g_uf.pl_skip);
+			/* окно прогресса гасим — пакет доехал */
+			if (g_uf.win_prog)
+				gtk_widget_set_visible(
+					GTK_WIDGET(g_uf.win_prog), FALSE);
 			pl_reset();
 			set_busy(0);
 			return;
@@ -1359,6 +1491,7 @@ static void pl_flush_chunk(void)
 	g_uf.pl_inflight = TRUE;
 	/* spawn при провале сам разрулит через pl_abort */
 	irmctl_spawn("atc-insert", NULL, 0, 0, g_uf.pl_chunk_tsv);
+	pl_progress_update(); /* «порция X/У — заливка на телефон…» */
 }
 
 /* rc irmctl порции получен: чистка tmpfs → следующий чанк (или
@@ -1373,6 +1506,10 @@ static void pl_chunk_done(gboolean ok)
 		log_fmt("порция %u/%u: rc!=0 — конвейер СТОП, артефакты "
 			"порции и TSV оставлены (разбор в /tmp)",
 			num, total);
+		/* окно прогресса гасим — пакет не идёт */
+		if (g_uf.win_prog)
+			gtk_widget_set_visible(
+				GTK_WIDGET(g_uf.win_prog), FALSE);
 		pl_reset();
 		set_busy(0);
 		return;
@@ -1396,6 +1533,7 @@ static void pl_chunk_done(gboolean ok)
 	unlink(g_uf.pl_chunk_tsv); /* TSV порции больше не нужен */
 	g_free(g_uf.pl_chunk_tsv);
 	g_uf.pl_chunk_tsv = NULL;
+	pl_progress_update(); /* порция закрыта, буфер копится */
 	/* v3: колесо целиком в pl_advance — подкачка транскодов
 	 * (закисшая на гейте rows≥K), хвостовая порция и
 	 * «конвейер завершён» (финиш едет только по rc: очередь к
@@ -1514,6 +1652,9 @@ static void pl_start_from_files(GListModel *files)
 		"цикл «транскод → заливка → чистка»…",
 		g_uf.pl_files->len, K, g_uf.gst_codec, par);
 	set_busy(1);
+	/* окно прогресса с кнопкой отмены (владелец 05.11): до отмены
+	 * фракция 0, дальше ведут pl_row_done/pl_job_fail/порции */
+	pl_progress_show();
 	pl_advance();
 }
 

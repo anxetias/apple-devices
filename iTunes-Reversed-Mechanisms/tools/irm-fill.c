@@ -140,6 +140,10 @@ struct pl_row {
 	unsigned trans; /* перекод наш (dst — tmp-артефакт на уборку);
 			 * 0 → dst == файл владельца (.m4a как есть) —
 			 * списком уборки НЕ трогаем */
+	unsigned idx;   /* номер файла в пакете (1..N) — строгий
+			 * порядок строк в порции по ФАЙЛАМ, не по
+			 * готовности транскодов (владелец 05.11:
+			 * перемещённые теги) */
 };
 
 /* пакетный job (9n): один файл в параллельном конвейере. Теги и
@@ -1058,15 +1062,22 @@ static void pl_row_done(const char *dst, unsigned long long ms,
 	r->ms = ms;
 	r->rate = rate;
 	r->trans = (j ? j->trans : FALSE); /* без job'а — не трогаем */
+	r->idx = (j ? j->idx : 0); /* метка файла пакета: заморожена
+				    * вместе с тегами/tc_dst (см.
+				    * pl_job_finalize) — строка знает,
+				    * ЧЬЯ она пара */
 	tsv_field(r->title, sizeof r->title, g_uf.tag_title);
 	tsv_field(r->artist, sizeof r->artist, g_uf.tag_artist);
 	tsv_field(r->album, sizeof r->album, g_uf.tag_album);
 	tsv_field(r->genre, sizeof r->genre, g_uf.tag_genre);
 	tsv_field(r->art, sizeof r->art, g_uf.art_path);
 	g_ptr_array_add(g_uf.pl_rows, r);
-	log_fmt("    строка готова: %llu мс, %u Гц, «%s», обложка %s", ms,
-		rate, r->title[0] ? r->title : "(нет)",
-		r->art[0] ? "есть" : "нет");
+	gchar *rbase = g_path_get_basename(r->dst);
+	log_fmt("    строка готова [файл #%u]: %llu мс, %u Гц, «%s», "
+		"обложка %s, файл ← %s",
+		r->idx, ms, rate, r->title[0] ? r->title : "(нет)",
+		r->art[0] ? "есть" : "нет", rbase);
+	g_free(rbase);
 	chain_paths_free();
 	if (j) {
 		pl_job_free(j);
@@ -1129,7 +1140,9 @@ static void pl_advance(void)
 		pl_finish();
 }
 
-/* K треков на порцию (дефолт 16): IRMFILL_CHUNK переопределяет.
+/* K треков на порцию (дефолт 8 — владелец 05.11 уменьшил с 16:
+ * чаще якерь/ops, меньшие полосы срывов): IRMFILL_CHUNK
+ * переопределяет.
  * Модель владельца: перекод порции → заливка порции → удаление её
  * артефактов с tmpfs → следующий круг. В tmpfs живут ЗАЛИВАЮЩАЯСЯ
  * порция + буфер following порции (строки ждут rc) + PAR
@@ -1138,10 +1151,10 @@ static unsigned pl_chunk_k(void)
 {
 	const char *e = getenv("IRMFILL_CHUNK");
 	if (!e || !*e)
-		return 16;
+		return 8;
 	int v = atoi(e);
 	if (v <= 0 || v > IRMFILL_BATCH_MAX)
-		return 16;
+		return 8;
 	return (unsigned)v;
 }
 
@@ -1192,6 +1205,20 @@ static void pl_finish(void)
  * TSV порции → спавн irmctl → rc разбирает pl_chunk_done (через
  * process_done). pl_files НЕ трогаем: очередь источников живёт
  * весь цикл, перекод следующего чанка продолжит после rc. */
+/* порядок строк порции — ПО ФАЙЛАМ пакета (по idx), не по
+ * готовности транскодов: v2-семантика (живой успех 36 треков 05.11
+ * был именно с ней). Защита от «перемешанных тегов» (владелец
+ * 05.11): колонки TSV строки обязаны идти ровно в порядке
+ * выбора файлов. */
+static int cmp_row_idx(const void *a, const void *b)
+{
+	const struct pl_row *x = *(const struct pl_row *const *)a;
+	const struct pl_row *y = *(const struct pl_row *const *)b;
+	if (x->idx < y->idx)
+		return -1;
+	return x->idx > y->idx ? 1 : 0;
+}
+
 static void pl_flush_chunk(void)
 {
 	if (g_uf.pl_inflight)
@@ -1204,6 +1231,9 @@ static void pl_flush_chunk(void)
 	guint nr = g_uf.pl_rows ? g_uf.pl_rows->len : 0;
 	if (nr == 0)
 		return;
+	if (nr > 1) /* строгий порядок файлов в TSV порции */
+		qsort(g_uf.pl_rows->pdata, nr,
+		      sizeof g_uf.pl_rows->pdata[0], cmp_row_idx);
 	if (!g_uf.pl_chunk_art)
 		g_uf.pl_chunk_art =
 			g_ptr_array_new_with_free_func(g_free);
@@ -1257,6 +1287,15 @@ static void pl_flush_chunk(void)
 	log_fmt("порция %u/%u: %u трек(ов) → %s — заливка…",
 		g_uf.pl_chunk_num, g_uf.pl_chunk_total, (unsigned)nr,
 		g_uf.pl_chunk_tsv);
+	/* пары порции В ПОРЯДКЕ TSV (после сортировки): сверка
+	 * «строка ↔ звук» один к одному с телефонной библией */
+	for (guint i = 0; i < nr; i++) {
+		struct pl_row *r = g_ptr_array_index(g_uf.pl_rows, i);
+		gchar *rlb = g_path_get_basename(r->dst);
+		log_fmt("    плейлист[%u]: «%s» — %s", i + 1,
+			r->title[0] ? r->title : "(нет)", rlb);
+		g_free(rlb);
+	}
 	/* строки больше не нужны: данные в TSV и списке артефактов */
 	g_ptr_array_remove_range(g_uf.pl_rows, 0, nr);
 	g_uf.pl_inflight = TRUE;

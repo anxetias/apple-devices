@@ -1015,3 +1015,36 @@ apple-devices/
   `research/3utools/tools/` (3utools-research); FINDINGS §9g.
 - **Дальше**: GTK4-приложение для теста заливки музыки (обертка
   atc-insert/atc-sync в GUI) — отдельная порция; Reset-синк, idempotence.
+
+##### Шаг 9h: GTK4-приложение заливки музыки (тестовая обёртка irm-fill)
+
+- **Цель**: GUI-прототип заливки по ATC-протоколу (wire-факты 9e/9f/9g
+  остаются в `irmctl` — единственный source; GUI поднимает подпроцесс
+  с env `IRMA_ATC_*` и показывает stdout/stderr живьём).
+- **Файлы**: `tools/irm-fill.c` (GTK4/libadwaita, ~450 строк),
+  цель `irm-fill` в Makefile (`pkg-config gtk4 libadwaita-1`; без
+  системных библ GTK — цель падает с внятным сообщением).
+- **UI**: заголовок + индикатор занятости (GtkSpinner на панели; в
+  4.22 GtkHeaderBar — НЕ GtkBox, pack_end даёт GTK-CRITICAL —
+  найдено смоком, spinner перенесён на панель); панель-грид:
+  «Проверить якерь (music-id)» (разбор MLSyncClientSyncAnchor из
+  лога → статус-метка), фикстура .m4a (entry; по умолчанию из env
+  IRMA_ATC_FIXTURE), «Один трек», спин «вставок в пакете» 1..499 +
+  «Пакет N →», чекбокс «только стадия» (по умолчанию ВКЛ — безопасный
+  прогон без записей), IRMA_ATC_LIBID (entry, необязателен),
+  лог-TextView (monospace, автоскролл), «Очистить лог».
+- **Логика запуска**: `GSubprocess` (STDOUT_PIPE + STDERR_MERGE) →
+  `GDataInputStream.read_line_async` построчно в лог (с приоритетом
+  G_PRIORITY_DEFAULT); `wait_check_async` → rc в лог; флаг busy
+  блокирует все элементы (один подпроцесс за раз); закрытие окна при
+  активном прогоне → `g_subprocess_force_exit`. Мутирующий прогон —
+  только явная кнопка (согласие в интерфейсе); STAGE-ONLY — дефолт.
+- **Смок**: 3 с под Xvfb-отсутствующей сессией — exit=124 (жил до
+  убийства), ноль CRITICAL от нашего кода (только системная
+  Yaru-тема); лог `/tmp/opencode/irmfill-smoke-2026-11-05.log`.
+  Сборка `-Wall -Wextra` чисто (чужие замечания GTK-заголовков не
+  в счёт), юниты 5/5, скан мусорных символов чист.
+- **Дальше**: вынос ATC-протокола из `irmctl`-монолита в libirm
+  (`libirm/src/atc.c`, API batch/insert) для прямых вызовов из GUI
+  БЕЗ подпроцесса; Reset-синк кнопкой; живая проверка пакетной
+  кнопки (телефон подключён → пакет с STAGE-ONLY снятым по согласию).

@@ -38,10 +38,14 @@ $(SQLITE_OBJ): $(SQLITE_SRC) $(SQLITE_DIR)/sqlite3.h
 	$(CC) -O2 -std=c11 -w -DSQLITE_THREADSAFE=0 \
 	      -DSQLITE_OMIT_LOAD_EXTENSION=1 -c -o $@ $<
 
+# GTK4-приложение заливки (irm-fill, шаг 9g): pkg-config gtk4+libadwaita-1.
+GTK_CFLAGS := $(shell pkg-config --cflags gtk4 libadwaita-1 2>/dev/null)
+GTK_LIBS   := $(shell pkg-config --libs gtk4 libadwaita-1 2>/dev/null)
+
 TEST_BINS   = tests/test_bplist tests/test_mux tests/test_xml tests/test_lockdown \
 	      tests/test_xmlw tests/test_dl
 
-all: $(LIB) irmctl
+all: $(LIB) irmctl irm-fill
 
 $(LIB): $(LIB_OBJS)
 	ar rcs $@ $^
@@ -55,6 +59,15 @@ tests/%: tests/%.c $(LIB) $(LIB_HDRS)
 irmctl: tools/irmctl.c $(LIB) $(LIB_HDRS) $(SQLITE_OBJ)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(OPENSSL_CFLAGS) -o $@ $< $(LIB) \
 	      $(SQLITE_OBJ) -lm $(OPENSSL_LIBS)
+
+# GTK4-обёртка заливки (irm-fill, шаг 9g): pkg-config gtk4+libadwaita-1.
+ifeq ($(GTK_LIBS),)
+irm-fill:
+	@echo "irm-fill: gtk4/libadwaita-1 не найдены (pkg-config)"; exit 1
+else
+irm-fill: tools/irm-fill.c
+	$(CC) $(CFLAGS) $(GTK_CFLAGS) -o $@ $< $(GTK_LIBS)
+endif
 
 test: $(LIB) $(TEST_BINS)
 	./tests/test_bplist
@@ -71,6 +84,6 @@ smoke: $(TEST_BINS) irmctl
 clean:
 	rm -f $(LIB) libirm/src/*.o tests/test_bplist tests/test_mux \
 	      tests/test_xml tests/test_lockdown tests/test_xmlw tests/test_dl \
-	      tests/bplist.sample.bin irmctl build/sqlite3.o
+	      tests/bplist.sample.bin irmctl irm-fill build/sqlite3.o
 
 .PHONY: all test smoke clean

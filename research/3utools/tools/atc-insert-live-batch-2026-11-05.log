@@ -1,0 +1,144 @@
+atc-insert live-серия 05.11 11:41–11:44 — 11 вставок с обложками ПОДРЯД,
+все SyncFinished rc=0 (мутирующие клики владельца через irm-fill, батч=1
+на трек, обложка из APIC источника). Формат: ключевые строки лога
+по трекам (дампы кадров опущены, они повторяются дословно).
+
+ОБЩЕЕ:
+  irmctl: /home/saitexna/apple-devices/iTunes-Reversed-Mechanisms/irmctl
+  device: id=1 udid=00008030-001C3128119A402E
+  якерь серии: A=10 → 21 (A+1 принят телефоном 11 раз)
+  artwork-токен серии: 959559004 … 959559014 (новый максимум = 959559014)
+  во всех сессиях: staging пуст (ок), integrity_check ok, FSFM A+1
+  принят, манифест own=1, FileComplete → SyncFinished (Session=2) rc=0
+
+1) 11:41 Orphan — Slipknot [We Are Not Your Kind] (Brutal Neo Metal)
+   mp3 → ALAC 45 576 145 Б (43,5 МиБ — максимум серии, гардер 64 МиБ ок)
+   мета: 361573 мс, 44100 Гц, 15945369 сэмплов; обложка 55969 Б JPEG
+   якерь A=10→11; токен max=959559003 → 959559004
+   PIDs: album=3606518691988279642 artist=4404561825408303099
+         track=1934990993427716025
+   ops 1153 байт; маркер /Airlock/Media/Artwork/1934990993427716025:
+   55969 Б (read-back ок)
+   манифест: own 1934990993427716025 (parts 3), ancillary=1:
+     2009018457573614394 parts=4 → FileError(16 Unavailable, Visible=false)
+   upload 45576145 Б → iTunes_Control/Music/F25/HBDE.m4a → SyncFinished
+   (бэклог-ассет 2009018457573614394 — ре-запрос старого completed-asset
+    из прошлой сессии, чётный parts → ancillary)
+
+2) 11:41 Torture Me — 100 gecs feat. Skrillex [Snake Eyes]
+   flac → ALAC 23 775 479 Б; 113493 мс, 44100, 5005041; обложка 25278 Б
+   якерь A=11→12; токен 959559005
+   PIDs: album=5910269294172639634 artist=2852683781973236292
+         track=5157406697913789384
+   ops 1174 Б; ancillary=1 (2009018457573614394 parts=4 → FileError 16)
+   → F34/QNNL.m4a → SyncFinished
+
+3) 11:41 fuze — Skrillex & ISOxo [hit me where it hurts x]
+   жанр (длинный, 61+ символ): Hardgroove Techno / Dubstep / Hard
+   Techno / Brostep / Euro Trance — принят целиком
+   ALAC 25 564 416 Б; 188579 мс, 44100, 8316333; обложка 43837 Б
+   якерь A=12→13; токен 959559006
+   PIDs: album=5704392391165234100 artist=8469668523944102187
+         track=3388857112243790013
+   ops 1224 Б; манифест own, единый словарь parts=7, ancillary=0
+   → F13/GOGV.m4a → SyncFinished
+
+4) 11:42 fuze (повтор того же файла — вторая вставка)
+   якерь A=13→14; токен 959559007
+   PIDs: album=8784406307731085866 artist=6040646567912164220
+         track=194459771792503297
+   ops 1224 Б; ancillary=1: 3388857112243790013 parts=4 → FileError 16
+   (! — только-ЧТО вставленный СВОЙ трек fuze из сессии 3 телефон
+    re-запрашивает как ancillary в следующей сессии — к 11:42 он ещё
+    не «устаканился» в каталоге, как и старые)
+   → F47/FXIP.m4a → SyncFinished
+
+5) 11:42 Lost in a Wave — LANDMVRKS [Lost in the Waves]
+   жанр: Melodic Hardcore; Metalcore; Post-Hardcore
+   ALAC 29 892 426 Б; 224928 мс, 44100, 9919324; обложка 74245 Б
+   якерь A=14→15; токен 959559008
+   PIDs: album=7782699740698801022 artist=8872526537816439659
+         track=7662684683796836768
+   ops 1191 Б; own parts=7, ancillary=0
+   → F18/VYKS.m4a → SyncFinished
+
+6) 11:42 Psychosocial — Slipknot [All Hope Is Gone]
+   ALAC 39 036 896 Б; 283846 мс, 44100, 12517608; обложка 110965 Б
+   якерь A=15→16; токен 959559009
+   PIDs: album=7489104736831751068 artist=1851817452138279495
+         track=388045765488520833
+   ops 1157 Б; ancillary=1 (7662684683796836768 parts=4 — re-запрос
+   СВОЕГО трека сессии 5 → FileError 16)
+   → F33/LUJJ.m4a → SyncFinished
+
+7) 11:43 Yen — Slipknot [The End, So Far]
+   ALAC 32 817 035 Б; 283846 мс, 44100, 12517608 — СОВПАДАЕТ с
+   Psychosocial (сессия 6): подозрение gst-discoverer (оба имени
+   «04 …»); длительность в UI сверить глазами владельца.
+   обложка 91529 Б
+   якерь A=16→17; токен 959559010
+   PIDs: album=498467114599695157 artist=1550884955451369070
+         track=41121234963706894
+   ops 1137 Б; ancillary=1 (7662684683796836768 parts=4 → FileError 16)
+   → F44/DZMA.m4a → SyncFinished
+
+8) 11:43 Snuff — Slipknot [All Hope Is Gone]
+   ALAC 30 617 394 Б; 276192 мс, 44100, 12180067; обложка 110965 Б
+   (та же, что у Psychosocial — один альбом)
+   якерь A=17→18; токен 959559011
+   PIDs: album=1294965385453113297 artist=445925606724071693
+         track=7886665113134294265
+   ops 1143 Б; ancillary=1 (7662684683796836768 parts=4 → FileError 16)
+   → F15/TRSC.m4a → SyncFinished
+
+9) 11:43 XENA — Skrillex & ناي برغوثي [Quest for Fire]
+   артист с арабским текстом — принят телефонной базой без проблем
+   ALAC 30 867 745 Б; 251586 мс, 44100, 11094942; обложка 53264 Б
+   имя фикстуры с 24 подряд подчёркиваниями (проглоченный без-ASCII
+   фрагмент имени канала) — запись удалась
+   якерь A=18→19; токен 959559012
+   PIDs: album=88942604964275317 artist=5132857799835969953
+         track=9048709112519212982
+   ops 1191 Б; ancillary=1 (7662684683796836768 parts=4 → FileError 16)
+   → F32/GBLU.m4a → SyncFinished
+
+10) 11:44 Cogwork Core — Christopher Larkin [Silksong OST]
+    жанр Soundtrack; ALAC 9 056 786 Б (минимум серии)
+    исходник 48000 Гц → пайп с audioresample нормализует в 44100:
+    мета 90331 мс, 44100, 3983597; обложка 68713 Б
+    якерь A=19→20; токен 959559013
+    PIDs: album=4720787257913796275 artist=3278634558443603488
+          track=4637061790701323198
+    ops 1231 Б; own parts=7, ancillary=0
+    → F48/OAKX.m4a → SyncFinished
+
+11) 11:44 Ex;Curse Velvet (2026 Ver) — Aisagasu Eye Shadow [Aches]
+    жанр J-Pop; ALAC 34 290 545 Б
+    ИСХОДНИК 48000 Гц — и сохранился: мета 237936 мс, 48000,
+    11420928 — телефон принял 48 кГц (ср.: Cogwork прошёл через
+    audioresample и вошёл как 44100)
+    обложка 589 207 Б JPEG — МАКСИМУМ серии (наш лимит 4 МиБ не
+    потроган); маркер залит с первой попытки
+    якерь A=20→21; токен max=959559013 → 959559014
+    PIDs: album=2874438166548030721 artist=5353958539849970005
+          track=4434947360266814941
+    ops 1176 Б; own parts=7, ancillary=0
+    → F41/LCNU.m4a → SyncFinished
+
+ВЫВОДЫ / факты для FINDINGS §9k:
+- ancillary re-запросы: телефон просит СВОИ completed-ассеты — и
+  старые (2009018457573614394), и только-что вставленные
+  (7662684683796836768 из СРАЗУ предыдущей сессии) с чётным
+  AssetParts=4 → наш FileError(16 Unavailable, IsVisible=false)
+  перед SyncFinished. Появляются НЕ в каждой сессии (у 3/5/10/11
+  ancillary=0).
+- СВОИ parts: 3 или 7 (обе нечётные) — телефон варьирует
+  представление own-ассета в манифесте от сессии к сессии; принимаем
+  по позиции манифеста (parse-политика не менялась).
+- длинный жанр / арабские теги / повторная вставка того же файла —
+  без отказов.
+- гардер 64 МиБ подтверждён live (максимум 45 576 145 Б).
+- 48000-треки доходят и как 48000 (Aisagasu), и как
+  audioresample→44100 (Cogwork) — оба приняты.
+- совпадение меты Yen = Psychosocial (283846 мс / 12517608) —
+  открытый вопрос к gst-discoverer.

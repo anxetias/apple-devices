@@ -3339,18 +3339,15 @@ static int atc_artwork_token_taken(sqlite3 *db, uint64_t v)
 
 /* --- собственно команда ------------------------------------------- */
 
-/* (9j) значение env → чистая строка: управляющие символы вон,
- * хвостовые пробелы обрезаны, cap по границе utf8. NULL = пусто/
- * отсутствует (дефолты остаётся). Дублируется в irm-fill.c —
- * программы идут раздельно, общий хелпер мы ещё не вытаскивали. */
-static const char *env_san(char *dst, size_t len, const char *name)
+/* (9j) чистка строки: управляющие символы вон, хвостовые пробелы
+ * обрезаны, cap по границе utf8. NULL = пусто/отсутствует (дефолты
+ * остаются). Общий вариант san_string — и для env, и для строк
+ * TSV-плейлиста (9l); env-обёртка ниже. */
+static const char *san_string(char *dst, size_t len, const char *src)
 {
-	const char *e = getenv(name);
 	size_t n = 0;
 
-	if (!e)
-		return NULL;
-	for (const char *p = e; *p && n + 1 < len; p++) {
+	for (const char *p = src; *p && n + 1 < len; p++) {
 		unsigned char c = (unsigned char)*p;
 		if (c < 0x20 && c != '\t')
 			continue;
@@ -3377,6 +3374,298 @@ static const char *env_san(char *dst, size_t len, const char *name)
 	if (!dst[0])
 		return NULL;
 	return dst;
+}
+
+static const char *env_san(char *dst, size_t len, const char *name)
+{
+	const char *e = getenv(name);
+	if (!e)
+		return NULL;
+	return san_string(dst, len, e);
+}
+
+/* --- 9l: плейлист разных треков в одном конверте ops ---------------- */
+
+/* строка TSV-плейлиста (пишет GUI irm-fill), табы-разделители:
+ *   путь<TAB>мс<TAB>рейт<TAB>сэмплы<TAB>title<TAB>исполнитель<TAB>
+ *   альбом<TAB>жанр<TAB>обложка
+ * Обложка (путь к JPEG/PNG) может быть пустой — item без
+ * artwork_cache_id. title/исполнитель/альбом/жанр пустые → прежние
+ * дефолты (IRM Tone/IRM/IRM Tones/Test). */
+struct atc_playlist_item {
+	char path[512];
+	uint32_t total_ms, rate;
+	uint64_t samples;
+	char title[80], artist[256], album[256], genre[256];
+	char art_path[512];
+	uint32_t art_token; /* artwork_cache_id; 0 = без обложки */
+};
+
+/* Гардер размера пейлоада — наша осторожность 9i (64 МиБ; реверсного
+ * лимита у 3uTools нет; живой аплоад 45 576 145 Б прошёл). Один
+ * пейлоад в памяти за раз (ленивая загрузка per-item). */
+#define ATC_PLAY_LOAD_MAX (64L * 1024L * 1024L)
+
+/* разбор TSV-плейлиста: 1..499 строк, пустые и «#…» пропускаются.
+ * Возврат: массив (владелец обязан free) + *out_n; NULL при ошибке
+ * (причина уже напечатана в stderr). Пути проверяются СТАТом без
+ * чтения (само чтение — ленивое, per-item, в upload-петле). */
+static struct atc_playlist_item *atc_playlist_parse(const char *tsv,
+						    unsigned *out_n)
+{
+	*out_n = 0;
+	FILE *f = fopen(tsv, "rb");
+	if (!f) {
+		fprintf(stderr, "atc-insert: плейлист %s: %s\n", tsv,
+			strerror(errno));
+		return NULL;
+	}
+	fseek(f, 0, SEEK_END);
+	long sz = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	if (sz <= 0 || sz > (8L * 1024L * 1024L)) {
+		fprintf(stderr, "atc-insert: плейлист %s: размер %ld "
+				"нежелателен (1 Б..8 МиБ)\n", tsv, sz);
+		fclose(f);
+		return NULL;
+	}
+	char *buf = (char *)malloc((size_t)sz + 1);
+	if (!buf || fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+		fprintf(stderr, "atc-insert: плейлист %s: чтение\n", tsv);
+		free(buf);
+		fclose(f);
+		return NULL;
+	}
+	fclose(f);
+	buf[sz] = 0;
+
+	struct atc_playlist_item *pl = NULL;
+	unsigned n = 0, cap = 0;
+	for (char *s = buf; *s;) {
+		char *line = s;
+		char *eol = strchr(s, '\n');
+		if (eol) {
+			*eol = 0;
+			s = eol + 1;
+		} else {
+			s += strlen(s);
+		}
+		size_t ll = strlen(line);
+		if (ll && line[ll - 1] == '\r')
+			line[ll - 1] = 0; /* CRLF от GUI-записи */
+		if (!line[0] || line[0] == '#')
+			continue; /* пустая строка / комментарий */
+		/* разрез по табам: ровно 8 → 9 колонок */
+		char *fs[9] = { line, NULL, NULL, NULL, NULL,
+				NULL, NULL, NULL, NULL };
+		int fi = 0;
+		for (char *q = line; *q; q++) {
+			if (*q != '\t')
+				continue;
+			*q = 0;
+			if (fi < 8)
+				fs[++fi] = q + 1;
+			else {
+				fprintf(stderr, "atc-insert: плейлист %s: "
+						"строка %u — лишние колонки\n",
+					tsv, n + 1);
+				free(pl);
+				free(buf);
+				return NULL;
+			}
+		}
+		if (n == 499) {
+			fprintf(stderr, "atc-insert: плейлист %s: больше "
+					"499 строк\n", tsv);
+			free(pl);
+			free(buf);
+			return NULL;
+		}
+		if (n == cap) {
+			unsigned ncap = cap ? cap * 2 : 16;
+			struct atc_playlist_item *np = (struct
+				atc_playlist_item *)realloc(pl, ncap *
+				sizeof *np);
+			if (!np) {
+				fprintf(stderr, "atc-insert: плейлист: "
+					"память\n");
+				free(pl);
+				free(buf);
+				return NULL;
+			}
+			pl = np;
+			cap = ncap;
+		}
+		memset(&pl[n], 0, sizeof pl[n]);
+		san_string(pl[n].path, sizeof pl[n].path, fs[0]);
+		if (!pl[n].path[0]) {
+			fprintf(stderr, "atc-insert: плейлист %s: строка %u "
+					"— пустой путь\n", tsv, n + 1);
+			free(pl);
+			free(buf);
+			return NULL;
+		}
+		/* мс/рейт/сэмплы — обязательные числа (формат контракта
+		 * с GUI); пределы те же, что у env-переменных (o2). */
+		char *end = NULL;
+		unsigned long ms = fs[1][0] ? strtoul(fs[1], &end, 10) : 0;
+		if (!end || end == fs[1] || *end || ms == 0 || ms > 3600000ul) {
+			fprintf(stderr, "atc-insert: плейлист %s: строка %u "
+					"— мс «%s» не годится\n",
+				tsv, n + 1, fs[1]);
+			free(pl);
+			free(buf);
+			return NULL;
+		}
+		pl[n].total_ms = (uint32_t)ms;
+		end = NULL;
+		unsigned long rt = fs[2][0] ? strtoul(fs[2], &end, 10) : 0;
+		if (!end || end == fs[2] || *end || rt < 8000 ||
+		    rt > 192000ul) {
+			fprintf(stderr, "atc-insert: плейлист %s: строка %u "
+					"— сэмплрейт «%s» не годится\n",
+				tsv, n + 1, fs[2]);
+			free(pl);
+			free(buf);
+			return NULL;
+		}
+		pl[n].rate = (uint32_t)rt;
+		pl[n].samples = fs[3][0] ? strtoull(fs[3], &end, 10) : 0;
+		if (!end || end == fs[3] || *end) {
+			fprintf(stderr, "atc-insert: плейлист %s: строка %u "
+					"— сэмплы «%s» не годятся\n",
+				tsv, n + 1, fs[3]);
+			free(pl);
+			free(buf);
+			return NULL;
+		}
+		if (pl[n].samples == 0)
+			pl[n].samples = (uint64_t)ms * (uint64_t)rt / 1000ULL;
+		if (pl[n].samples == 0) {
+			fprintf(stderr, "atc-insert: плейлист %s: строка %u "
+					"— сэмплы=0\n", tsv, n + 1);
+			free(pl);
+			free(buf);
+			return NULL;
+		}
+		san_string(pl[n].title, sizeof pl[n].title, fs[4]);
+		san_string(pl[n].artist, sizeof pl[n].artist, fs[5]);
+		san_string(pl[n].album, sizeof pl[n].album, fs[6]);
+		san_string(pl[n].genre, sizeof pl[n].genre, fs[7]);
+		san_string(pl[n].art_path, sizeof pl[n].art_path, fs[8]);
+		/* путь пейлоада: существует, регулярный файл, размер по
+		 * гардеру (1 Б..64 МиБ) — СТАТом, без чтения. */
+		struct stat st;
+		if (stat(pl[n].path, &st) != 0 || !S_ISREG(st.st_mode) ||
+		    st.st_size <= 0 || st.st_size > ATC_PLAY_LOAD_MAX) {
+			fprintf(stderr, "atc-insert: плейлист %s: строка %u: "
+					"пейлоад %s не годится (1 Б..%ld МиБ)\n",
+				tsv, n + 1, pl[n].path,
+				ATC_PLAY_LOAD_MAX / (1024L * 1024L));
+			free(pl);
+			free(buf);
+			return NULL;
+		}
+		printf("плейлист[%u]: %s %llu мс @%u %llu сэмплов; "
+		       "title=%s artist=%s album=%s genre=%s; обложка=%s\n",
+		       n + 1, pl[n].path, (unsigned long long)ms,
+		       (unsigned)rt, (unsigned long long)pl[n].samples,
+		       pl[n].title[0] ? pl[n].title : "(нет)",
+		       pl[n].artist[0] ? pl[n].artist : "(нет)",
+		       pl[n].album[0] ? pl[n].album : "(нет)",
+		       pl[n].genre[0] ? pl[n].genre : "(нет)",
+		       pl[n].art_path[0] ? pl[n].art_path : "без");
+		n++;
+	}
+	free(buf);
+	if (n == 0) {
+		fprintf(stderr, "atc-insert: плейлист %s: пуст\n", tsv);
+		free(pl);
+		return NULL;
+	}
+	*out_n = n;
+	return pl;
+}
+
+/* ленивая загрузка пейлоада одного item (0 ок / 1 провал; причина
+ * уже напечатана). По одному экземпляру в памяти. */
+static int atc_playlist_payload(const struct atc_playlist_item *it,
+				uint8_t **buf, size_t *bn)
+{
+	*buf = NULL;
+	*bn = 0;
+	FILE *f = fopen(it->path, "rb");
+	if (!f) {
+		fprintf(stderr, "atc-insert: пейлоад %s: %s\n", it->path,
+			strerror(errno));
+		return 1;
+	}
+	fseek(f, 0, SEEK_END);
+	long sz = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	if (sz <= 0 || sz > ATC_PLAY_LOAD_MAX) {
+		fprintf(stderr, "atc-insert: пейлоад %s: размер %ld "
+				"нежелателен\n", it->path, sz);
+		fclose(f);
+		return 1;
+	}
+	uint8_t *b = (uint8_t *)malloc((size_t)sz);
+	if (!b || fread(b, 1, (size_t)sz, f) != (size_t)sz) {
+		fprintf(stderr, "atc-insert: пейлоад %s: чтение\n", it->path);
+		free(b);
+		fclose(f);
+		return 1;
+	}
+	fclose(f);
+	*buf = b;
+	*bn = (size_t)sz;
+	return 0;
+}
+
+/* ленивая загрузка обложки item (JPEG/PNG-магия как в 9k; 0 ок /
+ * 1 провал, причина напечатана). */
+static int atc_playlist_art(const struct atc_playlist_item *it,
+			    uint8_t **buf, size_t *bn)
+{
+	*buf = NULL;
+	*bn = 0;
+	FILE *f = fopen(it->art_path, "rb");
+	if (!f) {
+		fprintf(stderr, "atc-insert: обложка %s: %s\n", it->art_path,
+			strerror(errno));
+		return 1;
+	}
+	fseek(f, 0, SEEK_END);
+	long sz = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	if (sz <= 0 || sz > (4L * 1024L * 1024L)) {
+		fprintf(stderr, "atc-insert: обложка %s: размер %ld "
+				"нежелателен (1 Б..4 МиБ)\n", it->art_path, sz);
+		fclose(f);
+		return 1;
+	}
+	uint8_t *b = (uint8_t *)malloc((size_t)sz);
+	if (!b || fread(b, 1, (size_t)sz, f) != (size_t)sz) {
+		fprintf(stderr, "atc-insert: обложка %s: чтение\n",
+			it->art_path);
+		free(b);
+		fclose(f);
+		return 1;
+	}
+	fclose(f);
+	int fjpg = sz >= 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff;
+	int fpng = sz >= 8 && b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4e &&
+		   b[3] == 0x47 && b[4] == 0x0d && b[5] == 0x0a &&
+		   b[6] == 0x1a && b[7] == 0x0a;
+	if (!fjpg && !fpng) {
+		fprintf(stderr, "atc-insert: обложка %s: не JPEG и не PNG "
+				"— вставка БЕЗ обложки\n", it->art_path);
+		free(b);
+		return 1;
+	}
+	*buf = b;
+	*bn = (size_t)sz;
+	return 0;
 }
 
 static int cmd_atc_insert(const char *path, const char *selector)
@@ -3433,11 +3722,15 @@ static int cmd_atc_insert(const char *path, const char *selector)
 	uint64_t *taken = NULL;
 	size_t takenn = 0;
 	uint64_t *tpids = NULL;    /* трековые PIDs пакета (c) */
+	uint64_t *apids = NULL;    /* 9l: альбомные PIDs per-item */
+	uint64_t *rps = NULL;      /* 9l: артистные PIDs per-item */
 	char (*own_ids)[24] = NULL; /* own AssetID в порядке манифеста */
 	char (*titles)[80] = NULL;  /* заголовки per track (d) */
 	unsigned batch_n = 1;       /* вставок в пакете (1..499, 9g) */
 	struct atc_rec *foreigns = NULL;
 	size_t fgn = 0;
+	struct atc_playlist_item *pl = NULL; /* 9l: строки плейлиста */
+	int playlist = 0;                    /* IRMA_ATC_PLAYLIST задан */
 	int64_t db_pid = 0, container = 0; /* каталог db_info (b) */
 	uint32_t anchor_a = 0;            /* якерь A из DB-копии */
 	uint64_t al = 0, ar = 0;          /* свежие PIDs альбома/артиста (c) */
@@ -3544,41 +3837,66 @@ static int cmd_atc_insert(const char *path, const char *selector)
 		       artist_e ? artist_e : "(нет)",
 		       album_e ? album_e : "(нет)");
 
-	/* (p) фикстура (валидный ALAC; берём из env; обязательно). */
-	if (!fixt || !*fixt) {
-		fprintf(stderr, "atc-insert: задай IRMA_ATC_FIXTURE=<файл "
-				".m4a ALAC>\n");
-		goto close;
-	}
+	/* (o3, 9l) плейлист разных треков: TSV-файл от GUI
+	 * (IRMA_ATC_PLAYLIST). Задан → per-item мета с строк; env
+	 * IRMA_ATC_TITLE/ARTIST/ALBUM/GENRE/ARTWORK/TOTAL_MS/RATE/
+	 * SAMPLES игнорируются (прочем полнее), batch_n = строкам
+	 * плейлиста (1..499). Одиночный путь IRMA_ATC_FIXTURE
+	 * сохраняется без плейлиста (back-compat 9g/9i/9k). */
 	{
-		FILE *f = fopen(fixt, "rb");
-		if (!f) {
-			fprintf(stderr, "atc-insert: фикстура %s: %s\n", fixt,
-				strerror(errno));
-			goto close;
+		const char *pe = getenv("IRMA_ATC_PLAYLIST");
+		if (pe && *pe) {
+			if (batch_n != 1)
+				printf("плейлист: IRMA_ATC_BATCH_N=%u "
+				       "игнорируется\n", batch_n);
+			pl = atc_playlist_parse(pe, &batch_n);
+			if (!pl)
+				goto close;
+			playlist = 1;
+			printf("плейлист: %u трек(ов) в одном конверте "
+			       "(env-теги/мета/обложка игнорируются)\n",
+			       batch_n);
 		}
-		fseek(f, 0, SEEK_END);
-		long sz = ftell(f);
-		fseek(f, 0, SEEK_SET);
-		if (sz <= 0 ||
-		    sz > (64L * 1024L * 1024L)) {
-			fprintf(stderr, "atc-insert: фикстура %s: размер %ld "
-					"нежелателен (1 Б..64 МиБ)\n",
-				fixt, sz);
-			fclose(f);
-			goto close;
-		}
-		fix = (uint8_t *)malloc((size_t)sz);
-		if (!fix || fread(fix, 1, (size_t)sz, f) != (size_t)sz) {
-			fprintf(stderr, "atc-insert: фикстура %s: чтение\n",
-				fixt);
-			fclose(f);
-			goto close;
-		}
-		fclose(f);
-		fixn = (size_t)sz;
 	}
-	printf("fixture: %s (%zu Б)\n", fixt, fixn);
+
+	/* (p) фикстура (валидный ALAC; берём из env; обязательно). */
+	if (!playlist) {
+		if (!fixt || !*fixt) {
+			fprintf(stderr, "atc-insert: задай IRMA_ATC_FIXTURE="
+					"<файл .m4a ALAC> (или "
+					"IRMA_ATC_PLAYLIST=<TSV>)\n");
+			goto close;
+		}
+		{
+			FILE *f = fopen(fixt, "rb");
+			if (!f) {
+				fprintf(stderr, "atc-insert: фикстура %s: %s\n", fixt,
+					strerror(errno));
+				goto close;
+			}
+			fseek(f, 0, SEEK_END);
+			long sz = ftell(f);
+			fseek(f, 0, SEEK_SET);
+			if (sz <= 0 ||
+			    sz > (64L * 1024L * 1024L)) {
+				fprintf(stderr, "atc-insert: фикстура %s: размер %ld "
+						"нежелателен (1 Б..64 МиБ)\n",
+					fixt, sz);
+				fclose(f);
+				goto close;
+			}
+			fix = (uint8_t *)malloc((size_t)sz);
+			if (!fix || fread(fix, 1, (size_t)sz, f) != (size_t)sz) {
+				fprintf(stderr, "atc-insert: фикстура %s: чтение\n",
+					fixt);
+				fclose(f);
+				goto close;
+			}
+			fclose(f);
+			fixn = (size_t)sz;
+		}
+		printf("fixture: %s (%zu Б)\n", fixt, fixn);
+	}
 
 	/* (9k) обложка: env IRMA_ATC_ARTWORK = путь к JPEG/PNG. Сырые
 	 * байты уйдут маркером; без env поле artwork_cache_id в декларацию
@@ -3586,7 +3904,10 @@ static int cmd_atc_insert(const char *path, const char *selector)
 	 * artwork — способ отключения не проверен, 9k-эксперимент). */
 	uint8_t *art = NULL;
 	size_t artn = 0;
-	{
+	if (playlist) {
+		printf("обложка: env IRMA_ATC_ARTWORK игнорируется "
+		       "(плейлист — per-item пути)\n");
+	} else {
 		const char *art_e = getenv("IRMA_ATC_ARTWORK");
 		if (art_e && *art_e) {
 			FILE *af = fopen(art_e, "rb");
@@ -3863,7 +4184,47 @@ static int cmd_atc_insert(const char *path, const char *selector)
 		/* (9k) токены обложек: u32-max каталога + 1, коллизию
 		 * сверяем по CAST-равенству (3uTools 678 = max+1 «тем же
 		 * алгоритмом» — FINDINGS ~1561) */
-		if (art) {
+		if (playlist) {
+			/* 9l: токены только items С обложкой — art_next +
+			 * счётчик (без обложечных пропусков). */
+			unsigned have = 0;
+			for (unsigned i = 0; i < batch_n; i++)
+				if (pl[i].art_path[0])
+					have++;
+			if (have) {
+				uint64_t amax = atc_artwork_token_max(db);
+				art_next = amax ? (amax + 1) : 481;
+				for (int tries = 0; tries < 64 &&
+				     atc_artwork_token_taken(db, art_next);
+				     tries++)
+					art_next++;
+				if (art_next + (uint64_t)have >
+				    (uint64_t)UINT32_MAX) {
+					fprintf(stderr, "atc-insert: u32-"
+							"токены обложек "
+							"исчерпаны — пакет "
+							"без обложек\n");
+					for (unsigned i = 0; i < batch_n;
+					     i++)
+						pl[i].art_path[0] = 0;
+				} else {
+					uint32_t tk = 0;
+					for (unsigned i = 0; i < batch_n;
+					     i++)
+						if (pl[i].art_path[0])
+							pl[i].art_token =
+							    (uint32_t)
+							    (art_next +
+							     tk++);
+					printf("artwork-токен: max в "
+					       "базе=%llu → новый=%llu "
+					       "(%u обложек)\n",
+					       (unsigned long long)amax,
+					       (unsigned long long)art_next,
+					       have);
+				}
+			}
+		} else if (art) {
 			uint64_t amax = atc_artwork_token_max(db);
 			art_next = amax ? (amax + 1) : 481;
 			for (int tries = 0; tries < 64 &&
@@ -3887,13 +4248,25 @@ static int cmd_atc_insert(const char *path, const char *selector)
 		sqlite3_close(db);
 
 		/* (c) свежие PIDs: batch_n трековых + 1 альбом + 1 артист;
-		 * все попарно различны и без коллизий с каталогом. */
+		 * все попарно различны и без коллизий с каталогом.
+		 * 9l (playlist): альбом/артист ПЕР-ITEM (треки разных
+		 * альбомов/исполнителей) — ещё 2×batch_n PIDs, попарно
+		 * различны и не пересекаются с трековыми. */
+		apids = NULL;
+		rps = NULL;
 		tpids = (uint64_t *)malloc((size_t)batch_n * sizeof *tpids);
 		own_ids = (char (*)[24])malloc((size_t)batch_n *
 					       sizeof *own_ids);
 		titles = (char (*)[80])malloc((size_t)batch_n *
 					      sizeof *titles);
-		if (!tpids || !own_ids || !titles) {
+		if (playlist) {
+			apids = (uint64_t *)malloc((size_t)batch_n *
+						   sizeof *apids);
+			rps = (uint64_t *)malloc((size_t)batch_n *
+						 sizeof *rps);
+		}
+		if (!tpids || !own_ids || !titles || (playlist && (!apids ||
+		    !rps))) {
 			fprintf(stderr, "atc-insert: память\n");
 			goto close;
 		}
@@ -3901,6 +4274,61 @@ static int cmd_atc_insert(const char *path, const char *selector)
 		    atc_pid_fresh(&ar, taken, takenn) != 0 || al == ar) {
 			fprintf(stderr, "atc-insert: свежие PIDs не вышли\n");
 			goto close;
+		}
+		if (playlist) {
+			/* 9l: альбом [0] = al, артист [0] = ar; остальные —
+			 * свежие, попарно различны со всем выше. */
+			apids[0] = al;
+			rps[0] = ar;
+			for (unsigned i = 0; i < batch_n; i++) {
+				if (i) {
+					for (int t = 0; t < 128; t++) {
+						if (atc_pid_fresh(&apids[i],
+								  taken,
+								  takenn) !=
+						    0)
+							break;
+						int ok = apids[i] != ar;
+						for (unsigned j = 0;
+						     ok && j < i; j++)
+							ok = apids[j] !=
+							     apids[i];
+						if (ok)
+							break;
+						apids[i] = 0;
+					}
+					if (apids[i] == 0) {
+						fprintf(stderr,
+							"atc-insert: свежие "
+							"PIDs не вышли "
+							"(альбом %u)\n",
+							i + 1);
+						goto close;
+					}
+				}
+				for (int t = 0; t < 128; t++) {
+					if (atc_pid_fresh(&rps[i], taken,
+							  takenn) != 0)
+						break;
+					int ok = apids[i] != rps[i];
+					for (unsigned j = 0; ok && j < i;
+					     j++)
+						ok = rps[j] != rps[i];
+					for (unsigned j = 0; ok && j <= i;
+					     j++)
+						ok = apids[j] != rps[i];
+					if (ok)
+						break;
+					rps[i] = 0;
+				}
+				if (rps[i] == 0) {
+					fprintf(stderr, "atc-insert: свежие "
+							"PIDs не вышли "
+							"(артист %u)\n",
+						i + 1);
+					goto close;
+				}
+			}
 		}
 		for (unsigned i = 0; i < batch_n; i++) {
 			for (int t = 0; t < 128; t++) {
@@ -3911,6 +4339,15 @@ static int cmd_atc_insert(const char *path, const char *selector)
 				 * и с альбомом/артистом (audio_batch:
 				 * "must be distinct" — ancillary.rs). */
 				int ok = (tpids[i] != al && tpids[i] != ar);
+				if (playlist) {
+					/* 9l: и с пер-итемными альбомами/
+					 * артистами (нечётные позиции
+					 * выше уже выделены). */
+					for (unsigned j = 0; ok && j < batch_n;
+					     j++)
+						ok = apids[j] != tpids[i] &&
+						     rps[j] != tpids[i];
+				}
 				for (unsigned j = 0; ok && j < i; j++)
 					ok = (tpids[j] != tpids[i]);
 				if (ok)
@@ -3924,9 +4361,28 @@ static int cmd_atc_insert(const char *path, const char *selector)
 				goto close;
 			}
 		}
-		for (unsigned i = 0; i < batch_n; i++) {
+		if (playlist) {
+			printf("PIDs (playlist): album[%u]=%lld artist[%u]=%lld; "
+			       "треков %u:",
+			       0, (long long)al, 0, (long long)ar, batch_n);
+			for (unsigned i = 0; i < batch_n; i++)
+				printf(" т%u: %llu (ал %llu, ар %llu)", i + 1,
+				       (unsigned long long)tpids[i],
+				       (unsigned long long)apids[i],
+				       (unsigned long long)rps[i]);
+			printf("\n");
+		} else {
+			printf("PIDs: album=%lld artist=%lld; треков %u:",
+			       (long long)al, (long long)ar, batch_n);
+			for (unsigned i = 0; i < batch_n; i++)
+				printf(" %llu",
+				       (unsigned long long)tpids[i]);
+			printf("\n");
+		}
+		for (unsigned i = 0; i < batch_n && !playlist; i++) {
 			/* (9j) env-тегам приоритет; пакету добавляем номер
-			 * по образцу прежнего «IRM Tone %u» */
+			 * по образцу прежнего «IRM Tone %u» (плейлист не
+			 * заполняет — там per-item строки). */
 			if (title_e) {
 				if (batch_n == 1)
 					snprintf(titles[i],
@@ -3944,11 +4400,6 @@ static int cmd_atc_insert(const char *path, const char *selector)
 					 "IRM Tone %u", i + 1);
 			}
 		}
-		printf("PIDs: album=%lld artist=%lld; треков %u:",
-		       (long long)al, (long long)ar, batch_n);
-		for (unsigned i = 0; i < batch_n; i++)
-			printf(" %llu", (unsigned long long)tpids[i]);
-		printf("\n");
 
 		/* (9k, d0) маркеры обложки: mkdir /Airlock/Media/Artwork
 		 * (при отсутствии) + сырой jpeg/png по
@@ -3958,10 +4409,102 @@ static int cmd_atc_insert(const char *path, const char *selector)
 		 * SIGSEGV 05.11) и ДО сборки ops. ТОЛЬКО при живой вставке:
 		 * stage-only маркеры на телефон не пишет (обязательство
 		 * «записей НЕ делаем»), а ops обложку сохраняет. */
-		if (stage_only && art)
+		/* плейлистовый флаг «есть обложки» (после сброса токенов). */
+		int pl_haveart = 0;
+		for (unsigned i = 0; playlist && i < batch_n; i++)
+			if (pl[i].art_token)
+				pl_haveart = 1;
+		if (stage_only && (art || pl_haveart))
 			printf("  artwork-маркеры: только стадия — на "
 			       "телефон НЕ пишем\n");
-		if (art && !stage_only) {
+		if (playlist && pl_haveart && !stage_only) {
+			char **bn2 = NULL;
+			size_t bn2_n = 0;
+			int have_artdir =
+				irm_afc_dir_list(afc, "/Airlock/Media/Artwork",
+						 &bn2, &bn2_n) == 0;
+			if (have_artdir) {
+				for (size_t i = 0; i < bn2_n; i++)
+					free(bn2[i]);
+				free(bn2);
+				printf("  artwork-каталог: есть\n");
+			} else {
+				int mrc = irm_afc_mkdir(afc,
+							"/Airlock/Media/"
+							"Artwork");
+				if (mrc != 0) {
+					fprintf(stderr, "atc-insert: mkdir "
+							"/Airlock/Media/Artwork"
+							": %s — вставка БЕЗ "
+							"обложек\n",
+						irm_afc_error());
+					for (unsigned i = 0; i < batch_n;
+					     i++) {
+						pl[i].art_path[0] = 0;
+						pl[i].art_token = 0;
+					}
+				} else {
+					printf("  artwork-каталог: создан\n");
+				}
+			}
+			for (unsigned i = 0; i < batch_n; i++) {
+				char amk[96];
+				uint8_t *ab = NULL;
+				size_t an2 = 0;
+				if (!pl[i].art_token)
+					continue;
+				snprintf(amk, sizeof amk,
+					 "/Airlock/Media/Artwork/%llu",
+					 (unsigned long long)tpids[i]);
+				if (atc_playlist_art(&pl[i], &ab, &an2) !=
+				    0) {
+					fprintf(stderr, "atc-insert: "
+							"обложка item %u не "
+							"читается — без "
+							"обложки\n", i + 1);
+					pl[i].art_path[0] = 0;
+					pl[i].art_token = 0;
+					continue;
+				}
+				int wrote = 0;
+				for (int attempt = 1; attempt <= 2 &&
+				     !wrote; attempt++) {
+					if (atc_write_verify(afc, amk, ab,
+							     an2) != 0) {
+						fprintf(stderr,
+							"atc-insert: "
+							"маркер %s "
+							"(попытка %d): "
+							"%s\n",
+							amk, attempt,
+							irm_afc_error());
+						if (attempt == 1) {
+							printf("  пауза 1 "
+							       "с перед "
+							       "повтором"
+							       "\n");
+							sleep(1);
+						}
+					} else {
+						wrote = 1;
+						printf("  маркер %s: %zu "
+						       "Б записано "
+						       "(read-back ок)\n",
+						       amk, an2);
+					}
+				}
+				free(ab);
+				if (!wrote) {
+					fprintf(stderr, "atc-insert: "
+							"обложка item %u не "
+							"залита — вставка "
+							"БЕЗ обложки\n",
+						i + 1);
+					pl[i].art_path[0] = 0;
+					pl[i].art_token = 0;
+				}
+			}
+		} else if (art && !stage_only) {
 			char **bn = NULL;
 			size_t bn_n = 0;
 			int have_artdir =
@@ -4083,24 +4626,44 @@ static int cmd_atc_insert(const char *path, const char *selector)
 			}
 			ops1 = NULL; /* arr владеет */
 			for (unsigned i = 0; i < batch_n; i++) {
-				struct atc_insert_data td = {
-					.title = titles[i],
-					.artist = artist_e ? artist_e
-							   : "IRM",
-					.album = album_e ? album_e
-							 : "IRM Tones",
-					.genre = genre_e ? genre_e
-							 : "Test",
-					.track_pid = (int64_t)tpids[i],
-					.album_pid = (int64_t)al,
-					.artist_pid = (int64_t)ar,
-					.total_time_ms = total_ms,
-					.samples = samples,
-					.sample_rate = rate,
-					.number = batch_n == 1 ? 1 : i + 1,
-					.artwork_cache_id =
-						art ? (art_next + i) : 0,
-				};
+				struct atc_insert_data td;
+				if (playlist) {
+					/* 9l: per-item мета из строк
+					 * плейлиста; пустые текстовые —
+					 * прежние дефолты. */
+					td.title = pl[i].title;
+					td.artist = pl[i].artist[0] ?
+						    pl[i].artist : "IRM";
+					td.album = pl[i].album[0] ?
+						   pl[i].album : "IRM Tones";
+					td.genre = pl[i].genre[0] ?
+						   pl[i].genre : "Test";
+					td.track_pid = (int64_t)tpids[i];
+					td.total_time_ms = pl[i].total_ms;
+					td.samples = pl[i].samples;
+					td.sample_rate = pl[i].rate;
+					td.number = i + 1;
+					td.album_pid = (int64_t)apids[i];
+					td.artist_pid = (int64_t)rps[i];
+					td.artwork_cache_id = pl[i].art_token;
+				} else {
+					td.title = titles[i];
+					td.artist = artist_e ? artist_e
+							     : "IRM";
+					td.album = album_e ? album_e
+							   : "IRM Tones";
+					td.genre = genre_e ? genre_e
+							   : "Test";
+					td.track_pid = (int64_t)tpids[i];
+					td.album_pid = (int64_t)al;
+					td.artist_pid = (int64_t)ar;
+					td.total_time_ms = total_ms;
+					td.samples = samples;
+					td.sample_rate = rate;
+					td.number = batch_n == 1 ? 1 : i + 1;
+					td.artwork_cache_id =
+						art ? (art_next + i) : 0;
+				}
 				irm_bp_node *opi = atc_op_insert_track(&td);
 				if (!opi || irm_bp_array_add(arr, opi) != 0) {
 					/* add при неудаче НЕ освобождает */
@@ -4326,8 +4889,10 @@ static int cmd_atc_insert(const char *path, const char *selector)
 			fprintf(stderr, "atc-insert: FSFM Params\n");
 			/* (9k) телефон FSFM не получил — маркеры никогда
 			 * не потребит, чистим */
-			if (art)
+			if (art || playlist)
 				for (unsigned mi = 0; mi < batch_n; mi++) {
+					if (playlist && !pl[mi].art_token)
+						continue;
 					char amk[96];
 					snprintf(amk, sizeof amk,
 						 "/Airlock/Media/Artwork/"
@@ -4346,8 +4911,10 @@ static int cmd_atc_insert(const char *path, const char *selector)
 			irm_bp_free(fsfm);
 			/* (9k) телефон FSFM не получил — маркеры никогда
 			 * не потребит, чистим */
-			if (art)
+			if (art || playlist)
 				for (unsigned mi = 0; mi < batch_n; mi++) {
+					if (playlist && !pl[mi].art_token)
+						continue;
 					char amk[96];
 					snprintf(amk, sizeof amk,
 						 "/Airlock/Media/Artwork/"
@@ -4531,19 +5098,60 @@ static int cmd_atc_insert(const char *path, const char *selector)
 							 * parse уже сверил
 							 * наборы. */
 							int hitp = 0;
+							unsigned pj = 0;
 							for (unsigned j = 0;
 							     j < batch_n;
 							     j++)
 								if (pid_i ==
 								    tpids[j]) {
 									hitp = 1;
+									pj = j;
 									break;
 								}
-							if (!hitp ||
-							    atc_own_asset(afc, afd, atl,
-							                  (int64_t)pid_i,
-							                  own_ids[i], fix,
-							                  fixn) != 0)
+							if (!hitp) {
+								fprintf(stderr,
+									"atc-insert: own "
+									"%s не из "
+									"пакета — "
+									"СТОП\n",
+									own_ids[i]);
+								failed = 1;
+							} else if (playlist) {
+								/* 9l: пейлоад
+								 * per-item,
+								 * ленивая загрузка
+								 * (в памяти один
+								 * экземпляр за
+								 * раз). */
+								uint8_t *pay = NULL;
+								size_t payn = 0;
+								if (atc_playlist_payload(
+									    &pl[pj],
+									    &pay,
+									    &payn) !=
+								    0) {
+									failed = 1;
+								} else {
+									printf("  пейлоад[%u]: "
+									       "%s (%zu Б)\n",
+									       pj + 1,
+									       pl[pj].path,
+									       payn);
+									if (atc_own_asset(
+											    afc, afd, atl,
+											    (int64_t)pid_i,
+											    own_ids[i],
+											    pay,
+											    payn) !=
+									    0)
+										failed = 1;
+									free(pay);
+								}
+							} else if (atc_own_asset(
+									   afc, afd, atl,
+									   (int64_t)pid_i,
+									   own_ids[i], fix,
+									   fixn) != 0)
 								failed = 1;
 						}
 						/* БЭКЛОГ-аудио (записи вне
@@ -4564,12 +5172,39 @@ static int cmd_atc_insert(const char *path, const char *selector)
 								    foreigns[i].asset_id,
 								    NULL,
 								    10);
-							if (!pid_f ||
-							    atc_own_asset(afc, afd, atl,
-							                  (int64_t)pid_f,
-							                  foreigns[i].asset_id,
-							                  fix,
-							                  fixn) != 0)
+							if (!pid_f) {
+								failed = 1;
+							} else if (playlist) {
+								/* 9l: файл бэклога
+								 * невалидируем —
+								 * пейлоад pl[0]
+								 * (симметрия 9g с
+								 * fix). */
+								uint8_t *pay = NULL;
+								size_t payn = 0;
+								if (atc_playlist_payload(
+										    &pl[0],
+										    &pay,
+										    &payn) !=
+									    0) {
+									failed = 1;
+								} else {
+									if (atc_own_asset(
+											    afc, afd, atl,
+											    (int64_t)pid_f,
+											    foreigns[i].asset_id,
+											    pay,
+											    payn) !=
+									    0)
+										failed = 1;
+									free(pay);
+								}
+							} else if (atc_own_asset(
+									   afc, afd, atl,
+									   (int64_t)pid_f,
+									   foreigns[i].asset_id,
+									   fix,
+									   fixn) != 0)
 								failed = 1;
 						}
 						/* Отказы ancillary ЗАВЕДОМО
@@ -4616,8 +5251,11 @@ close:
 	free(fix);
 	free(taken);
 	free(tpids);
+	free(apids);
+	free(rps);
 	free(own_ids);
 	free(titles);
+	free(pl); /* 9l: строки плейлиста (NULL ок) */
 	free(foreigns);
 	/* cig — стек-буфер, не free. */
 	irm_afc_free(afc);

@@ -17,6 +17,7 @@
  * Сборка: pkg-config gtk4 libadwaita-1 (цель irm-fill в Makefile). */
 
 #include <adwaita.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +43,7 @@ typedef struct {
 	GtkButton *btn_anchor;
 	GtkButton *btn_one;
 	GtkButton *btn_batch;
+	GtkButton *btn_pl;
 	GtkButton *btn_clear;
 	GtkSpinButton *sp_batch;
 	GtkCheckButton *ck_stage;
@@ -71,7 +73,24 @@ typedef struct {
 
 	/* 9k: обложка источника → tmp-файл → IRMA_ATC_ARTWORK */
 	char art_path[256];
+
+	/* 9l: пакет разных треков — очередь файлов → per-item теги/
+	 * перекод/мета → TSV-плейлист → irmctl (IRMA_ATC_PLAYLIST) */
+	gboolean pl_active;
+	unsigned pl_idx;
+	GPtrArray *pl_files; /* выбранное: gchar* пути источника */
+	GPtrArray *pl_rows;  /* готовые строки: struct pl_row* */
 } IrmFill;
+
+/* готовая строка плейлиста (после транскода/меты; тексты уже с
+ * пробелами вместо табов) */
+struct pl_row {
+	char dst[1024];      /* путь пейлоада (.m4a) */
+	unsigned long long ms;
+	unsigned rate;
+	char title[80], artist[256], album[256], genre[256];
+	char art[1024]; /* пусто = без обложки */
+};
 
 static IrmFill g_uf;
 
@@ -119,6 +138,7 @@ static void set_busy(int busy)
 	gtk_widget_set_sensitive(GTK_WIDGET(g_uf.btn_anchor), busy == 0);
 	gtk_widget_set_sensitive(GTK_WIDGET(g_uf.btn_one), busy == 0);
 	gtk_widget_set_sensitive(GTK_WIDGET(g_uf.btn_batch), busy == 0);
+	gtk_widget_set_sensitive(GTK_WIDGET(g_uf.btn_pl), busy == 0);
 	gtk_widget_set_sensitive(GTK_WIDGET(g_uf.sp_batch), busy == 0);
 	gtk_widget_set_sensitive(GTK_WIDGET(g_uf.ck_stage), busy == 0);
 	gtk_widget_set_sensitive(GTK_WIDGET(g_uf.en_fixture), busy == 0);
@@ -377,7 +397,11 @@ static void read_source_tags(const char *path)
  * IRMA_ATC_ARTWORK (irmctl ставит маркером в /Airlock/Media/Artwork
  * /<item_pid>). Нет тега/кадра → art_path пуст → irmctl вставит
  * декларацию без artwork_cache_id. */
-static void read_source_artwork(const char *path)
+/* чтение обложки из TagLib-PICTURE источника во временный файл.
+ * uniq — метка пакета („3“) для уникального имени (совпадающие
+ * базовые имена файлов перезаписывали бы друг друга); NULL — прежнее
+ * имя одиночного режима. */
+static void read_source_artwork2(const char *path, const char *uniq)
 {
 	g_uf.art_path[0] = 0;
 	TagLib_File *tf = taglib_file_new(path);
@@ -410,8 +434,13 @@ static void read_source_artwork(const char *path)
 				g_free(b);
 				b = g_strdup("src");
 			}
-			gchar *name = g_strdup_printf(
-				"irm-fill-%s.%s", b, ext);
+			gchar *name = uniq
+					      ? g_strdup_printf(
+						      "irm-fill-%s-%s.%s",
+						      uniq, b, ext)
+					      : g_strdup_printf(
+						      "irm-fill-%s.%s", b,
+						      ext);
 			gchar *full = g_build_filename(g_get_tmp_dir(),
 						       name, NULL);
 			FILE *f = fopen(full, "wb");
@@ -443,16 +472,51 @@ static void read_source_artwork(const char *path)
 		log_fmt("обложка: в источнике нет (вставка пойдёт без неё)");
 }
 
+static void read_source_artwork(const char *path)
+{
+	read_source_artwork2(path, NULL);
+}
+
+/* 9l: строка для TSV-плейлиста из тега: управляющие символы вон
+ * (как tag_copy_clean) и табы → пробелы (таб — разделитель колонок
+ * TSV). */
+static void tsv_field(char *dst, size_t len, const char *src)
+{
+	if (!src)
+		return;
+	size_t n = 0;
+	for (const char *p = src; *p && n + 1 < len; p++) {
+		unsigned char c = (unsigned char)*p;
+		if (c < 0x20) /* таб разрешён, но ниже заменён */
+			continue;
+		dst[n++] = (c == '\t') ? ' ' : (char)c;
+	}
+	dst[n] = 0;
+}
+
 /* ---- низкоуровневый запуск irmctl (busy управляет вызывающий) ---- */
 
 static void irmctl_spawn(const char *subcmd, const char *fixture_override,
-			 unsigned long long meta_ms, unsigned meta_rate)
+			 unsigned long long meta_ms, unsigned meta_rate,
+			 const char *tsv_override)
 {
 	GError *err = NULL;
 	gchar **env = g_get_environ();
 	gboolean is_insert = strcmp(subcmd, "atc-insert") == 0;
 
-	if (is_insert) {
+	if (tsv_override) {
+		/* 9l: пакет разных треков — TSV-плейлист от GUI; мешанина
+		 * одиночных env (фикстура/мета/теги) НЕ передаём:
+		 * построчные данные — в файле плейлиста */
+		env = g_environ_setenv(env, "IRMA_ATC_PLAYLIST",
+				       tsv_override, TRUE);
+		gboolean stage = gtk_check_button_get_active(g_uf.ck_stage);
+		if (stage)
+			env = g_environ_setenv(env, "IRMA_ATC_STAGE_ONLY",
+					       "1", TRUE);
+		log_fmt("    плейлист=%s%s", tsv_override,
+			stage ? " (STAGE-ONLY)" : "");
+	} else if (is_insert) {
 		const char *fix =
 			fixture_override
 				? fixture_override
@@ -576,7 +640,249 @@ static void run_irmctl_full(const char *subcmd, const char *fixture_override,
 		return;
 	}
 	set_busy(1);
-	irmctl_spawn(subcmd, fixture_override, meta_ms, meta_rate);
+	irmctl_spawn(subcmd, fixture_override, meta_ms, meta_rate, NULL);
+}
+
+/* ---- 9l: пакет разных треков (мульт-выбор → TSV-плейлист) ---- */
+
+/* нижняя половина файла: цепочка перекода и спавна */
+static void chain_paths_free(void);
+static void chain_discover(void);
+static void chain_transcode(void);
+static gchar *tc_make_dst(const char *src);
+static gchar *tc_make_dst2(const char *src, const char *uniq);
+static void pl_next_file(void);
+static void pl_finish(void);
+
+static void pl_reset(void)
+{
+	if (g_uf.pl_files)
+		g_ptr_array_unref(g_uf.pl_files);
+	if (g_uf.pl_rows)
+		g_ptr_array_unref(g_uf.pl_rows);
+	g_uf.pl_files = NULL;
+	g_uf.pl_rows = NULL;
+	g_uf.pl_active = FALSE;
+	g_uf.pl_idx = 0;
+}
+
+/* пакет прерван: освобождаем состояние, busy вон */
+static void pl_abort(const char *why)
+{
+	log_fmt("пакет прерван: %s", why);
+	pl_reset();
+	set_busy(0);
+}
+
+/* один файл доведён до пейлоада (+мета): строка в очередь */
+static void pl_row_done(const char *dst, unsigned long long ms,
+			unsigned rate)
+{
+	struct pl_row *r = g_new0(struct pl_row, 1);
+	snprintf(r->dst, sizeof r->dst, "%s", dst ? dst : "");
+	r->ms = ms;
+	r->rate = rate;
+	tsv_field(r->title, sizeof r->title, g_uf.tag_title);
+	tsv_field(r->artist, sizeof r->artist, g_uf.tag_artist);
+	tsv_field(r->album, sizeof r->album, g_uf.tag_album);
+	tsv_field(r->genre, sizeof r->genre, g_uf.tag_genre);
+	tsv_field(r->art, sizeof r->art, g_uf.art_path);
+	g_ptr_array_add(g_uf.pl_rows, r);
+	log_fmt("    строка готова: %llu мс, %u Гц, «%s», обложка %s", ms,
+		rate, r->title[0] ? r->title : "(нет)",
+		r->art[0] ? "есть" : "нет");
+	chain_paths_free();
+	g_uf.pl_idx++;
+	pl_next_file();
+}
+
+/* следующий файл очереди: теги/обложка → перекод|дискавер → строка */
+static void pl_next_file(void)
+{
+	guint n = g_uf.pl_files ? g_uf.pl_files->len : 0;
+	if (g_uf.pl_idx >= n) {
+		pl_finish();
+		return;
+	}
+	const char *src = g_ptr_array_index(g_uf.pl_files, g_uf.pl_idx);
+	chain_paths_free();
+	if (strchr(src, '\t')) {
+		/* таб в пути разобьёт колонки TSV */
+		log_fmt("  пропущен — таб в пути: %s", src);
+		g_uf.pl_idx++;
+		pl_next_file();
+		return;
+	}
+	if (!fixture_ok(src)) {
+		log_fmt("  пропущен — недоступен: %s", src);
+		g_uf.pl_idx++;
+		pl_next_file();
+		return;
+	}
+	gchar *base = g_path_get_basename(src);
+	gchar *uname = g_strdup_printf("%u", (unsigned)g_uf.pl_idx + 1);
+	log_fmt("[%u/%u] %s", g_uf.pl_idx + 1, n, base);
+	g_free(base);
+	read_source_tags(src);
+	read_source_artwork2(src, uname);
+	g_uf.tc_src = g_strdup(src);
+	g_uf.tc_dst = is_m4a(src) ? g_strdup(src) : tc_make_dst2(src, uname);
+	g_free(uname);
+	if (is_m4a(src)) {
+		chain_discover(); /* меты всегда нужен — колонки TSV */
+		return;
+	}
+	if (!g_uf.gst_launch) {
+		pl_abort("транскод невозможен: нет gst-launch-1.0 в PATH");
+		return;
+	}
+	chain_transcode();
+}
+
+/* очередь кончилась: TSV-файл из строк → один запуск irmctl с
+ * IRMA_ATC_PLAYLIST */
+static void pl_finish(void)
+{
+	if (!g_uf.irmctl) {
+		pl_abort("irmctl не найден (env " IRMFILL_IRMCTL_ENV
+			 ", PATH или рядом с бинарником)");
+		return;
+	}
+	guint nr = g_uf.pl_rows ? g_uf.pl_rows->len : 0;
+	if (nr == 0) {
+		pl_abort("ни один файл не обработался");
+		return;
+	}
+	gchar *tsv = g_build_filename(g_get_tmp_dir(),
+				      "irm-fill-playlist.tsv", NULL);
+	FILE *f = fopen(tsv, "wb");
+	if (!f) {
+		log_fmt("плейлист %s: %s", tsv, g_strerror(errno));
+		g_free(tsv);
+		pl_abort("TSV-файл не открыт");
+		return;
+	}
+	for (guint i = 0; i < nr; i++) {
+		struct pl_row *r = g_ptr_array_index(g_uf.pl_rows, i);
+		char bs[32];
+		/* сэмплы считает GUI (мс*рейт/1000 — как одиночный
+		 * режим; пустое поле irmctl умеет вычислять сам,
+		 * запас пока не пригодился) */
+		snprintf(bs, sizeof bs, "%llu",
+			 r->ms * (unsigned long long)r->rate / 1000ULL);
+		fprintf(f, "%s\t%llu\t%u\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			r->dst, r->ms, r->rate, bs,
+			r->title, r->artist, r->album, r->genre, r->art);
+	}
+	gboolean onefail = ferror(f) != 0;
+	if (fclose(f) != 0 || onefail) {
+		log_fmt("плейлист %s: запись не удалась", tsv);
+		g_free(tsv);
+		pl_abort("TSV не записан");
+		return;
+	}
+	log_fmt("плейлист готов: %u трек(ов) → %s", (unsigned)nr, tsv);
+	chain_paths_free();
+	pl_reset(); /* строк больше не нужны — TSV уже на диске */
+	/* spawn при провале сам снимет busy и отчистится */
+	irmctl_spawn("atc-insert", NULL, 0, 0, tsv);
+	g_free(tsv);
+}
+
+/* выбор нескольких файлов (GtkFileDialog open_multiple): безопасность
+ * (stage-only) и очередь источника; сама обработка — по одному */
+static void pl_start_from_files(GListModel *files)
+{
+	guint n = files ? g_list_model_get_n_items(files) : 0;
+	if (n == 0) {
+		log_fmt("пакет: ничего не выбрано");
+		return;
+	}
+	if (n > IRMFILL_BATCH_MAX) {
+		log_fmt("пакет: ограничение %u — беру первые %u",
+			IRMFILL_BATCH_MAX, IRMFILL_BATCH_MAX);
+		n = IRMFILL_BATCH_MAX;
+	}
+	if (!g_uf.irmctl) {
+		log_fmt("irmctl не найден (env %s, PATH или рядом с "
+			"бинарником irm-fill)",
+			IRMFILL_IRMCTL_ENV);
+		return;
+	}
+	if (!g_uf.gst_discover) {
+		log_fmt("пакет невозможен: нет gst-discoverer-1.0 в PATH");
+		return;
+	}
+	pl_reset();
+	g_uf.pl_files = g_ptr_array_new_with_free_func(g_free);
+	for (guint i = 0; i < n; i++) {
+		GFile *gf = g_list_model_get_item(files, i);
+		gchar *path = gf ? g_file_get_path(gf) : NULL;
+		if (path) {
+			g_ptr_array_add(g_uf.pl_files, path);
+		} else {
+			log_fmt("  пропущен — не локальный: %s",
+				gf ? g_file_peek_path(gf) : "?");
+		}
+		g_clear_object(&gf);
+	}
+	if (g_uf.pl_files->len == 0) {
+		pl_reset();
+		return;
+	}
+	g_uf.pl_rows = g_ptr_array_new_with_free_func(g_free);
+	g_uf.pl_active = TRUE;
+	g_uf.pl_idx = 0;
+	log_fmt("пакет: %u файл(ов), обработка по одному…",
+		g_uf.pl_files->len);
+	set_busy(1);
+	pl_next_file();
+}
+
+static void on_open_multi_done(GObject *src, GAsyncResult *res,
+			       gpointer user)
+{
+	(void)user;
+	GError *err = NULL;
+	GListModel *files = gtk_file_dialog_open_multiple_finish(
+		GTK_FILE_DIALOG(src), res, &err);
+	if (!files) {
+		if (!g_error_matches(err, G_IO_ERROR,
+				     G_IO_ERROR_CANCELLED))
+			log_fmt("пакет: %s",
+				err ? err->message : "файлы не выбраны");
+		g_clear_error(&err);
+		return;
+	}
+	pl_start_from_files(files);
+	g_object_unref(files);
+}
+
+static void on_playlist_clicked(GtkButton *btn, gpointer user)
+{
+	(void)btn;
+	(void)user;
+	GtkFileDialog *fd = gtk_file_dialog_new();
+	gtk_file_dialog_set_title(fd, "Выберите файлы для пакета");
+
+	GtkFileFilter *f_all = gtk_file_filter_new();
+	gtk_file_filter_set_name(f_all,
+				 "аудио (.m4a .mp3 .flac .wav .aiff)");
+	gtk_file_filter_add_mime_type(f_all, "audio/x-m4a");
+	gtk_file_filter_add_mime_type(f_all, "audio/mp4");
+	gtk_file_filter_add_mime_type(f_all, "audio/mpeg");
+	gtk_file_filter_add_mime_type(f_all, "audio/flac");
+	gtk_file_filter_add_mime_type(f_all, "audio/x-wav");
+	gtk_file_filter_add_mime_type(f_all, "audio/x-aiff");
+	GListStore *ls = g_list_store_new(GTK_TYPE_FILE_FILTER);
+	g_list_store_append(ls, f_all);
+	g_object_unref(f_all);
+	gtk_file_dialog_set_filters(fd, G_LIST_MODEL(ls));
+	g_object_unref(ls);
+
+	gtk_file_dialog_open_multiple(fd, GTK_WINDOW(g_uf.win), NULL,
+				      on_open_multi_done, NULL);
+	g_object_unref(fd);
 }
 
 /* ---- транскод-цепочка 9i: не-.m4a → ALAC .m4a → gst-discoverer ---- */
@@ -592,13 +898,21 @@ static void chain_paths_free(void)
 static void chain_fail(void)
 {
 	chain_paths_free();
+	if (g_uf.pl_active) {
+		/* 9l: срыв звена пакета прерывает весь батч (частичный
+		 * посыл без строк не собираем — либо всё, либо ничего) */
+		pl_abort("транскод-цепочка сорвалась");
+		return;
+	}
 	set_busy(0);
 }
 
 /* куда положить перекод: /tmp/irm-fill-<чистое-имя>.m4a (имя источника
  * чистится до безопасных символов: gst-launch парсит элементы по
- * пробелам, а телефонному протоколу пробелы в wire-пути не нужны) */
-static gchar *tc_make_dst(const char *src)
+ * пробелам, а телефонному протоколу пробелы в wire-пути не нужны).
+ * uniq — метка пакета („3“) против коллизий одинаковых базовых имён;
+ * NULL — прежнее имя одиночного режима. */
+static gchar *tc_make_dst2(const char *src, const char *uniq)
 {
 	char *b = g_path_get_basename(src);
 	char *dot = strrchr(b, '.');
@@ -611,9 +925,15 @@ static gchar *tc_make_dst(const char *src)
 		g_free(b);
 		b = g_strdup("out");
 	}
-	gchar *name = g_strdup_printf("irm-fill-%s.m4a", b);
+	gchar *name = uniq ? g_strdup_printf("irm-fill-%s-%s.m4a", uniq, b)
+			   : g_strdup_printf("irm-fill-%s.m4a", b);
 	g_free(b);
 	return g_build_filename(g_get_tmp_dir(), name, NULL);
+}
+
+static gchar *tc_make_dst(const char *src)
+{
+	return tc_make_dst2(src, NULL);
 }
 
 /* ступень 2: из вывода gst-discoverer — длительность и сэмплрейт */
@@ -676,7 +996,12 @@ static void chain_discover_done(GObject *src, GAsyncResult *res,
 	log_fmt("метаданные перекода: %llu мс, %u Гц, ~%llu сэмплов",
 		ms, rate, ms * (unsigned long long)rate / 1000ULL);
 
-	irmctl_spawn(g_uf.pending_cmd, g_uf.tc_dst, ms, rate);
+	if (g_uf.pl_active) {
+		/* 9l: строка пакета готова — к следующему файлу */
+		pl_row_done(g_uf.tc_dst, ms, rate);
+		return;
+	}
+	irmctl_spawn(g_uf.pending_cmd, g_uf.tc_dst, ms, rate, NULL);
 	chain_paths_free();
 }
 
@@ -1059,24 +1384,37 @@ static void build_ui(GtkApplication *app)
 	gtk_widget_set_hexpand(box_batch, TRUE);
 	gtk_grid_attach(GTK_GRID(panel), box_batch, 2, 3, 1, 1);
 
+	/* 9l: пакет разных треков — мульт-выбор → TSV-плейлист */
+	g_uf.btn_pl =
+		GTK_BUTTON(gtk_button_new_with_label("Залить пакет…"));
+	gtk_widget_set_tooltip_text(GTK_WIDGET(g_uf.btn_pl),
+				    "выбрать несколько файлов; "
+				    "каждый — отдельная трек-строка "
+				    "в одном конверте (IRMA_ATC_PLAYLIST)");
+	g_signal_connect(g_uf.btn_pl, "clicked",
+			 G_CALLBACK(on_playlist_clicked), NULL);
+	gtk_widget_set_hexpand(GTK_WIDGET(g_uf.btn_pl), TRUE);
+	gtk_grid_attach(GTK_GRID(panel), GTK_WIDGET(g_uf.btn_pl), 0, 4, 3,
+			1);
+
 	/* stage-only */
 	g_uf.ck_stage = GTK_CHECK_BUTTON(
 		gtk_check_button_new_with_label(
 			"только стадия (IRMA_ATC_STAGE_ONLY=1; безопасно — "
 			"без записей на телефон)"));
 	gtk_check_button_set_active(g_uf.ck_stage, TRUE);
-	gtk_grid_attach(GTK_GRID(panel), GTK_WIDGET(g_uf.ck_stage), 0, 4, 3,
+	gtk_grid_attach(GTK_GRID(panel), GTK_WIDGET(g_uf.ck_stage), 0, 5, 3,
 			1);
 
 	/* LibraryID */
 	GtkWidget *la_libid = gtk_label_new("IRMA_ATC_LIBID:");
 	gtk_label_set_xalign(GTK_LABEL(la_libid), 0.0);
-	gtk_grid_attach(GTK_GRID(panel), la_libid, 0, 5, 1, 1);
+	gtk_grid_attach(GTK_GRID(panel), la_libid, 0, 6, 1, 1);
 	g_uf.en_libid = GTK_ENTRY(gtk_entry_new());
 	gtk_entry_set_placeholder_text(g_uf.en_libid,
 				       "%016llX (необязательно)");
 	gtk_widget_set_hexpand(GTK_WIDGET(g_uf.en_libid), TRUE);
-	gtk_grid_attach(GTK_GRID(panel), GTK_WIDGET(g_uf.en_libid), 1, 5,
+	gtk_grid_attach(GTK_GRID(panel), GTK_WIDGET(g_uf.en_libid), 1, 6,
 			2, 1);
 
 	gtk_box_append(GTK_BOX(content), panel);

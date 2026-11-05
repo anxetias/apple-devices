@@ -73,6 +73,7 @@ struct _AppleApplication {
   GtkWidget *music_status;
   GtkWidget *music_list;
   GtkWidget *music_import_btn;
+  GtkWidget *music_irmfill_btn;
   GtkWidget *music_export_btn;
   GtkWidget *music_delete_btn;
   GtkWidget *music_refresh_btn;
@@ -102,7 +103,6 @@ struct _AppleApplication {
 
 /* Перевод: возвращает английскую строку, если язык en, иначе как есть. */
 const char *tr(const char *ru);
-
 /* Лог-сообщение: в виджет лога и в stdout (потокобезопасно, через idle). */
 void logMessage(const char *format, ...);
 

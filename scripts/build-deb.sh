@@ -43,6 +43,13 @@ if [ ! -x "$BIN" ]; then
   exit 1
 fi
 
+# 2а. irmctl — конвейер заливки музыки (механика 9l из iTunes-
+#     Reversed-Mechanisms): приложение спавнит его как подпроцесс
+#     (кнопка «Залить (IRM)» на странице «Музыка»).
+echo "==> сборка irmctl…"
+( cd iTunes-Reversed-Mechanisms && make irmctl >/dev/null )
+cp iTunes-Reversed-Mechanisms/irmctl "$STAGE/usr/bin/irmctl"
+
 # 3. Зависимости от разделяемых библиотек — честные, по ELF-зависимостям.
 # dpkg-shlibdeps требует контекст исходного пакета (ищет debian/control
 # в текущем каталоге), поэтому даём ему минимальный временный

@@ -5,6 +5,7 @@
 #include "uiWidgets.h"
 #include "sync3u.h"
 #include "transcode.h"
+#include "irmfill.h"
 
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice/lockdown.h>
@@ -296,6 +297,9 @@ static const TrEntry trTable[] = {
   {"Подключите устройство.", "Connect a device."},
   {"Импорт", "Import"},
   {"Экспорт", "Export"},
+  {"Залить (IRM)", "Fill (IRM)"},
+  {"Выберите аудиофайлы для заливки (IRM)",
+   "Select audio files to fill (IRM)"},
   {"Синхронизировать", "Sync"},
   {"Логи отладки", "Debug Logs"},
   {"Программа запущена. Запускаем автосканирование USB...",
@@ -1328,6 +1332,37 @@ onImportDialogDone(GObject *source, GAsyncResult *res, gpointer user_data)
   g_object_unref(task);
 }
 
+/* Заливка механикой 9l (IRM): транскод → TSV → irmctl atc-insert
+ * порциями; прогресс — отдельное окно с кнопкой «Отмена» (перенос из
+ * iTunes-Reversed-Mechanisms, живой факт 05.11 «все прошло окей»). */
+static void irfillBusyCb(int busy, gpointer user)
+{
+  AppleApplication *self = APPLE_APPLICATION(user);
+  self->music_busy = busy != 0;
+  updateMusicButtons(self);
+}
+
+static gboolean
+onAppWindowCloseRequest(GtkWindow *win, gpointer user)
+{
+  (void)win;
+  (void)user;
+  if (irmfill_active())
+    irmfill_cancel();
+  return FALSE; /* всегда разрешаем закрыть */
+}
+
+static void
+onMusicIrfillClicked(GtkButton *btn, AppleApplication *self)
+{
+  (void)btn;
+  if (!self->selected || self->music_busy || irmfill_active())
+    return;
+
+  IrFillHooks hooks = { GTK_WINDOW(self->window), irfillBusyCb, self };
+  irmfill_activate(&hooks);
+}
+
 static void
 onMusicImportClicked(GtkButton *btn, AppleApplication *self)
 {
@@ -1857,6 +1892,9 @@ apple_application_activate(GApplication *app)
                         "default-height", 760,
                         NULL);
   self->window = window;
+  /* конвейер IRM должен уйти при закрытии приложения */
+  g_signal_connect(window, "close-request",
+                   G_CALLBACK(onAppWindowCloseRequest), self);
 
   self->device_store = g_list_store_new(DEVICE_TYPE_INFO);
 
@@ -2118,7 +2156,11 @@ apple_application_activate(GApplication *app)
   g_object_add_weak_pointer(G_OBJECT(self->music_stack), (gpointer *)&self->music_stack);
 
   self->music_import_btn = makeButton("list-add-symbolic", tr("Импорт"), NULL,
-                                       G_CALLBACK(onMusicImportClicked), self);
+                                      G_CALLBACK(onMusicImportClicked), self);
+  self->music_irmfill_btn = makeButton("emblem-synchronizing-symbolic",
+                                       tr("Залить (IRM)"), NULL,
+                                       G_CALLBACK(onMusicIrfillClicked),
+                                       self);
   self->music_export_btn = makeButton("document-save-symbolic", tr("Экспорт"), NULL,
                                        G_CALLBACK(onMusicExportClicked), self);
   self->music_delete_btn = makeButton("user-trash-symbolic", tr("Удалить"), "destructive-action",
@@ -2128,6 +2170,7 @@ apple_application_activate(GApplication *app)
 
   GtkWidget *music_actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
   gtk_box_append(GTK_BOX(music_actions), self->music_import_btn);
+  gtk_box_append(GTK_BOX(music_actions), self->music_irmfill_btn);
   gtk_box_append(GTK_BOX(music_actions), self->music_export_btn);
   gtk_box_append(GTK_BOX(music_actions), self->music_delete_btn);
   gtk_box_append(GTK_BOX(music_actions), self->music_refresh_btn);

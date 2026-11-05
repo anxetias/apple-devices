@@ -1449,3 +1449,40 @@ apple-devices/
 - Сборка -Wall -Wextra -Wpedantic чисто, юниты 5/5, скан мусора 0. Живой проход
   валидируется владельцем (GUI: старт пакета → окно видно, отмена → в лог
   «пакет прерван: кнопка Отмена», транкоды гаснут).
+
+## 05.11, ~16:3x — механика 9l перенесена в главное приложение (apple-devices src/)
+- Запрос владельца: «давай в apple devices механику перенесем». Перенос конвейера
+  порций и окна прогресса из iTunes-Reversed-Mechanisms/tools/irm-fill.c в
+  GTK4-приложение (src/), живой факт «все прошло окей» подтвердил механику.
+- Новый модуль `src/irmfill.c` + `src/irmfill.h` (~2000 строк, большая часть —
+  машинный перенос проверенных диапазонов irm-fill.c): порции по IRMFILL_CHUNK
+  (дефолт 8), строго последовательные транскоды (pl_par_k жёстко 1), матура
+  порции (pl_flush_mature + маска pl_alive), теги/обложка строго из копий job'а,
+  precheck места в /tmp, TSV 9 колонок в irmctl atc-insert, ленивое окно
+  прогресса (бар + «Отмена» + галка «Полигон (stage-only)» — в отличие от
+  irm-fill галка перенесена в само окно, читается на заливку каждой порции).
+- НЕ перенесено (вырезано по подтверждению компилятора «defined but not used»):
+  одиночная 9i-ветка (chain_start, chain_transcode, chain_transcode_done,
+  tc_make_dst, read_source_artwork, якерь music-id/anchor, host-UI build_ui).
+- Встраивание в приложение: страница «Музыка» — кнопка «Залить (IRM)»
+  (makeButton emblem-synchronizing-symbolic) рядом с «Импорт»; диалог выбора
+  файлов → pl_start_from_files; занятость кнопок через IrFillHooks.busy_cb
+  (music_busy=TRUE на время пакета, updateMusicButtons); защита от двойного
+  старта пакета в pl_start_from_files; закрытие главного окна →
+  onAppWindowCloseRequest → irmfill_cancel() (плюс страж в onMusicIrfillClicked).
+- Доставка irmctl приложению: `scripts/build-deb.sh` — новый шаг «сборка
+  irmctl…» (make irmctl в iTunes-Reversed-Mechanisms, копия в staging
+  /usr/bin/irmctl); в приложении find_irmctl ищет: env IRMFILL_IRMCTL → PATH →
+  рядом с exe → путь репозитория (../..//iTunes-Reversed-Mechanisms/irmctl от
+  каталога сборки).
+- Точки обновления прогресса: pl_row_done, pl_job_fail, пропуски в pl_advance,
+  pl_flush_chunk («заливка на телефон…»), pl_chunk_done; подпись
+  «обработано N из M; порция X/Y». Отмена: force_exit заливающего подпроцесса +
+  pl_abort (tc_procs гасятся pl_reset, job'ы подбирают колбэки по pl_gen);
+  телефон НЕ откатываем.
+- Сборка meson (warning_level=3 → -Wall -Wextra) чисто: 0 error/0 warning
+  (кроме штатных gtkaccessiblehypertext в системном заголовке); скан мусора 0
+  по всем тронутым файлам. .deb outdated — пересобрать владельцем после приёмки.
+- Живой прогон в приложении — за владельцем (GUI headless не проверяется):
+  перезапуск GUI, кнопка «Залить (IRM)», ожидание — окно прогресса ползёт по
+  транскодам/порциям, «Отмена» гасит конвейер, в логе «пакет прерван».

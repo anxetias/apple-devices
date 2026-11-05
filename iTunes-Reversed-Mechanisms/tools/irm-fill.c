@@ -7,9 +7,12 @@
  * интерфейсе); переключатель «только стадия» (IRMA_ATC_STAGE_ONLY=1)
  * по умолчанию ВКЛЮЧЁН — безопасный прогон без записей на телефон.
  *
- * 9i: фикстуры не-.m4a (.mp3, .flac …) перекодируются в ALAC .m4a
- * автоматически: gst-launch-1.0 (avenc_alac + mp4mux) пишет tmp-файл,
- * gst-discoverer-1.0 даёт длительность/сэмплрейт, они передаются
+ * 9i/v3: фикстуры не-.m4a (.mp3, .flac …) перекодируются в .m4a
+ * автоматически: gst-launch-1.0 пишет tmp-файл (AAC-дефолт
+ * avenc_aac+mp4mux, IRMFILL_CODEC=alac откатывает на avenc_alac;
+ * пакет крутит IRMFILL_PAR транскодов параллельно порциями по
+ * IRMFILL_CHUNK), gst-discoverer-1.0 даёт длительность/сэмплрейт,
+ * они передаются
  * irmctl через IRMA_ATC_TOTAL_MS/IRMA_ATC_RATE/IRMA_ATC_SAMPLES.
  * irmctl ищется в env IRMFILL_IRMCTL, затем PATH, затем рядом с
  * самим бинарником irm-fill (через /proc/self/exe).
@@ -32,6 +35,9 @@
 /* путь до irmctl можно переопределить окружением */
 #define IRMFILL_IRMCTL_ENV "IRMFILL_IRMCTL"
 #define IRMFILL_BATCH_MAX 499
+
+/* пакетный job (9n) — объявление здесь, определение ниже */
+struct pl_job;
 
 /* ---- состояние приложения (одно окно, максимум один подпроцесс) ---- */
 
@@ -62,9 +68,18 @@ typedef struct {
 	/* 9i: автоматический транскод не-.m4a входов */
 	char *gst_launch;
 	char *gst_discover;
+	char *gst_inspect;
 	char *tc_src;
 	char *tc_dst;
 	char pending_cmd[32];
+
+	/* 9m: кодек перекода пакета. AAC — дефолт (пейлоад ~×4 легче,
+	 * телефон играет его нативно; провод ~16 МиБ/с — живой замер
+	 * 05.11), IRMFILL_CODEC=alac возвращает прежний; битрейт AAC —
+	 * IRMFILL_AAC_RATE (дефолт 256000, 64k..320k). */
+	gboolean codec_aac;
+	unsigned aac_rate;
+	char gst_codec[8]; /* «AAC» / «ALAC» для логов */
 
 	/* 9j: теги источника (TagLib) → env для irmctl; пусто = дефолты */
 	char tag_title[256];
@@ -92,6 +107,26 @@ typedef struct {
 	unsigned pl_chunk_num;   /* порция, которую заливаем (с 1) */
 	unsigned pl_chunk_total; /* план порций: ceil(N/K) */
 	gboolean pl_inflight;
+
+	/* 9n: параллельные транскоды пакетной очереди. Готовые job'ы
+	 * (транскод закончен или .m4a как есть) ждут финализации в
+	 * pl_ready — разбираются сериально (один gst-discover за раз,
+	 * теги/обложка идут рабочими полями). pl_running —
+	 * запланировано, не доведено до строки/скипа; pl_gen —
+	 * поколение пакета: прервавшиеся async-колбэки по нему
+	 * узнают, что их job уже не их. */
+	unsigned pl_par;           /* влёт транскодов (IRMFILL_PAR) */
+	unsigned pl_running;       /* job'ы в полёте (все стадии) */
+	unsigned pl_tct;           /* занятые ТРАНСКОД-слоты */
+	GPtrArray *pl_ready;       /* FIFO: struct pl_job* (не владеем) */
+	struct pl_job *pl_fin_job; /* финализируется сейчас */
+	unsigned pl_gen;           /* поколение (для async-колбэков) */
+
+	/* v3: подпроцессы параллельных транскодов живут ВНЕ g_uf.proc
+	 * (там — заливающий atc-insert). Список даёт старой семантике
+	 * закрытия окна/СТОПа шанс гасить всех пишущих: v2 убивал
+	 * единственный транскод через g_uf.proc force_exit. */
+	GPtrArray *tc_procs;
 } IrmFill;
 
 /* готовая строка плейлиста (после транскода/меты; тексты уже с
@@ -102,6 +137,23 @@ struct pl_row {
 	unsigned rate;
 	char title[80], artist[256], album[256], genre[256];
 	char art[1024]; /* пусто = без обложки */
+	unsigned trans; /* перекод наш (dst — tmp-артефакт на уборку);
+			 * 0 → dst == файл владельца (.m4a как есть) —
+			 * списком уборки НЕ трогаем */
+};
+
+/* пакетный job (9n): один файл в параллельном конвейере. Теги и
+ * обложка сняты TagLib'ом В МОМЕНТ СТАРТА job (рабочие поля
+ * переиспользуются следующим файлом, поэтому job носит СВОЮ копию).
+ * trans: источник транскодировался (dst — наш tmp-артефакт, его
+ * можно убирать при срыве); иначе dst == src (.m4a как есть —
+ * файл владельца НЕ трогаем). */
+struct pl_job {
+	gchar *src, *dst, *art;
+	gchar *title, *artist, *album, *genre;
+	unsigned idx; /* 1..n для лога и уникальности имён */
+	gboolean trans;
+	unsigned gen; /* поколение пакета */
 };
 
 static IrmFill g_uf;
@@ -679,15 +731,18 @@ static void run_irmctl_full(const char *subcmd, const char *fixture_override,
 
 /* нижняя половина файла: цепочка перекода и спавна */
 static void chain_paths_free(void);
-static void chain_discover(void);
+static void chain_discover(gpointer job);
 static void chain_transcode(void);
+static GSubprocess *transcode_spawn(const char *src, const char *dst);
 static gchar *tc_make_dst(const char *src);
 static gchar *tc_make_dst2(const char *src, const char *uniq);
-static void pl_next_file(void);
 static void pl_finish(void);
 static unsigned pl_chunk_k(void);
+static unsigned pl_par_k(void);
 static void pl_flush_chunk(void);
 static void pl_chunk_done(gboolean ok);
+static void pl_advance(void);
+static void pl_job_fail(struct pl_job *j, const char *why);
 
 /* live-факт 05.11: gst-launch может выйти rc=0 даже при ошибке пайпа
  * (ОШИБКА «Превышена дисковая квота» на tmpfs — файл остаётся без
@@ -741,17 +796,39 @@ static void pl_reset(void)
 		g_ptr_array_unref(g_uf.pl_rows);
 	if (g_uf.pl_chunk_art)
 		g_ptr_array_unref(g_uf.pl_chunk_art);
+	if (g_uf.pl_ready)
+		g_ptr_array_unref(g_uf.pl_ready);
+	/* v3: параллельные транскоды, кто ещё гонится, гасим силой —
+	 * v2 гасил одиночный через g_uf.proc; их колбэки затем
+	 * подберут job'ы по поколению (ссылка в списке умрёт вместе
+	 * с массивом чисто). */
+	if (g_uf.tc_procs) {
+		for (guint i = 0; i < g_uf.tc_procs->len; i++)
+			g_subprocess_force_exit(
+				g_ptr_array_index(g_uf.tc_procs, i));
+		g_ptr_array_unref(g_uf.tc_procs);
+		g_uf.tc_procs = NULL;
+	}
+	/* job'ы (в очереди и на финализации) НЕ освобождаем — их
+	 * подберут async-колбэки по pl_gen (поколение растёт ниже);
+	 * queued-штук ≤ PAR — маленькая допустимая течь на
+	 * abort-пути. */
 	g_free(g_uf.pl_chunk_tsv);
 	g_uf.pl_files = NULL;
 	g_uf.pl_rows = NULL;
 	g_uf.pl_chunk_art = NULL;
 	g_uf.pl_chunk_tsv = NULL;
+	g_uf.pl_ready = NULL;
+	g_uf.pl_fin_job = NULL;
 	g_uf.pl_chunk_num = 0;
 	g_uf.pl_chunk_total = 0;
 	g_uf.pl_inflight = FALSE;
 	g_uf.pl_active = FALSE;
 	g_uf.pl_idx = 0;
 	g_uf.pl_skip = 0;
+	g_uf.pl_running = 0;
+	g_uf.pl_tct = 0;
+	g_uf.pl_gen++; /* старым async-колбэкам job больше не его */
 }
 
 /* пакет прерван: освобождаем состояние, busy вон */
@@ -762,31 +839,190 @@ static void pl_abort(const char *why)
 	set_busy(0);
 }
 
-/* live-правило 05.11: сорвавшийся item пакета пропускается, батч
- * живёт дальше. Мусорный артефакт (неофинализированный .m4a БЕЗ
- * moov — gst-launch вышел, не долив хвост) удаляем: иначе он
- * доедает tmpfs и может быть ложно «залит» на телефон. */
-static void pl_skip_item(const char *why)
+static void pl_job_free(struct pl_job *j)
 {
-	guint n = g_uf.pl_files ? g_uf.pl_files->len : 0;
-	log_fmt("  пропущен [%u/%u]: %s", g_uf.pl_idx + 1, n, why);
-	if (g_uf.tc_dst && g_uf.tc_dst[0] &&
-	    g_file_test(g_uf.tc_dst, G_FILE_TEST_IS_REGULAR))
-		unlink(g_uf.tc_dst);
-	chain_paths_free();
-	g_uf.pl_skip++;
-	g_uf.pl_idx++;
-	pl_next_file();
+	if (!j)
+		return;
+	g_free(j->src);
+	g_free(j->dst);
+	g_free(j->art);
+	g_free(j->title);
+	g_free(j->artist);
+	g_free(j->album);
+	g_free(j->genre);
+	g_free(j);
 }
 
-/* один файл доведён до пейлоада (+мета): строка в очередь */
+static void pl_job_ready_add(struct pl_job *j)
+{
+	g_ptr_array_add(g_uf.pl_ready, j);
+}
+
+/* список живых транкод-подпроцессов (v3): жёсткая ссылка у списка —
+ * колбэк лишь снимает её оттуда; двойных unref'ов нет */
+static void tc_procs_push(GSubprocess *sp)
+{
+	if (!g_uf.tc_procs)
+		g_uf.tc_procs = g_ptr_array_new_with_free_func(
+			g_object_unref);
+	g_ptr_array_add(g_uf.tc_procs, sp);
+}
+
+static void tc_procs_drop(GSubprocess *sp)
+{
+	/* снятие успешного элемента вызывает free_func (unref) */
+	if (g_uf.tc_procs)
+		g_ptr_array_remove(g_uf.tc_procs, sp);
+}
+
+/* live-правило 05.11: сорвавшийся item пакета пропускается, батч
+ * живёт дальше. Артефакт транскода (неофинализированный .m4a БЕЗ
+ * moov — gst-launch вышел, не долив хвост) удаляем: иначе он
+ * доедает tmpfs и может быть ложно «залит» на телефон. Источник
+ * (.m4a как есть) НЕ трогаем — v3-фикс прежнего безусловного
+ * unlink'а tc_dst (туда попадал и файл владельца). */
+static void pl_job_fail(struct pl_job *j, const char *why)
+{
+	guint n = g_uf.pl_files ? g_uf.pl_files->len : 0;
+	log_fmt("  пропущен [%u/%u]: %s", j->idx, (unsigned)n, why);
+	if (j->trans && j->dst && *j->dst &&
+	    g_file_test(j->dst, G_FILE_TEST_IS_REGULAR))
+		unlink(j->dst);
+	chain_paths_free();
+	pl_job_free(j);
+	g_uf.pl_skip++;
+	g_uf.pl_running--;
+	pl_advance();
+}
+
+/* job-транкод закончен: пейлоад появился → в очередь разборки */
+static void pl_job_transcode_done(GObject *src, GAsyncResult *res,
+				  gpointer user)
+{
+	GSubprocess *sp = G_SUBPROCESS(src);
+	struct pl_job *j = user;
+	char *txt = NULL;
+	char *etext = NULL;
+	GError *err = NULL;
+	gboolean ok = g_subprocess_communicate_utf8_finish(
+		sp, res, &txt, &etext, &err);
+	tc_procs_drop(sp); /* жёсткая ссылка жила в списке */
+
+	if (j->gen != g_uf.pl_gen) {
+		/* пакет сброшен — job на самоподбор */
+		g_free(txt);
+		g_free(etext);
+		g_clear_error(&err);
+		pl_job_free(j);
+		return;
+	}
+	if (ok)
+		ok = j->dst && access(j->dst, R_OK) == 0;
+	if (!ok) {
+		log_fmt("транскод [%u] не удался: %s", j->idx,
+			err ? err->message
+			    : "выходной файл не появился");
+		if (txt && *txt) {
+			log_fmt("gst-launch сказал:");
+			log_fmt("%s", txt);
+		}
+		g_free(txt);
+		g_free(etext);
+		g_clear_error(&err);
+		g_uf.pl_tct--;
+		pl_job_fail(j, "транскод не удался");
+		return;
+	}
+	log_fmt("    [%u] транскод готов", j->idx);
+	log_file_size(j->dst);
+	g_free(txt);
+	g_free(etext);
+	g_uf.pl_tct--;
+	pl_job_ready_add(j);
+	pl_advance();
+}
+
+/* транкод-слот занял: спавн gst-launch (кодек выбран на старте) */
+static void pl_job_start(struct pl_job *j)
+{
+	GSubprocess *sp = transcode_spawn(j->src, j->dst);
+	if (!sp) {
+		pl_job_fail(j, "gst-launch не запустился");
+		return;
+	}
+	tc_procs_push(sp); /* гасится pl_reset'ом при закрытии/срыве */
+	g_uf.pl_tct++;
+	g_subprocess_communicate_utf8_async(sp, NULL, NULL,
+					    pl_job_transcode_done, j);
+}
+
+/* очередь разборки: сериально, один gst-discover за раз; теги/
+ * обложку job'а восстанавливаем в рабочие поля (pl_row_done их
+ * читает) */
+static void pl_job_finalize(void)
+{
+	if (g_uf.pl_fin_job || g_uf.pl_ready->len == 0)
+		return;
+	struct pl_job *j = g_ptr_array_index(g_uf.pl_ready, 0);
+	g_ptr_array_remove_index(g_uf.pl_ready, 0);
+	g_uf.pl_fin_job = j;
+	snprintf(g_uf.tag_title, sizeof g_uf.tag_title, "%s",
+		 j->title ? j->title : "");
+	snprintf(g_uf.tag_artist, sizeof g_uf.tag_artist, "%s",
+		 j->artist ? j->artist : "");
+	snprintf(g_uf.tag_album, sizeof g_uf.tag_album, "%s",
+		 j->album ? j->album : "");
+	snprintf(g_uf.tag_genre, sizeof g_uf.tag_genre, "%s",
+		 j->genre ? j->genre : "");
+	snprintf(g_uf.art_path, sizeof g_uf.art_path, "%s",
+		 j->art ? j->art : "");
+	g_uf.tc_dst = g_strdup(j->dst);
+	chain_discover(j);
+}
+
+/* новый job: теги/обложка снимаются НЕМЕДЛЕННО (рабочие поля),
+ * лог «[i/n] файл» — как в последовательном режиме */
+static struct pl_job *pl_job_new(const char *src, unsigned idx,
+				 guint total)
+{
+	struct pl_job *j = g_new0(struct pl_job, 1);
+	gchar *base = g_path_get_basename(src);
+	gchar *uname = g_strdup_printf("%u", idx);
+	log_fmt("[%u/%u] %s", idx, (unsigned)total, base);
+	g_free(base);
+	read_source_tags(src);
+	read_source_artwork2(src, uname);
+	j->src = g_strdup(src);
+	j->dst = is_m4a(src) ? g_strdup(src) : tc_make_dst2(src, uname);
+	g_free(uname);
+	j->title = g_strdup(g_uf.tag_title);
+	j->artist = g_strdup(g_uf.tag_artist);
+	j->album = g_strdup(g_uf.tag_album);
+	j->genre = g_strdup(g_uf.tag_genre);
+	j->art = g_strdup(g_uf.art_path);
+	j->idx = idx;
+	j->trans = !is_m4a(src);
+	j->gen = g_uf.pl_gen;
+	return j;
+}
+
+/* job доведён до строки: строка в буфер порции. Буфер дожал K —
+ * порция уезжает на заливку; пока телефон кушает прежнюю,
+ * транскоды копят СЛЕДУЮЩУЮ (tmpfs ≤ 2K+PAR худших пейлоадов,
+ * живой факт 05.11: макс 46 МиБ ALAC — порция ~0,73 ГиБ) */
 static void pl_row_done(const char *dst, unsigned long long ms,
 			unsigned rate)
 {
+	/* job был на финализации: его метку «наш/чужой» перекладываем в
+	 * строку ДО освобождения (r->trans решает, кого разрешено
+	 * убирать по rc: tmp-артефакт — да; файл владельца — нет) */
+	struct pl_job *j = g_uf.pl_fin_job;
+	g_uf.pl_fin_job = NULL;
 	struct pl_row *r = g_new0(struct pl_row, 1);
 	snprintf(r->dst, sizeof r->dst, "%s", dst ? dst : "");
 	r->ms = ms;
 	r->rate = rate;
+	r->trans = (j ? j->trans : FALSE); /* без job'а — не трогаем */
 	tsv_field(r->title, sizeof r->title, g_uf.tag_title);
 	tsv_field(r->artist, sizeof r->artist, g_uf.tag_artist);
 	tsv_field(r->album, sizeof r->album, g_uf.tag_album);
@@ -797,68 +1033,72 @@ static void pl_row_done(const char *dst, unsigned long long ms,
 		rate, r->title[0] ? r->title : "(нет)",
 		r->art[0] ? "есть" : "нет");
 	chain_paths_free();
-	g_uf.pl_idx++;
-	if (g_uf.pl_rows->len >= (guint)pl_chunk_k() &&
-	    !g_uf.pl_inflight) {
-		/* v2: порция набрана — заливаем её СЕЙЧАС и стопим
-		 * перекод до rc (владелец: чанк → залив → чистка →
-		 * круг). pl_next_file позовёт pl_chunk_done. */
-		pl_flush_chunk();
-		return;
+	if (j) {
+		pl_job_free(j);
+		g_uf.pl_running--;
 	}
-	pl_next_file();
+	if (g_uf.pl_rows->len >= (guint)pl_chunk_k() &&
+	    !g_uf.pl_inflight)
+		pl_flush_chunk();
+	pl_advance();
 }
 
-/* следующий файл очереди: теги/обложка → перекод|дискавер → строка */
-static void pl_next_file(void)
+/* насос пакетного конвейера (9n): порции по K, финализация
+ * сериально, подкачка транкод-слотов, хвостовой финиш */
+static void pl_advance(void)
 {
-	guint n = g_uf.pl_files ? g_uf.pl_files->len : 0;
-	if (g_uf.pl_idx >= n) {
+	if (!g_uf.pl_active)
+		return;
+	/* (а) буфер дожал K — порция в заливку (если заливки ещё нет) */
+	if (g_uf.pl_rows &&
+	    g_uf.pl_rows->len >= (guint)pl_chunk_k() &&
+	    !g_uf.pl_inflight)
+		pl_flush_chunk();
+	/* (б) финализация готовых — сериально */
+	if (!g_uf.pl_fin_job && g_uf.pl_ready->len)
+		pl_job_finalize();
+	/* (в) транкоды: пока буфер строк не дожал порцию, слоты
+	 * свободны и очередь не кончилась */
+	guint n = g_uf.pl_files->len;
+	while (g_uf.pl_tct < g_uf.pl_par && g_uf.pl_idx < n &&
+	       g_uf.pl_rows && g_uf.pl_rows->len < (guint)pl_chunk_k()) {
+		const char *src = g_ptr_array_index(g_uf.pl_files,
+						    g_uf.pl_idx);
+		g_uf.pl_idx++;
+		if (strchr(src, '\t')) {
+			/* таб в пути разобьёт колонки TSV */
+			log_fmt("  пропущен — таб в пути: %s", src);
+			g_uf.pl_skip++;
+			continue;
+		}
+		if (!fixture_ok(src)) {
+			log_fmt("  пропущен — недоступен: %s", src);
+			g_uf.pl_skip++;
+			continue;
+		}
+		struct pl_job *j = pl_job_new(src, g_uf.pl_idx,
+					      (unsigned)n);
+		g_uf.pl_running++;
+		if (is_m4a(src)) {
+			/* как есть — tmpfs не расходует */
+			pl_job_ready_add(j);
+		} else {
+			pl_job_start(j);
+		}
+	}
+	/* (г) очередь кончилась и всё разошлось; inflight ждёт последний
+	 * rc — хвост разборок поведёт pl_chunk_done → pl_advance */
+	if (!g_uf.pl_inflight && g_uf.pl_idx >= n &&
+	    g_uf.pl_running == 0 && g_uf.pl_ready->len == 0 &&
+	    !g_uf.pl_fin_job)
 		pl_finish();
-		return;
-	}
-	const char *src = g_ptr_array_index(g_uf.pl_files, g_uf.pl_idx);
-	chain_paths_free();
-	if (strchr(src, '\t')) {
-		/* таб в пути разобьёт колонки TSV */
-		log_fmt("  пропущен — таб в пути: %s", src);
-		g_uf.pl_skip++;
-		g_uf.pl_idx++;
-		pl_next_file();
-		return;
-	}
-	if (!fixture_ok(src)) {
-		log_fmt("  пропущен — недоступен: %s", src);
-		g_uf.pl_skip++;
-		g_uf.pl_idx++;
-		pl_next_file();
-		return;
-	}
-	gchar *base = g_path_get_basename(src);
-	gchar *uname = g_strdup_printf("%u", (unsigned)g_uf.pl_idx + 1);
-	log_fmt("[%u/%u] %s", g_uf.pl_idx + 1, n, base);
-	g_free(base);
-	read_source_tags(src);
-	read_source_artwork2(src, uname);
-	g_uf.tc_src = g_strdup(src);
-	g_uf.tc_dst = is_m4a(src) ? g_strdup(src) : tc_make_dst2(src, uname);
-	g_free(uname);
-	if (is_m4a(src)) {
-		chain_discover(); /* меты всегда нужен — колонки TSV */
-		return;
-	}
-	if (!g_uf.gst_launch) {
-		pl_abort("транскод невозможен: нет gst-launch-1.0 в PATH");
-		return;
-	}
-	chain_transcode();
 }
 
 /* K треков на порцию (дефолт 16): IRMFILL_CHUNK переопределяет.
- * Модель владельца: перекод чанка → заливка чанка → удаление его
- * артефактов с tmpfs → следующий чанк. В tmpfs живёт ровно ОДНА
- * порция за раз, поэтому 191 файл больше не упирается в 3,6 Г
- * (раньше весь пакет перекодировался туда заранее). */
+ * Модель владельца: перекод порции → заливка порции → удаление её
+ * артефактов с tmpfs → следующий круг. В tmpfs живут ЗАЛИВАЮЩАЯСЯ
+ * порция + буфер following порции (строки ждут rc) + PAR
+ * транскодов в полёте — граница места ≈ one × (2K + PAR). */
 static unsigned pl_chunk_k(void)
 {
 	const char *e = getenv("IRMFILL_CHUNK");
@@ -867,6 +1107,22 @@ static unsigned pl_chunk_k(void)
 	int v = atoi(e);
 	if (v <= 0 || v > IRMFILL_BATCH_MAX)
 		return 16;
+	return (unsigned)v;
+}
+
+/* параллельных транскодов за раз (дефолт 3, 1..8): IRMFILL_PAR.
+ * Транскод CPU-bound (~1,4 с/файл — живой замер ALAC 05.11),
+ * поэтому 3 потока кормят телефон с проводом (~16 МиБ/с), не
+ * переполняя tmpfs: буфер следующей порции копится ВО ВРЕМЯ
+ * заливки текущей. */
+static unsigned pl_par_k(void)
+{
+	const char *e = getenv("IRMFILL_PAR");
+	if (!e || !*e)
+		return 3;
+	int v = atoi(e);
+	if (v < 1 || v > 8)
+		return 3;
 	return (unsigned)v;
 }
 
@@ -903,6 +1159,8 @@ static void pl_finish(void)
  * весь цикл, перекод следующего чанка продолжит после rc. */
 static void pl_flush_chunk(void)
 {
+	if (g_uf.pl_inflight)
+		return; /* порция уже едет — второй спавн запрещён */
 	if (!g_uf.irmctl) {
 		pl_abort("irmctl не найден (env " IRMFILL_IRMCTL_ENV
 			 ", PATH или рядом с бинарником)");
@@ -933,9 +1191,11 @@ static void pl_flush_chunk(void)
 	}
 	for (guint i = 0; i < nr; i++) {
 		struct pl_row *r = g_ptr_array_index(g_uf.pl_rows, i);
-		/* артефакты порции: перекод (+обложка) — на уборку
-		 * после живой (не stage-only) заливки rc=0 */
-		if (r->dst[0])
+		/* артефакты порции: только НАШИ (trans — tmp-перекод и
+		 * обложка) уходят на уборку после живой (не stage-only)
+		 * заливки rc=0. Родной .m4a владельца (trans=0) в
+		 * списке уборки запрещён — источник выживает. */
+		if (r->dst[0] && r->trans)
 			g_ptr_array_add(g_uf.pl_chunk_art,
 					g_strdup(r->dst));
 		if (r->art[0])
@@ -1004,14 +1264,11 @@ static void pl_chunk_done(gboolean ok)
 	unlink(g_uf.pl_chunk_tsv); /* TSV порции больше не нужен */
 	g_free(g_uf.pl_chunk_tsv);
 	g_uf.pl_chunk_tsv = NULL;
-	if (g_uf.pl_files && g_uf.pl_idx < g_uf.pl_files->len) {
-		pl_next_file(); /* цикл: перекод следующего чанка */
-		return;
-	}
-	log_fmt("конвейер завершён: порций залито %u, пропущено %u",
-		num, g_uf.pl_skip);
-	pl_reset();
-	set_busy(0);
+	/* v3: колесо целиком в pl_advance — подкачка транскодов
+	 * (закисшая на гейте rows≥K), хвостовая порция и
+	 * «конвейер завершён» (финиш едет только по rc: очередь к
+	 * этому моменту может кончиться раньше rc) */
+	pl_advance();
 }
 
 /* выбор нескольких файлов (GtkFileDialog open_multiple): безопасность
@@ -1038,6 +1295,12 @@ static void pl_start_from_files(GListModel *files)
 		log_fmt("пакет невозможен: нет gst-discoverer-1.0 в PATH");
 		return;
 	}
+	if (!g_uf.gst_launch) {
+		log_fmt("пакет невозможен: нет gst-launch-1.0 в PATH "
+			"(перекод %s для не-.m4a входов)",
+			g_uf.gst_codec);
+		return;
+	}
 	pl_reset();
 	g_uf.pl_files = g_ptr_array_new_with_free_func(g_free);
 	for (guint i = 0; i < n; i++) {
@@ -1057,10 +1320,11 @@ static void pl_start_from_files(GListModel *files)
 	}
 	/* precheck места (live 05.11: EDQUOT на tmpfs при rc=0 gst-launch
 	 * валит транскоды молча — гасим проблему ДО работы): оценка
-	 * vs свободного места на tmp (90% — не доедаем). v2: tmpfs
-	 * держит ТОЛЬКО одну порцию, поэтому worst-case = K × самая
-	 * большая оценка одного файла (сумма по всему пакету больше
-	 * не нужна — перекоды порции убираются после её rc=0) */
+	 * vs свободного места на tmp (90% — не доедаем). v3: tmpfs
+	 * держит заливающуюся порцию + буфер следующей порции (2K) +
+	 * PAR транскодов в полёте — worst-case one × (2K + PAR); для
+	 * дефолтного AAC факторы оценки строго ALAC-оверхед —
+	 * запас поверх ещё и он (транскод AAC ~×4 легче ALAC). */
 	unsigned long long one = 0;
 	for (guint i = 0; i < g_uf.pl_files->len; i++) {
 		const char *p = g_ptr_array_index(g_uf.pl_files, i);
@@ -1069,7 +1333,8 @@ static void pl_start_from_files(GListModel *files)
 			one = e;
 	}
 	unsigned K = pl_chunk_k();
-	unsigned long long need = one * K;
+	unsigned par = pl_par_k();
+	unsigned long long need = one * (2 * (unsigned long long)K + par);
 	unsigned long long free_b = free_bytes_on(g_get_tmp_dir());
 	unsigned long long avail = free_b / 10 * 9;
 	if (free_b == 0) {
@@ -1078,14 +1343,16 @@ static void pl_start_from_files(GListModel *files)
 			"gst-discoverer отбракует сорванные",
 			g_get_tmp_dir());
 	} else if (need > avail) {
-		log_fmt("пакет: места на %s мало: нужно ~%llu МиБ, "
-			"свободно ~%llu МиБ (составлял по 90%%)",
-			g_get_tmp_dir(), need >> 20, avail >> 20);
+		log_fmt("пакет: места на %s мало: нужно ~%llu МиБ "
+			"(2 порции+%u транскодов), свободно ~%llu МиБ "
+			"(составлял по 90%%)",
+			g_get_tmp_dir(), need >> 20, par, avail >> 20);
 		log_fmt("советы: rm /tmp/irm-fill-*.m4a /tmp/irm-fill-*.jpg "
 			"(старые артефакты), или меньший IRMFILL_CHUNK "
-			"(сейчас порция %u), или точка монтирования /tmp "
-			"с большим объёмом",
-			K);
+			"(сейчас порция %u), или IRMFILL_PAR=%u пахать "
+			"меньше, или точка монтирования /tmp с большим "
+			"объёмом",
+			K, par);
 		pl_reset();
 		return;
 	} else if (need > avail / 2) {
@@ -1096,14 +1363,18 @@ static void pl_start_from_files(GListModel *files)
 	}
 	g_uf.pl_rows = g_ptr_array_new_with_free_func(g_free);
 	g_uf.pl_chunk_art = g_ptr_array_new_with_free_func(g_free);
+	/* очередь готовых job'ов: элементами владеет конвейер (pl_reset
+	 * НЕ освобождает job'ы — значит, без free_func) */
+	g_uf.pl_ready = g_ptr_array_new();
+	g_uf.pl_par = par;
 	g_uf.pl_chunk_total = (unsigned)((g_uf.pl_files->len + K - 1) / K);
 	g_uf.pl_active = TRUE;
 	g_uf.pl_idx = 0;
-	log_fmt("пакет: %u файл(ов), порций по %u, цикл «перекод → заливка → "
-		"чистка»…",
-		g_uf.pl_files->len, K);
+	log_fmt("пакет: %u файл(ов), порций по %u, перекод %s ×%u, "
+		"цикл «транскод → заливка → чистка»…",
+		g_uf.pl_files->len, K, g_uf.gst_codec, par);
 	set_busy(1);
-	pl_next_file();
+	pl_advance();
 }
 
 static void on_open_multi_done(GObject *src, GAsyncResult *res,
@@ -1152,7 +1423,7 @@ static void on_playlist_clicked(GtkButton *btn, gpointer user)
 	g_object_unref(fd);
 }
 
-/* ---- транскод-цепочка 9i: не-.m4a → ALAC .m4a → gst-discoverer ---- */
+/* ---- транскод-цепочка v3: не-.m4a → AAC|ALAC .m4a → gst-discoverer ---- */
 
 static void chain_paths_free(void)
 {
@@ -1162,17 +1433,13 @@ static void chain_paths_free(void)
 	g_uf.tc_dst = NULL;
 }
 
+/* срыв одиночной цепочки: только рабочие поля и busy. Срывы пакета
+ * разбирает pl_job_fail — item пропускается живьём (live 05.11:
+ * EDQUOT на tmpfs валит одиночные транскоды молча; «либо всё
+ * готово, либо item мимо» — батч не валится). */
 static void chain_fail(void)
 {
 	chain_paths_free();
-	if (g_uf.pl_active) {
-		/* 9l: срыв звена пакета НЕ валит батч — item пропускается
-		 * (live 05.11: EDQUOT на tmpfs валит одиночные транскоды;
-		 * частичному посылу не бываем — «либо всё готово, либо
-		 * item мимо»). */
-		pl_skip_item("транскод-цепочка сорвалась");
-		return;
-	}
 	set_busy(0);
 }
 
@@ -1205,19 +1472,36 @@ static gchar *tc_make_dst(const char *src)
 	return tc_make_dst2(src, NULL);
 }
 
-/* ступень 2: из вывода gst-discoverer — длительность и сэмплрейт */
+/* ступень 2: из вывода gst-discoverer — длительность и сэмплрейт.
+ * user: NULL — одиночный режим (подпроцесс в g_uf.proc); job —
+ * пакетный (подпроцесс живёт в асинхронной задаче, g_uf.proc не
+ * трогаем — следующим job'ом он был бы затёрт) */
 static void chain_discover_done(GObject *src, GAsyncResult *res,
 				gpointer user)
 {
-	(void)user;
 	GSubprocess *sp = G_SUBPROCESS(src);
+	struct pl_job *j = user;
 	char *txt = NULL;
 	char *etext = NULL;
 	GError *err = NULL;
 	gboolean ok = g_subprocess_communicate_utf8_finish(
 		sp, res, &txt, &etext, &err);
-	g_clear_object(&g_uf.proc);
 
+	if (j) {
+		g_object_unref(sp); /* g_uf.proc job-процессы не хранит */
+		if (j->gen != g_uf.pl_gen) {
+			/* пакет сброшен — job чужой, только прибираем */
+			g_free(txt);
+			g_free(etext);
+			g_clear_error(&err);
+			pl_job_free(j);
+			return;
+		}
+	} else {
+		g_clear_object(&g_uf.proc);
+	}
+
+	/* срыв плёнки: job пропускается, конвейер живёт дальше */
 	if (!ok) {
 		log_fmt("gst-discoverer: %s", err ? err->message : "?");
 		if (txt && *txt) {
@@ -1227,6 +1511,11 @@ static void chain_discover_done(GObject *src, GAsyncResult *res,
 		g_free(txt);
 		g_free(etext);
 		g_clear_error(&err);
+		if (j) {
+			g_uf.pl_fin_job = NULL;
+			pl_job_fail(j, "gst-discoverer сорвался");
+			return;
+		}
 		chain_fail();
 		return;
 	}
@@ -1241,6 +1530,11 @@ static void chain_discover_done(GObject *src, GAsyncResult *res,
 		}
 		g_free(txt);
 		g_free(etext);
+		if (j) {
+			g_uf.pl_fin_job = NULL;
+			pl_job_fail(j, "меты не читаются");
+			return;
+		}
 		chain_fail();
 		return;
 	}
@@ -1256,17 +1550,34 @@ static void chain_discover_done(GObject *src, GAsyncResult *res,
 	g_free(etext);
 
 	if (ms == 0 || rate == 0) {
-		log_fmt("gst-discoverer: мусорные метаданные "
-			"(ms=%llu rate=%u)",
-			ms, rate);
+		if (j)
+			log_fmt("  [%u] меты мусорные (ms=%llu rate=%u)",
+				j->idx, ms, rate);
+		else
+			log_fmt("gst-discoverer: мусорные метаданные "
+				"(ms=%llu rate=%u)",
+				ms, rate);
+		if (j) {
+			g_uf.pl_fin_job = NULL;
+			pl_job_fail(j, "меты мусорные");
+			return;
+		}
 		chain_fail();
 		return;
 	}
-	log_fmt("метаданные перекода: %llu мс, %u Гц, ~%llu сэмплов",
-		ms, rate, ms * (unsigned long long)rate / 1000ULL);
+	if (j)
+		log_fmt("    [%u] меты: %llu мс, %u Гц, ~%llu сэмплов",
+			j->idx, ms, rate,
+			ms * (unsigned long long)rate / 1000ULL);
+	else
+		log_fmt("метаданные перекода: %llu мс, %u Гц, "
+			"~%llu сэмплов",
+			ms, rate,
+			ms * (unsigned long long)rate / 1000ULL);
 
 	if (g_uf.pl_active) {
-		/* 9l: строка пакета готова — к следующему файлу */
+		/* 9l: строка пакета готова — рабочие поля (теги/обложка)
+		 * заполнены pl_job_finalize'ом из копий job'а */
 		pl_row_done(g_uf.tc_dst, ms, rate);
 		return;
 	}
@@ -1274,7 +1585,9 @@ static void chain_discover_done(GObject *src, GAsyncResult *res,
 	chain_paths_free();
 }
 
-static void chain_discover(void)
+/* ступень 2: запуск gst-discoverer (путь — g_uf.tc_dst: его
+ * заполнил pl_job_finalize из job'а или одиночная цепочка) */
+static void chain_discover(gpointer job)
 {
 	GError *err = NULL;
 	const char *argv[] = { g_uf.gst_discover, g_uf.tc_dst, NULL };
@@ -1287,12 +1600,18 @@ static void chain_discover(void)
 			err ? err->message : "?");
 		g_clear_error(&err);
 		log_fmt("транскод прерван: gst-discoverer не запустился");
+		if (job) {
+			g_uf.pl_fin_job = NULL;
+			pl_job_fail(job, "gst-discoverer не запустился");
+			return;
+		}
 		chain_fail();
 		return;
 	}
-	g_uf.proc = sp;
 	g_subprocess_communicate_utf8_async(sp, NULL, NULL,
-					    chain_discover_done, NULL);
+					    chain_discover_done, job);
+	if (!job)
+		g_uf.proc = sp; /* одиночный: v2-гашение при закрытии */
 }
 
 /* ступень 1: результаты gst-launch (файл должен появиться) */
@@ -1328,26 +1647,43 @@ static void chain_transcode_done(GObject *src, GAsyncResult *res,
 	log_file_size(g_uf.tc_dst);
 	g_free(txt);
 	g_free(etext);
-	chain_discover();
+	chain_discover(NULL);
 }
 
-static void chain_transcode(void)
+/* спавн транскода (v3): общий пайплайн для одиночного режима и
+ * пакетных job'ов; кодек выбран на старте (find_gst: AAC — дефолт,
+ * недоступный avenc_aac → откат ALAC). dst unlink'ется ДО спавна:
+ * mp4mux дописал бы в старый файл и остался бы без moov (live
+ * 05.11: 12:30-серия на файле 1). Возвращает подпроцесс или NULL
+ * (не запустился). */
+static GSubprocess *transcode_spawn(const char *src, const char *dst)
 {
 	GError *err = NULL;
-	gchar *srcLoc = g_strdup_printf("location=%s", g_uf.tc_src);
-	gchar *dstLoc = g_strdup_printf("location=%s", g_uf.tc_dst);
-	const char *argv[] = { g_uf.gst_launch, "-q",
+	gchar *srcLoc = g_strdup_printf("location=%s", src);
+	gchar *dstLoc = g_strdup_printf("location=%s", dst);
+	const char *enc = g_uf.codec_aac ? "avenc_aac" : "avenc_alac";
+	char rate[32];
+	rate[0] = 0;
+	if (g_uf.codec_aac)
+		snprintf(rate, sizeof rate, "bitrate=%u", g_uf.aac_rate);
+	const char *argv_aac[] = {
+		g_uf.gst_launch, "-q",
+		"filesrc", srcLoc, "!", "decodebin",
+		"!", "audioconvert", "!", "audioresample",
+		"!", "avenc_aac", rate, "!", "mp4mux", "!",
+		"filesink", dstLoc, NULL };
+	const char *argv_alac[] = {
+		g_uf.gst_launch, "-q",
 		"filesrc", srcLoc, "!", "decodebin",
 		"!", "audioconvert", "!", "audioresample",
 		"!", "avenc_alac", "!", "mp4mux", "!",
 		"filesink", dstLoc, NULL };
+	const char **argv = g_uf.codec_aac ? argv_aac : argv_alac;
 	/* свежий артефакт за прогон: старый (в т.ч. неофинализированный
-	 * от сорванного прогона) удаляем ДО спавна — иначе mp4mux
-	 * дописывает в существующий файл и остаётся БЕЗ moov
-	 * (live 05.11: 12:30-серия на файле 1). */
-	if (g_uf.tc_dst && g_uf.tc_dst[0])
-		unlink(g_uf.tc_dst);
-	log_fmt("транскод ALAC идёт (avenc_alac + mp4mux), ждите…");
+	 * от сорванного прогона) удаляем ДО спавна */
+	unlink(dst);
+	log_fmt("транскод %s идёт (%s + mp4mux), ждите…",
+		g_uf.gst_codec, enc);
 	GSubprocess *sp = g_subprocess_newv(
 		argv, G_SUBPROCESS_FLAGS_STDOUT_PIPE |
 		G_SUBPROCESS_FLAGS_STDERR_MERGE,
@@ -1357,6 +1693,18 @@ static void chain_transcode(void)
 	if (!sp) {
 		log_fmt("запуск gst-launch: %s", err ? err->message : "?");
 		g_clear_error(&err);
+		return NULL;
+	}
+	return sp;
+}
+
+/* одиночный режим: транскод остаётся в рабочих полях (v2-семантика
+ * гашения при закрытии окна); пакетные job'ы зовут transcode_spawn
+ * напрямую (pl_job_start) */
+static void chain_transcode(void)
+{
+	GSubprocess *sp = transcode_spawn(g_uf.tc_src, g_uf.tc_dst);
+	if (!sp) {
 		log_fmt("транскод прерван: gst-launch не запустился");
 		chain_fail();
 		return;
@@ -1560,6 +1908,39 @@ static void find_gst(void)
 {
 	g_uf.gst_launch = g_find_program_in_path("gst-launch-1.0");
 	g_uf.gst_discover = g_find_program_in_path("gst-discoverer-1.0");
+	/* 9m: кодек пакета — AAC по умолчанию (пейлоад ~×4 легче
+	 * прежнего ALAC, телефон играет AAC нативно; провод ~16
+	 * МиБ/с — живой замер 05.11, чем легче байты, тем быстрее
+	 * заливка). IRMFILL_CODEC=alac возвращает прежний; при
+	 * недоступном avenc_aac — откат с предупреждением. */
+	const char *e = getenv("IRMFILL_CODEC");
+	gboolean want_aac = !(e && g_ascii_strcasecmp(e, "alac") == 0);
+	const char *rate = getenv("IRMFILL_AAC_RATE");
+	int r = rate ? atoi(rate) : 0;
+	if (r < 64000 || r > 320000)
+		r = 256000;
+	g_uf.aac_rate = (unsigned)r;
+	g_uf.codec_aac = FALSE;
+	snprintf(g_uf.gst_codec, sizeof g_uf.gst_codec, "ALAC");
+	if (!want_aac)
+		return;
+	g_uf.gst_inspect = g_find_program_in_path("gst-inspect-1.0");
+	gboolean have = FALSE;
+	if (g_uf.gst_inspect) {
+		/* avenc_aac на месте? (stdout плагинового дампа гасим) */
+		gchar *cmd = g_strdup_printf(
+			"%s avenc_aac >/dev/null 2>&1",
+			g_uf.gst_inspect);
+		have = system(cmd) == 0;
+		g_free(cmd);
+	}
+	if (have) {
+		g_uf.codec_aac = TRUE;
+		snprintf(g_uf.gst_codec, sizeof g_uf.gst_codec, "AAC");
+	} else {
+		log_fmt("транскод: avenc_aac недоступен — перекод пакета "
+			"вернётся на ALAC (IRMFILL_CODEC=alac — то же)");
+	}
 }
 
 static void build_ui(GtkApplication *app)
@@ -1735,8 +2116,18 @@ static void build_ui(GtkApplication *app)
 	log_fmt("транскод: gst-launch-1.0 %s, gst-discoverer-1.0 %s",
 		g_uf.gst_launch ? "есть" : "НЕТ",
 		g_uf.gst_discover ? "есть" : "НЕТ");
-	log_fmt("не-.m4a фикстуры (.mp3, .flac …) перекодируются в ALAC "
-		"автоматически");
+	if (g_uf.codec_aac) {
+		log_fmt("не-.m4a фикстуры (.mp3, .flac …) перекодируются в "
+			"AAC (bitrate=%u; IRMFILL_CODEC=alac — откат) "
+			"автоматически",
+			g_uf.aac_rate);
+	} else {
+		log_fmt("не-.m4a фикстуры (.mp3, .flac …) перекодируются в "
+			"ALAC (IRMFILL_CODEC=alac) автоматически");
+	}
+	log_fmt("параллельные транскоды пакета: %u (IRMFILL_PAR, "
+		"порция по %u: IRMFILL_CHUNK)",
+		pl_par_k(), pl_chunk_k());
 	log_fmt("мутирующие прогоны — только по нажатию кнопки; "
 		"«только стадия» по умолчанию ВКЛ (без записей)");
 

@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -78,6 +79,7 @@ typedef struct {
 	 * перекод/мета → TSV-плейлист → irmctl (IRMA_ATC_PLAYLIST) */
 	gboolean pl_active;
 	unsigned pl_idx;
+	unsigned pl_skip; /* live-факт: срывы item'ов пропускаем */
 	GPtrArray *pl_files; /* выбранное: gchar* пути источника */
 	GPtrArray *pl_rows;  /* готовые строки: struct pl_row* */
 } IrmFill;
@@ -654,6 +656,50 @@ static gchar *tc_make_dst2(const char *src, const char *uniq);
 static void pl_next_file(void);
 static void pl_finish(void);
 
+/* live-факт 05.11: gst-launch может выйти rc=0 даже при ошибке пайпа
+ * (ОШИБКА «Превышена дисковая квота» на tmpfs — файл остаётся без
+ * moov), поэтому единственный настоящий валидатор — gst-discoverer;
+ * неудачный item в пакете ПРОПУСКАЕТСЯ, а не валит батч. */
+
+/* сколько байт свободно на файловой системе пути (0 при провале) */
+static unsigned long long free_bytes_on(const char *dir)
+{
+	struct statvfs v;
+	if (statvfs(dir, &v) != 0)
+		return 0;
+	return (unsigned long long)v.f_bavail *
+	       (unsigned long long)v.f_frsize;
+}
+
+/* оценка размера пейлоада (.m4a-перекода) из источника: ALAC
+ * несжимаем, а mp3 даёт ALAC ~×4 объёма (live 05.11: mp3 10,3 МиБ
+ * → m4a 41,9 МиБ; mp3 12,3 МиБ → 50,4 МиБ) — для mp3 фактор ×4;
+ * flac чуть шире ALAC (×1.5 запас); .m4a идёт КАК ЕСТЬ (tmpfs не
+ * расходует). Нужна для предзапуска пакета. */
+static unsigned long long payload_estimate(const char *path)
+{
+	struct stat st;
+	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
+		return 0;
+	double f = 4.0; /* дефолт строгий */
+	const char *e = strrchr(path, '.');
+	if (e) {
+		if (g_ascii_strcasecmp(e, ".m4a") == 0 ||
+		    g_ascii_strcasecmp(e, ".mp4") == 0)
+			return 0; /* как есть, tmpfs не расходует */
+		if (g_ascii_strcasecmp(e, ".flac") == 0)
+			f = 1.5;
+		else if (g_ascii_strcasecmp(e, ".wav") == 0 ||
+			 g_ascii_strcasecmp(e, ".aif") == 0 ||
+			 g_ascii_strcasecmp(e, ".aiff") == 0)
+			f = 0.8;
+		else if (g_ascii_strcasecmp(e, ".mp3") == 0)
+			f = 4.0;
+	}
+	/* 5% запас поверх эмпирики */
+	return (unsigned long long)((double)st.st_size * f * 1.05);
+}
+
 static void pl_reset(void)
 {
 	if (g_uf.pl_files)
@@ -664,6 +710,7 @@ static void pl_reset(void)
 	g_uf.pl_rows = NULL;
 	g_uf.pl_active = FALSE;
 	g_uf.pl_idx = 0;
+	g_uf.pl_skip = 0;
 }
 
 /* пакет прерван: освобождаем состояние, busy вон */
@@ -672,6 +719,23 @@ static void pl_abort(const char *why)
 	log_fmt("пакет прерван: %s", why);
 	pl_reset();
 	set_busy(0);
+}
+
+/* live-правило 05.11: сорвавшийся item пакета пропускается, батч
+ * живёт дальше. Мусорный артефакт (неофинализированный .m4a БЕЗ
+ * moov — gst-launch вышел, не долив хвост) удаляем: иначе он
+ * доедает tmpfs и может быть ложно «залит» на телефон. */
+static void pl_skip_item(const char *why)
+{
+	guint n = g_uf.pl_files ? g_uf.pl_files->len : 0;
+	log_fmt("  пропущен [%u/%u]: %s", g_uf.pl_idx + 1, n, why);
+	if (g_uf.tc_dst && g_uf.tc_dst[0] &&
+	    g_file_test(g_uf.tc_dst, G_FILE_TEST_IS_REGULAR))
+		unlink(g_uf.tc_dst);
+	chain_paths_free();
+	g_uf.pl_skip++;
+	g_uf.pl_idx++;
+	pl_next_file();
 }
 
 /* один файл доведён до пейлоада (+мета): строка в очередь */
@@ -709,12 +773,14 @@ static void pl_next_file(void)
 	if (strchr(src, '\t')) {
 		/* таб в пути разобьёт колонки TSV */
 		log_fmt("  пропущен — таб в пути: %s", src);
+		g_uf.pl_skip++;
 		g_uf.pl_idx++;
 		pl_next_file();
 		return;
 	}
 	if (!fixture_ok(src)) {
 		log_fmt("  пропущен — недоступен: %s", src);
+		g_uf.pl_skip++;
 		g_uf.pl_idx++;
 		pl_next_file();
 		return;
@@ -750,6 +816,9 @@ static void pl_finish(void)
 	}
 	guint nr = g_uf.pl_rows ? g_uf.pl_rows->len : 0;
 	if (nr == 0) {
+		if (g_uf.pl_skip)
+			log_fmt("обработалось 0 из %u — все пропущены",
+				g_uf.pl_skip);
 		pl_abort("ни один файл не обработался");
 		return;
 	}
@@ -781,7 +850,8 @@ static void pl_finish(void)
 		pl_abort("TSV не записан");
 		return;
 	}
-	log_fmt("плейлист готов: %u трек(ов) → %s", (unsigned)nr, tsv);
+	log_fmt("плейлист готов: %u трек(ов) → %s (пропущено %u)",
+		(unsigned)nr, tsv, g_uf.pl_skip);
 	chain_paths_free();
 	pl_reset(); /* строк больше не нужны — TSV уже на диске */
 	/* spawn при провале сам снимет busy и отчистится */
@@ -829,6 +899,37 @@ static void pl_start_from_files(GListModel *files)
 	if (g_uf.pl_files->len == 0) {
 		pl_reset();
 		return;
+	}
+	/* precheck места (live 05.11: EDQUOT на tmpfs при rc=0 gst-launch
+	 * валит транскоды молча — гасим проблему ДО работы): оценка
+	 * пейлоадов vs свободного места на tmp (90% — не доедаем) */
+	unsigned long long need = 0;
+	for (guint i = 0; i < g_uf.pl_files->len; i++) {
+		const char *p = g_ptr_array_index(g_uf.pl_files, i);
+		need += payload_estimate(p);
+	}
+	unsigned long long free_b = free_bytes_on(g_get_tmp_dir());
+	unsigned long long avail = free_b / 10 * 9;
+	if (free_b == 0) {
+		log_fmt("пакет: свободное место на %s не проверить "
+			"(statvfs не удался) — продолжаю, валидатор "
+			"gst-discoverer отбракует сорванные",
+			g_get_tmp_dir());
+	} else if (need > avail) {
+		log_fmt("пакет: места на %s мало: нужно ~%llu МиБ, "
+			"свободно ~%llu МиБ (составлял по 90%%)",
+			g_get_tmp_dir(), need >> 20, avail >> 20);
+		log_fmt("советы: rm /tmp/irm-fill-*.m4a /tmp/irm-fill-*.jpg "
+			"(старые артефакты), или выбираешь меньшую порцию "
+			"файлов, или точка монтирования /tmp с большим "
+			"объёмом");
+		pl_reset();
+		return;
+	} else if (need > avail / 2) {
+		log_fmt("пакет: предупреждение — пейлоады съедят больше "
+			"половины свободного места (%s): ~%llu МиБ из "
+			"~%llu МиБ",
+			g_get_tmp_dir(), need >> 20, avail >> 20);
 	}
 	g_uf.pl_rows = g_ptr_array_new_with_free_func(g_free);
 	g_uf.pl_active = TRUE;
@@ -899,9 +1000,11 @@ static void chain_fail(void)
 {
 	chain_paths_free();
 	if (g_uf.pl_active) {
-		/* 9l: срыв звена пакета прерывает весь батч (частичный
-		 * посыл без строк не собираем — либо всё, либо ничего) */
-		pl_abort("транскод-цепочка сорвалась");
+		/* 9l: срыв звена пакета НЕ валит батч — item пропускается
+		 * (live 05.11: EDQUOT на tmpfs валит одиночные транскоды;
+		 * частичному посылу не бываем — «либо всё готово, либо
+		 * item мимо»). */
+		pl_skip_item("транскод-цепочка сорвалась");
 		return;
 	}
 	set_busy(0);
@@ -1072,6 +1175,12 @@ static void chain_transcode(void)
 		"!", "audioconvert", "!", "audioresample",
 		"!", "avenc_alac", "!", "mp4mux", "!",
 		"filesink", dstLoc, NULL };
+	/* свежий артефакт за прогон: старый (в т.ч. неофинализированный
+	 * от сорванного прогона) удаляем ДО спавна — иначе mp4mux
+	 * дописывает в существующий файл и остаётся БЕЗ moov
+	 * (live 05.11: 12:30-серия на файле 1). */
+	if (g_uf.tc_dst && g_uf.tc_dst[0])
+		unlink(g_uf.tc_dst);
 	log_fmt("транскод ALAC идёт (avenc_alac + mp4mux), ждите…");
 	GSubprocess *sp = g_subprocess_newv(
 		argv, G_SUBPROCESS_FLAGS_STDOUT_PIPE |

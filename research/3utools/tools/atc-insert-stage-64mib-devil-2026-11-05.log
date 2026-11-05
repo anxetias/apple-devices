@@ -1,0 +1,61 @@
+device: id=1 udid=00008030-001C3128119A402E
+pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+batch: 1 вставка(ок) в одном конверте
+метаданные: total_ms=100 rate=44100 samples=4410
+fixture: /tmp/irm-fill-04_The_Devil_in_I.m4a (43956743 Б)
+[com.apple.afc] port=58363 ssl=0
+  канал: сырой
+staging /iTunes_Control/Sync/Media: пуст (ок)
+DB-копия: /tmp/opencode/00008030-001C3128119A402E-music/MediaLibrary.sqlitedb (с -wal)
+integrity_check: ok
+каталог: db_pid=860019141250340 primary_container_pid=460217054914055021
+якерь: A=10 → FSFM A+1=11
+PID-набор: 2297 значений
+PIDs: album=2801014858998514503 artist=1698544213136775296; треков 1: 277068729705905613
+ops-файл: 1070 байт (head: 62 70 6c 69 73 74 30 30 d3 01 03 55 02 04 56 58 72 65 76 69 73 69 6f 6e...)
+[com.apple.atc] port=58365 ssl=1
+  канал: TLS (lbD-комбо)
+  кадр 1: len=94 Command=Pong
+  кадр 2: len=188 Command=Capabilities
+  кадр 3: len=150 Command=InstalledAssets
+  кадр 4: len=732 Command=AssetMetrics
+  кадр 5: len=387 Command=SyncAllowed
+ отсылаем RequestingSync (Session=2, якерь 10)
+  кадр 1: len=387 Command=SyncAllowed
+  кадр 2: len=150 Command=InstalledAssets
+  кадр 3: len=275 Command=ReadyForSync
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>ReadyForSync</string>
+	<key>Params</key>
+	<dict>
+		<key>DataclassAnchors</key>
+		<dict>
+			<key>Media</key>
+			<string>10</string>
+			<key>Book</key>
+			<string>0</string>
+		</dict>
+		<key>DeviceInfo</key>
+		<dict>
+			<key>Grappa</key>
+			<data>AQG2LqdECSQk/1Aq6aZf2Q3BQHVvqMJG1XTk5JJry5bIcH/M2p10my6R+E/Tx4lOnhbXZFh9yYLqBZMhMuEsYcbk3fOQmHX/TUziTs4YzOiEtUQ=</data>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>534</integer>
+</dict>
+</plist>
+
+  GRAPPA_REPLY(83): 01 01 b6 2e a7 44 09 24 24 ff 50 2a e9 a6 5f d9 0d c1 40 75 6f a8 c2 46 d5 74 e4 e4 92 6b cb 96 c8 70 7f cc da 9d 74 9b 2e 91 f8 4f d3 c7 89 4e 9e 16 d7 64 58 7d c9 82 ea 05 93 21 32 e1 2c 61 c6 e4 dd f3 90 98 75 ff 4d 4c e2 4e ce 18 cc e8 84 b5 44
+ anchor: sent=10 ready=10
+sidecar .cig: 0x01 + HMAC-SHA1⊕mask (21 б): 01 70 87 0f 98 1e 5d 31 ab 70 03 74 6a 29 f7 8f dd 6f fc 0e 7d
+STAGE-ONLY: подпись сверена; записей на телефон НЕ делаем, сессию отменяем (close) — телефон потребляет файлы ТОЛЬКО на FSFM (§14.3)

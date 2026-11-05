@@ -1135,6 +1135,16 @@ apple-devices/
 - **Живая проверка (за кликом пользователя)**: выбрать трек с тегами,
   снять STAGE-ONLY, один трек → в приложении «fuze — Skrillex &
   ISOxo» и альбом «hit me where it hurts x».
+- **Живая проверка 9j ПРОЙДЕНА** (05.11, два полных прогона):
+  «Lost in a Wave — LANDMVRKS / Lost in the Waves» и
+  «fuze — Skrillex & ISOxo / hit me where it hurts x» реально
+  появились как два альбома в «Недавно добавлено»; якерь 7→8→9;
+  пользователь: «загрузил 2 трека, загрузились без обложек» (artwork
+  не шлём — известное ограничение). Новое наблюдение: бэклог-желание
+  вернулось во второй сессии после FileComplete первой
+  (AssetParts 5→4 у того же ассета); FileError{16, Unavailable,
+  IsVisible=false} → SessionFinished (якерь 8→9) — см. E16 п.8
+  (docs/evidence/E16-atc-insert-batch.md).
 - Логи: research/3utools/tools/`irm-fill-gui-fill-2026-11-05.log`
   (9i живой прогон, дословно), `atc-insert-stage-tags-2026-11-05.log`
   (9j-регрессия); FINDINGS §9i/§9j (3utools-research, коммит bd225ece).

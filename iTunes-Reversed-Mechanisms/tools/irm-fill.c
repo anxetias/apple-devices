@@ -10,9 +10,11 @@
  * 9i/v3: фикстуры не-.m4a (.mp3, .flac …) перекодируются в .m4a
  * автоматически: gst-launch-1.0 пишет tmp-файл (AAC-дефолт
  * avenc_aac+mp4mux, IRMFILL_CODEC=alac откатывает на avenc_alac;
- * пакет крутит IRMFILL_PAR транскодов параллельно порциями по
- * IRMFILL_CHUNK), gst-discoverer-1.0 даёт длительность/сэмплрейт,
- * они передаются
+ * с 05.11 транскоды пакета строго ПОСЛЕДОВАТЕЛЬНЫ (1 за раз —
+ * фикс перемешивания тегов: планировка следующего файла
+ * перезаписывала общие поля против Discover предыдущего), порции
+ * по IRMFILL_CHUNK), gst-discoverer-1.0 даёт длительность/
+ * сэмплрейт,
  * irmctl через IRMA_ATC_TOTAL_MS/IRMA_ATC_RATE/IRMA_ATC_SAMPLES.
  * irmctl ищется в env IRMFILL_IRMCTL, затем PATH, затем рядом с
  * самим бинарником irm-fill (через /proc/self/exe).
@@ -121,6 +123,13 @@ typedef struct {
 	GPtrArray *pl_ready;       /* FIFO: struct pl_job* (не владеем) */
 	struct pl_job *pl_fin_job; /* финализируется сейчас */
 	unsigned pl_gen;           /* поколение (для async-колбэков) */
+
+	/* 05.11 (фикс перемешивания тегов): job ещё жив — запланирован,
+	 * транкодится, ждёт финализации или в discover. Порция не
+	 * уезжает, пока жив хотя бы один job с idx меньше последней
+	 * готовой строки — иначе «порция 1: файлы 1..7,9» при не
+	 * готовом 8 (живой факт лога 14:58). Индекс 0 пуст. */
+	unsigned char pl_alive[IRMFILL_BATCH_MAX + 1];
 
 	/* v3: подпроцессы параллельных транскодов живут ВНЕ g_uf.proc
 	 * (там — заливающий atc-insert). Список даёт старой семантике
@@ -744,6 +753,7 @@ static void pl_finish(void);
 static unsigned pl_chunk_k(void);
 static unsigned pl_par_k(void);
 static void pl_flush_chunk(void);
+static int pl_flush_mature(void);
 static void pl_chunk_done(gboolean ok);
 static void pl_advance(void);
 static void pl_job_fail(struct pl_job *j, const char *why);
@@ -867,6 +877,7 @@ static void pl_reset(void)
 	g_uf.pl_skip = 0;
 	g_uf.pl_running = 0;
 	g_uf.pl_tct = 0;
+	memset(g_uf.pl_alive, 0, sizeof g_uf.pl_alive);
 	g_uf.pl_gen++; /* старым async-колбэкам job больше не его */
 }
 
@@ -882,6 +893,10 @@ static void pl_job_free(struct pl_job *j)
 {
 	if (!j)
 		return;
+	/* job закрылся (строка/скип/сброс пакета) — маска перестаёт
+	 * держать порцию. */
+	if (j->idx >= 1 && j->idx <= IRMFILL_BATCH_MAX)
+		g_uf.pl_alive[j->idx] = 0;
 	g_free(j->src);
 	g_free(j->dst);
 	g_free(j->art);
@@ -995,9 +1010,13 @@ static void pl_job_start(struct pl_job *j)
 					    pl_job_transcode_done, j);
 }
 
-/* очередь разборки: сериально, один gst-discover за раз; теги/
- * обложку job'а восстанавливаем в рабочие поля (pl_row_done их
- * читает) */
+/* очередь разборки: сериально, один gst-discover за раз. Теги/
+ * обложка едут В СТРОКУ прямо из копий job'а (pl_row_done читает
+ * j->*) — общие поля g_uf.tag_* и art_path не участвуют: планировка
+ * следующего файла гонит по ним read_source_tags против Discover,
+ * и строка увозит чужие теги (живой факт 05.11). Здесь остаётся
+ * только tc_dst: его берут chain_discover (путь разбора) и
+ * chain_discover_done (dst строки). */
 static void pl_job_finalize(void)
 {
 	if (g_uf.pl_fin_job || g_uf.pl_ready->len == 0)
@@ -1005,16 +1024,6 @@ static void pl_job_finalize(void)
 	struct pl_job *j = g_ptr_array_index(g_uf.pl_ready, 0);
 	g_ptr_array_remove_index(g_uf.pl_ready, 0);
 	g_uf.pl_fin_job = j;
-	snprintf(g_uf.tag_title, sizeof g_uf.tag_title, "%s",
-		 j->title ? j->title : "");
-	snprintf(g_uf.tag_artist, sizeof g_uf.tag_artist, "%s",
-		 j->artist ? j->artist : "");
-	snprintf(g_uf.tag_album, sizeof g_uf.tag_album, "%s",
-		 j->album ? j->album : "");
-	snprintf(g_uf.tag_genre, sizeof g_uf.tag_genre, "%s",
-		 j->genre ? j->genre : "");
-	snprintf(g_uf.art_path, sizeof g_uf.art_path, "%s",
-		 j->art ? j->art : "");
 	g_uf.tc_dst = g_strdup(j->dst);
 	chain_discover(j);
 }
@@ -1042,6 +1051,10 @@ static struct pl_job *pl_job_new(const char *src, unsigned idx,
 	j->idx = idx;
 	j->trans = !is_m4a(src);
 	j->gen = g_uf.pl_gen;
+	/* маска живых job'ов (см. pl_alive): планировка держит порцию
+	 * закрытой, пока этот файл не превратится в строку или скип */
+	if (idx >= 1 && idx <= IRMFILL_BATCH_MAX)
+		g_uf.pl_alive[idx] = 1;
 	return j;
 }
 
@@ -1066,11 +1079,17 @@ static void pl_row_done(const char *dst, unsigned long long ms,
 				    * вместе с тегами/tc_dst (см.
 				    * pl_job_finalize) — строка знает,
 				    * ЧЬЯ она пара */
-	tsv_field(r->title, sizeof r->title, g_uf.tag_title);
-	tsv_field(r->artist, sizeof r->artist, g_uf.tag_artist);
-	tsv_field(r->album, sizeof r->album, g_uf.tag_album);
-	tsv_field(r->genre, sizeof r->genre, g_uf.tag_genre);
-	tsv_field(r->art, sizeof r->art, g_uf.art_path);
+	/* теги/обложка — ТОЛЬКО из копий job'а (заморожены в
+	 * pl_job_new): общие поля g_uf.tag_* и art_path перезаписывает
+	 * планировка следующего файла (read_source_tags) прямо перед
+	 * сбором строки — живой факт 05.11: строка [файл #2] увезла
+	 * теги [4/19] («fuze» при файле Lost in a Wave). */
+	tsv_field(r->title, sizeof r->title, j ? j->title : g_uf.tag_title);
+	tsv_field(r->artist, sizeof r->artist,
+		  j ? j->artist : g_uf.tag_artist);
+	tsv_field(r->album, sizeof r->album, j ? j->album : g_uf.tag_album);
+	tsv_field(r->genre, sizeof r->genre, j ? j->genre : g_uf.tag_genre);
+	tsv_field(r->art, sizeof r->art, j ? j->art : g_uf.art_path);
 	g_ptr_array_add(g_uf.pl_rows, r);
 	gchar *rbase = g_path_get_basename(r->dst);
 	log_fmt("    строка готова [файл #%u]: %llu мс, %u Гц, «%s», "
@@ -1084,7 +1103,7 @@ static void pl_row_done(const char *dst, unsigned long long ms,
 		g_uf.pl_running--;
 	}
 	if (g_uf.pl_rows->len >= (guint)pl_chunk_k() &&
-	    !g_uf.pl_inflight)
+	    !g_uf.pl_inflight && pl_flush_mature())
 		pl_flush_chunk();
 	pl_advance();
 }
@@ -1095,10 +1114,11 @@ static void pl_advance(void)
 {
 	if (!g_uf.pl_active)
 		return;
-	/* (а) буфер дожал K — порция в заливку (если заливки ещё нет) */
+	/* (а) буфер дожал K и замучирел (нет живых job'ов младше
+	 * последней готовой строки) — порция в заливку */
 	if (g_uf.pl_rows &&
 	    g_uf.pl_rows->len >= (guint)pl_chunk_k() &&
-	    !g_uf.pl_inflight)
+	    !g_uf.pl_inflight && pl_flush_mature())
 		pl_flush_chunk();
 	/* (б) финализация готовых — сериально */
 	if (!g_uf.pl_fin_job && g_uf.pl_ready->len)
@@ -1158,20 +1178,18 @@ static unsigned pl_chunk_k(void)
 	return (unsigned)v;
 }
 
-/* параллельных транскодов за раз (дефолт 3, 1..8): IRMFILL_PAR.
- * Транскод CPU-bound (~1,4 с/файл — живой замер ALAC 05.11),
- * поэтому 3 потока кормят телефон с проводом (~16 МиБ/с), не
- * переполняя tmpfs: буфер следующей порции копится ВО ВРЕМЯ
- * заливки текущей. */
+/* параллельных транскодов за раз: ЖЁСТКО 1 (владелец 05.11:
+ * «давай уберем всетаки паралельную»). Диагноз конвейера: общие
+ * поля тегов g_uf.tag_* и art_path перезаписывались планировкой
+ * следующего файла против Discover предыдущего job'а — строки
+ * увозили чужие названия («fuze» при файле Lost in a Wave, живой
+ * лог 14:58). pl_row_done теперь читает теги из копий job'а, но
+ * последовательный влёт (1) дополнительно убирает саму гонку и
+ * держит tmpfs в прежней границе; IRMFILL_PAR больше не читается.
+ * Провод кормится с v2 и одним транскодом (~1,4 с/файл). */
 static unsigned pl_par_k(void)
 {
-	const char *e = getenv("IRMFILL_PAR");
-	if (!e || !*e)
-		return 3;
-	int v = atoi(e);
-	if (v < 1 || v > 8)
-		return 3;
-	return (unsigned)v;
+	return 1;
 }
 
 /* очередь источников кончилась (v2): хвостовой чанк набран меньше
@@ -1217,6 +1235,46 @@ static int cmp_row_idx(const void *a, const void *b)
 	if (x->idx < y->idx)
 		return -1;
 	return x->idx > y->idx ? 1 : 0;
+}
+
+/* порядок «сырых» idx (для матуры порции) */
+static int cmp_unsigned(const void *a, const void *b)
+{
+	unsigned x = *(const unsigned *)a;
+	unsigned y = *(const unsigned *)b;
+	if (x < y)
+		return -1;
+	return x > y ? 1 : 0;
+}
+
+/* матура порции (живой факт 05.11): «дожал по счёту» позволил
+ * порции 1 уехать с файлами 1..7,9 при не готовом 8 (строка #9
+ * писалась в TSV раньше). Порция зреет, только когда готовых строк
+ * не меньше K и НЕТ живых job'ов с idx меньше последней из первых
+ * K готовых — тогда порция собирается строго из очередных файлов
+ * пакета (v2-семантика «первые K по порядку», живой успех 36
+ * треков). Сортированный замер: K-я по малости idx должна охватить
+ * всех живых младше себя. */
+static int pl_flush_mature(void)
+{
+	unsigned K = pl_chunk_k();
+	guint nr = g_uf.pl_rows ? g_uf.pl_rows->len : 0;
+	if (nr < (guint)K)
+		return 0;
+	unsigned *buf = g_new(unsigned, nr);
+	if (!buf)
+		return 1; /* нет памяти — конвейер не задерживаем */
+	for (guint i = 0; i < nr; i++)
+		buf[i] = ((struct pl_row *)g_ptr_array_index(
+				  g_uf.pl_rows, i))
+				 ->idx;
+	qsort(buf, nr, sizeof buf[0], cmp_unsigned);
+	unsigned last = buf[K - 1];
+	g_free(buf);
+	for (unsigned u = 1; u < last && u <= IRMFILL_BATCH_MAX; u++)
+		if (g_uf.pl_alive[u])
+			return 0; /* младший файл ещё жив — ждём его */
+	return 1;
 }
 
 static void pl_flush_chunk(void)
@@ -1432,10 +1490,9 @@ static void pl_start_from_files(GListModel *files)
 			g_get_tmp_dir(), need >> 20, K, par, avail >> 20);
 		log_fmt("советы: rm /tmp/irm-fill-*.m4a /tmp/irm-fill-*.jpg "
 			"(старые артефакты), или меньший IRMFILL_CHUNK "
-			"(сейчас порция %u), или IRMFILL_PAR=%u пахать "
-			"меньше, или точка монтирования /tmp с большим "
-			"объёмом",
-			K, par);
+			"(сейчас порция %u), или точка монтирования /tmp "
+			"с большим объёмом",
+			K);
 		pl_reset();
 		return;
 	} else if (need > avail / 2) {
@@ -1659,8 +1716,9 @@ static void chain_discover_done(GObject *src, GAsyncResult *res,
 			ms * (unsigned long long)rate / 1000ULL);
 
 	if (g_uf.pl_active) {
-		/* 9l: строка пакета готова — рабочие поля (теги/обложка)
-		 * заполнены pl_job_finalize'ом из копий job'а */
+		/* 9l: строка пакета готова — теги/обложка pl_row_done
+		 * берёт из копий job'а (pl_fin_job); общие поля с
+		 * 05.11 на строку не влияют */
 		pl_row_done(g_uf.tc_dst, ms, rate);
 		return;
 	}
@@ -2208,9 +2266,10 @@ static void build_ui(GtkApplication *app)
 		log_fmt("не-.m4a фикстуры (.mp3, .flac …) перекодируются в "
 			"ALAC (IRMFILL_CODEC=alac) автоматически");
 	}
-	log_fmt("параллельные транскоды пакета: %u (IRMFILL_PAR, "
-		"порция по %u: IRMFILL_CHUNK)",
-		pl_par_k(), pl_chunk_k());
+	log_fmt("транскоды пакета: последовательно, 1 за раз "
+		"(IRMFILL_PAR убран — фиксировал перемешивание тегов) "
+		"+ порция по %u: IRMFILL_CHUNK",
+		pl_chunk_k());
 	log_fmt("мутирующие прогоны — только по нажатию кнопки; "
 		"«только стадия» по умолчанию ВКЛ (без записей)");
 

@@ -1,0 +1,62 @@
+device: id=1 udid=00008030-001C3128119A402E
+pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+batch: 1 вставка(ок) в одном конверте
+метаданные: total_ms=100 rate=44100 samples=4410
+fixture: /tmp/irm-fill-01_Skrillex___ISOxo_-_fuze.m4a (25564416 Б)
+[com.apple.afc] port=58224 ssl=0
+  канал: сырой
+staging /iTunes_Control/Sync/Media: пуст (ок)
+DB-копия: /tmp/opencode/00008030-001C3128119A402E-music/MediaLibrary.sqlitedb (с -wal)
+integrity_check: ok
+каталог: db_pid=860019141250340 primary_container_pid=460217054914055021
+якерь: A=9 → FSFM A+1=10
+PID-набор: 2275 значений
+PIDs: album=727193005871948842 artist=7435082473661146961; треков 1: 1608674620507279524
+ops-файл: 1070 байт (head: 62 70 6c 69 73 74 30 30 d3 01 03 55 02 04 56 58 72 65 76 69 73 69 6f 6e...)
+ops-дамп: /tmp/opencode/ops-noartwork.bin (1070 байт)
+[com.apple.atc] port=58226 ssl=1
+  канал: TLS (lbD-комбо)
+  кадр 1: len=94 Command=Pong
+  кадр 2: len=188 Command=Capabilities
+  кадр 3: len=150 Command=InstalledAssets
+  кадр 4: len=703 Command=AssetMetrics
+  кадр 5: len=387 Command=SyncAllowed
+ отсылаем RequestingSync (Session=2, якерь 9)
+  кадр 1: len=387 Command=SyncAllowed
+  кадр 2: len=150 Command=InstalledAssets
+  кадр 3: len=274 Command=ReadyForSync
+  dump:
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Command</key>
+	<string>ReadyForSync</string>
+	<key>Params</key>
+	<dict>
+		<key>DataclassAnchors</key>
+		<dict>
+			<key>Media</key>
+			<string>9</string>
+			<key>Book</key>
+			<string>0</string>
+		</dict>
+		<key>DeviceInfo</key>
+		<dict>
+			<key>Grappa</key>
+			<data>AQGZkyp5sz/BEKxL55cZCaN3QMSOo4VOdUXSc9FcLWOZdPfYG1CYCErF6vtP6ldft62VfuFOPPeTA3GrghpnjUeWvUlVW/LIBDXo3PO4SrNtljY=</data>
+		</dict>
+	</dict>
+	<key>Type</key>
+	<integer>0</integer>
+	<key>Session</key>
+	<integer>2</integer>
+	<key>Id</key>
+	<integer>503</integer>
+</dict>
+</plist>
+
+  GRAPPA_REPLY(83): 01 01 99 93 2a 79 b3 3f c1 10 ac 4b e7 97 19 09 a3 77 40 c4 8e a3 85 4e 75 45 d2 73 d1 5c 2d 63 99 74 f7 d8 1b 50 98 08 4a c5 ea fb 4f ea 57 5f b7 ad 95 7e e1 4e 3c f7 93 03 71 ab 82 1a 67 8d 47 96 bd 49 55 5b f2 c8 04 35 e8 dc f3 b8 4a b3 6d 96 36
+ anchor: sent=9 ready=9
+sidecar .cig: 0x01 + HMAC-SHA1⊕mask (21 б): 01 63 8c e5 fa 52 cd bc fa e6 56 36 f3 99 66 04 40 1f bc 47 b7
+STAGE-ONLY: подпись сверена; записей на телефон НЕ делаем, сессию отменяем (close) — телефон потребляет файлы ТОЛЬКО на FSFM (§14.3)

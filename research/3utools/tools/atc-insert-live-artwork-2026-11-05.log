@@ -1,0 +1,206 @@
+[11:17:28] irmctl: /home/saitexna/apple-devices/iTunes-Reversed-Mechanisms/irmctl
+[11:17:28] транскод: gst-launch-1.0 есть, gst-discoverer-1.0 есть
+[11:17:28] не-.m4a фикстуры (.mp3, .flac …) перекодируются в ALAC автоматически
+[11:17:28] мутирующие прогоны — только по нажатию кнопки; «только стадия» по умолчанию ВКЛ (без записей)
+[11:17:35] фикстура выбрана: /home/saitexna/Музыка/02 People = Shit.mp3
+[11:17:40] теги источника: «People = Shit» — «Slipknot», альбом Iowa
+[11:17:40]         жанр: Brutal Neo Metal
+[11:17:40] обложка: 92396 Б (image/jpeg) → /tmp/irm-fill-02_People___Shit.jpg
+[11:17:40] «/home/saitexna/Музыка/02 People = Shit.mp3» — не .m4a; перекодирую в /tmp/irm-fill-02_People___Shit.m4a
+[11:17:40] транскод ALAC идёт (avenc_alac + mp4mux), ждите…
+[11:17:41] транскод готов
+[11:17:41] размер: 28,6 МиБ (29953403 Б)
+[11:17:41] метаданные перекода: 217652 мс, 44100 Гц, ~9598453 сэмплов
+[11:17:41]     фикс=/tmp/irm-fill-02_People___Shit.m4a (перекод) батч=1
+[11:17:41]     метаданные: 217652 мс, 44100 Гц
+[11:17:41] >>> /home/saitexna/apple-devices/iTunes-Reversed-Mechanisms/irmctl atc-insert
+[11:17:42] device: id=1 udid=00008030-001C3128119A402E
+[11:17:42] pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+[11:17:42] batch: 1 вставка(ок) в одном конверте
+[11:17:42] метаданные: total_ms=217652 rate=44100 samples=9598453
+[11:17:42] теги источника: title=People = Shit artist=Slipknot album=Iowa
+[11:17:42] fixture: /tmp/irm-fill-02_People___Shit.m4a (29953403 Б)
+[11:17:42] обложка: /tmp/irm-fill-02_People___Shit.jpg (92396 Б, JPEG)
+[11:17:42] [com.apple.afc] port=58241 ssl=0
+[11:17:42]   канал: сырой
+[11:17:42] staging /iTunes_Control/Sync/Media: пуст (ок)
+[11:17:42] DB-копия: /tmp/opencode/00008030-001C3128119A402E-music/MediaLibrary.sqlitedb (с -wal)
+[11:17:42] integrity_check: ok
+[11:17:42] каталог: db_pid=860019141250340 primary_container_pid=460217054914055021
+[11:17:42] якерь: A=9 → FSFM A+1=10
+[11:17:42] PID-набор: 2275 значений
+[11:17:42] artwork-токен: max в базе=959559002 → новый=959559003
+[11:17:42] PIDs: album=8075703337078103305 artist=5773408500618570025; треков 1: 2009018457573614394
+[11:17:42]   artwork-каталог: есть
+[11:17:42]   маркер /Airlock/Media/Artwork/2009018457573614394: 92396 Б записано (read-back ок)
+[11:17:42] ops-файл: 1131 байт (head: 62 70 6c 69 73 74 30 30 d3 01 03 57 02 04 58 58 72 65 76 69 73 69 6f 6e...)
+[11:17:42] [com.apple.atc] port=58243 ssl=1
+[11:17:42]   канал: TLS (lbD-комбо)
+[11:17:42]   кадр 1: len=94 Command=Pong
+[11:17:42]   кадр 2: len=188 Command=Capabilities
+[11:17:42]   кадр 3: len=150 Command=InstalledAssets
+[11:17:42]   кадр 4: len=703 Command=AssetMetrics
+[11:17:42]   кадр 5: len=387 Command=SyncAllowed
+[11:17:42]  отсылаем RequestingSync (Session=2, якерь 9)
+[11:17:42]   кадр 1: len=387 Command=SyncAllowed
+[11:17:42]   кадр 2: len=150 Command=InstalledAssets
+[11:17:42]   кадр 3: len=274 Command=ReadyForSync
+[11:17:42]   dump:
+[11:17:42] <?xml version="1.0" encoding="UTF-8"?>
+[11:17:42] <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+[11:17:42] <plist version="1.0">
+[11:17:42] <dict>
+[11:17:42] 	<key>Command</key>
+[11:17:42] 	<string>ReadyForSync</string>
+[11:17:42] 	<key>Params</key>
+[11:17:42] 	<dict>
+[11:17:42] 		<key>DataclassAnchors</key>
+[11:17:42] 		<dict>
+[11:17:42] 			<key>Media</key>
+[11:17:42] 			<string>9</string>
+[11:17:42] 			<key>Book</key>
+[11:17:42] 			<string>0</string>
+[11:17:42] 		</dict>
+[11:17:42] 		<key>DeviceInfo</key>
+[11:17:42] 		<dict>
+[11:17:42] 			<key>Grappa</key>
+[11:17:42] 			<data>AQER93DRuJGT/YE8IjOZRYPXQLW4zlOFiYjD465g50q2gm6B++17nThRrVQc/aXVFsuZMcAeLp3f8ucAjmfwYv7EBhtz4jwnwS8lEuO5MjZCOBI=</data>
+[11:17:42] 		</dict>
+[11:17:42] 	</dict>
+[11:17:42] 	<key>Type</key>
+[11:17:42] 	<integer>0</integer>
+[11:17:42] 	<key>Session</key>
+[11:17:42] 	<integer>2</integer>
+[11:17:42] 	<key>Id</key>
+[11:17:42] 	<integer>512</integer>
+[11:17:42] </dict>
+[11:17:42] </plist>
+[11:17:42]
+[11:17:42]   GRAPPA_REPLY(83): 01 01 11 f7 70 d1 b8 91 93 fd 81 3c 22 33 99 45 83 d7 40 b5 b8 ce 53 85 89 88 c3 e3 ae 60 e7 4a b6 82 6e 81 fb ed 7b 9d 38 51 ad 54 1c fd a5 d5 16 cb 99 31 c0 1e 2e 9d df f2 e7 00 8e 67 f0 62 fe c4 06 1b 73 e2 3c 27 c1 2f 25 12 e3 b9 32 36 42 38 12
+[11:17:42]  anchor: sent=9 ready=9
+[11:17:42] sidecar .cig: 0x01 + HMAC-SHA1⊕mask (21 б): 01 f3 90 8f 0e 6e 8c 8b ff 96 8a 50 20 7e 60 ba c9 7b 55 ed 3f
+[11:17:42] стейдж: Sync_00000000.plist (1131 Б) + .plist.cig (21 Б) — готово; телефон потребляет их ТОЛЬКО на FSFM
+[11:17:42]  отсылаем FinishedSyncingMetadata (Session=2, якерь 10)
+[11:17:42]   кадр 1: len=141 Command=Progress
+[11:17:42]     телеметрия (игнор)
+[11:17:42]   кадр 2: len=141 Command=Progress
+[11:17:42]     телеметрия (игнор)
+[11:17:42]   кадр 3: len=233 Command=AssetManifest
+[11:17:42]   dump:
+[11:17:42] <?xml version="1.0" encoding="UTF-8"?>
+[11:17:42] <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+[11:17:42] <plist version="1.0">
+[11:17:42] <dict>
+[11:17:42] 	<key>Command</key>
+[11:17:42] 	<string>AssetManifest</string>
+[11:17:42] 	<key>Params</key>
+[11:17:42] 	<dict>
+[11:17:42] 		<key>AssetManifest</key>
+[11:17:42] 		<dict>
+[11:17:42] 			<key>Media</key>
+[11:17:42] 			<array>
+[11:17:42] 				<dict>
+[11:17:42] 					<key>Variant</key>
+[11:17:42] 					<dict>
+[11:17:42] 						<key>AssetParts</key>
+[11:17:42] 						<integer>7</integer>
+[11:17:42] 					</dict>
+[11:17:42] 					<key>AssetType</key>
+[11:17:42] 					<string>Music</string>
+[11:17:42] 					<key>AssetID</key>
+[11:17:42] 					<string>2009018457573614394</string>
+[11:17:42] 					<key>IsDownload</key>
+[11:17:42] 					<true/>
+[11:17:42] 				</dict>
+[11:17:42] 			</array>
+[11:17:42] 		</dict>
+[11:17:42] 	</dict>
+[11:17:42] 	<key>Type</key>
+[11:17:42] 	<integer>0</integer>
+[11:17:42] 	<key>Session</key>
+[11:17:42] 	<integer>2</integer>
+[11:17:42] 	<key>Id</key>
+[11:17:42] 	<integer>515</integer>
+[11:17:42] </dict>
+[11:17:42] </plist>
+[11:17:42]
+[11:17:45] манифест: own (1), в порядке манифеста: 2009018457573614394; бэклог-аудио=0 ancillary=0
+[11:17:45]   ассет: staged /Airlock/Media/2009018457573614394.m4a → bare /Airlock/Media/2009018457573614394 (29953403 Б), постоянный путь iTunes_Control/Music/F44/UXDN.m4a
+[11:17:45]  отсылаем FileComplete (AssetID=2009018457573614394, AssetPath=iTunes_Control/Music/F44/UXDN.m4a)
+[11:17:45]   кадр 4: len=102 Command=SyncFinished
+[11:17:45]   dump:
+[11:17:45] <?xml version="1.0" encoding="UTF-8"?>
+[11:17:45] <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+[11:17:45] <plist version="1.0">
+[11:17:45] <dict>
+[11:17:45] 	<key>Command</key>
+[11:17:45] 	<string>SyncFinished</string>
+[11:17:45] 	<key>Type</key>
+[11:17:45] 	<integer>0</integer>
+[11:17:45] 	<key>Session</key>
+[11:17:45] 	<integer>2</integer>
+[11:17:45] 	<key>Id</key>
+[11:17:45] atc-insert: rc=0
+[11:17:45] 	<integer>516</integer>
+[11:17:45] </dict>
+[11:17:45] </plist>
+[11:17:45]
+[11:17:45] atc-insert: SYNC FINISHED — применено; якерь обязан быть A+1 (проверка: irmctl music-id)
+[11:18:59] фикстура выбрана: /home/saitexna/Музыка/04 The Devil in I.mp3
+[11:19:01] теги источника: «The Devil in I» — «Slipknot», альбом .5: The Gray Chapter
+[11:19:01]         жанр: Brutal Neo Metal
+[11:19:01] обложка: 88908 Б (image/jpeg) → /tmp/irm-fill-04_The_Devil_in_I.jpg
+[11:19:01] «/home/saitexna/Музыка/04 The Devil in I.mp3» — не .m4a; перекодирую в /tmp/irm-fill-04_The_Devil_in_I.m4a
+[11:19:01] транскод ALAC идёт (avenc_alac + mp4mux), ждите…
+[11:19:03] транскод готов
+[11:19:03] размер: 41,9 МиБ (43956743 Б)
+[11:19:03] метаданные перекода: 342826 мс, 44100 Гц, ~15118626 сэмплов
+[11:19:03]     фикс=/tmp/irm-fill-04_The_Devil_in_I.m4a (перекод) батч=1
+[11:19:03]     метаданные: 342826 мс, 44100 Гц
+[11:19:03] >>> /home/saitexna/apple-devices/iTunes-Reversed-Mechanisms/irmctl atc-insert
+[11:19:03] atc-insert: фикстура /tmp/irm-fill-04_The_Devil_in_I.m4a: размер 43956743 нежелателен (1 Б..32 МиБ)
+[11:19:03] device: id=1 udid=00008030-001C3128119A402E
+[11:19:03] pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+[11:19:03] batch: 1 вставка(ок) в одном конверте
+[11:19:03] метаданные: total_ms=342826 rate=44100 samples=15118626
+[11:19:03] теги источника: title=The Devil in I artist=Slipknot album=.5: The Gray Chapter
+[11:19:03] atc-insert: rc != 0 (Дочерний процесс завершился с кодом 1)
+[11:19:15] обзор: Dismissed by user
+[11:19:18] теги источника: «The Devil in I» — «Slipknot», альбом .5: The Gray Chapter
+[11:19:18]         жанр: Brutal Neo Metal
+[11:19:18] обложка: 88908 Б (image/jpeg) → /tmp/irm-fill-04_The_Devil_in_I.jpg
+[11:19:18] «/home/saitexna/Музыка/04 The Devil in I.mp3» — не .m4a; перекодирую в /tmp/irm-fill-04_The_Devil_in_I.m4a
+[11:19:18] транскод ALAC идёт (avenc_alac + mp4mux), ждите…
+[11:19:20] транскод готов
+[11:19:20] размер: 41,9 МиБ (43956743 Б)
+[11:19:20] метаданные перекода: 342826 мс, 44100 Гц, ~15118626 сэмплов
+[11:19:20]     фикс=/tmp/irm-fill-04_The_Devil_in_I.m4a (перекод) батч=1
+[11:19:20]     метаданные: 342826 мс, 44100 Гц
+[11:19:20] >>> /home/saitexna/apple-devices/iTunes-Reversed-Mechanisms/irmctl atc-insert
+[11:19:20] atc-insert: фикстура /tmp/irm-fill-04_The_Devil_in_I.m4a: размер 43956743 нежелателен (1 Б..32 МиБ)
+[11:19:20] device: id=1 udid=00008030-001C3128119A402E
+[11:19:20] pair: /var/lib/lockdown/00008030-001C3128119A402E.plist
+[11:19:20] batch: 1 вставка(ок) в одном конверте
+[11:19:20] метаданные: total_ms=342826 rate=44100 samples=15118626
+[11:19:20] теги источника: title=The Devil in I artist=Slipknot album=.5: The Gray Chapter
+[11:19:20] atc-insert: rc != 0 (Дочерний процесс завершился с кодом 1)
+
+== ПОСТ-ПРОВЕРКИ ЧИТАТЕЛЕМ (наше armed 11:2x) ==
+music-id: MLSyncClientSyncAnchor = 10 (якерь 9→10 принят);
+  WAL 74192 → 922912 Б; MLArtistHeroImageImportDatabaseRevision 8854 → 8913.
+DB-копия (main+wal):
+  item_pid=2009018457573614394 В item НЕ СОХРАНЁН — телефон ремэпнул пиды:
+    item 56 = «People = Shit» (UXDN.m4a, 29 953 403 Б, 217 652 мс, media_kind 1);
+    album 67108900 = «Iowa»; item_artist 33554439 = «Slipknot» — наши теги свои.
+  artwork: artwork_token='959559003', artwork_source_type=300, relative_path=
+    3c/87f2a8f1301a49d444439205b5e82adc06c580 (хэш-ряд, ArtworkDB НЕ нужен);
+  artwork_token: (56, etype 0) + (67108900, etype 4) = item И album взяли токен;
+  best_artwork_token: 959559003 у entity 56 и 67108900 — «удочерение» сработало.
+artwork: 593 рядов ВСЕГО (наш 959559003 уже среди них — телефон внёс сам:
+  source 300, relative_path 3c/87f2a8f1301a49d444439205b5e82adc06c580).
+  Старый максимум 959559002: source 300, relative_path a6/5c10e872d4e0…df1.
+/Airlock/Media/Artwork после FSFM: 0 файлов — маркер телефон потребил и УДАЛИЛ.
+UI (со слов пользователя): трек показался с «Apple Digital Master» и
+  анимированной обложкой — item.artwork_cache_id принят полным образом.
+Отказ 04 Devil in I: 43 956 743 Б > 32 МиБ гардер irmctl (0 записей, both attempts
+  rc=1 ДО стейджа) — гардер сработал штатно, кнопку повторять не нужно.

@@ -759,22 +759,57 @@ static unsigned long long free_bytes_on(const char *dir)
 	       (unsigned long long)v.f_frsize;
 }
 
-/* оценка размера пейлоада (.m4a-перекода) из источника: ALAC
- * несжимаем, а mp3 даёт ALAC ~×4 объёма (live 05.11: mp3 10,3 МиБ
- * → m4a 41,9 МиБ; mp3 12,3 МиБ → 50,4 МиБ) — для mp3 фактор ×4;
- * flac чуть шире ALAC (×1.5 запас); .m4a идёт КАК ЕСТЬ (tmpfs не
- * расходует). Нужна для предзапуска пакета. */
+/* сравнитель для top-K сортировки оценок места (по убыванию) */
+static int cmp_ull_desc(const void *a, const void *b)
+{
+	unsigned long long x = *(const unsigned long long *)a;
+	unsigned long long y = *(const unsigned long long *)b;
+	return x > y ? -1 : (x < y ? 1 : 0);
+}
+
+/* оценка размера пейлоада (.m4a-перекода) из источника. v3 —
+ * оцениваем ПИСАТЕЛЬСКИЙ размер выбранного кодека:
+ *  AAC — точный по TagLib-длине трека: мс × (битрейт/8000) б.
+ *    (256kvp наружу пишет ~ const битрейт независимо от исходника:
+ *    320k-mp3 → ×0,8, 128k-mp3 → даже ×2 — размер источника лжёт);
+ *  ALAC (фолбэк) — старые эмпирические факторы live 05.11:
+ *    mp3 ×4.0 (10,3 МиБ → 41,9 МиБ), flac ×1.5, wav/aif ×0.8,
+ *    неизвестное расширение ×4.0 (строгий);
+ *  .m4a/.mp4 — КАК ЕСТЬ, tmpfs не расходует (0).
+ * 5% запас поверх любой оценки. Нужна для предзапуска пакета. */
 static unsigned long long payload_estimate(const char *path)
 {
 	struct stat st;
 	if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
 		return 0;
-	double f = 4.0; /* дефолт строгий */
 	const char *e = strrchr(path, '.');
+	if (e && (g_ascii_strcasecmp(e, ".m4a") == 0 ||
+		  g_ascii_strcasecmp(e, ".mp4") == 0))
+		return 0; /* как есть, tmpfs не расходует */
+	unsigned long long bytes = 0;
+	if (g_uf.codec_aac) {
+		/* TagLib: длина в СЕКУНДАХ (int; ±0,5 с ≈ ±16 КиБ на
+		 * трек — несущественно на границе 2K+PAR). */
+		TagLib_File *tf = taglib_file_new(path);
+		if (tf && taglib_file_is_valid(tf)) {
+			const TagLib_AudioProperties *ap =
+				taglib_file_audioproperties(tf);
+			int len = ap ? taglib_audioproperties_length(ap)
+				     : 0;
+			taglib_file_free(tf);
+			if (len > 0)
+				bytes = (unsigned long long)len * 1000ULL *
+					g_uf.aac_rate / 8000ULL;
+		} else if (tf) {
+			taglib_file_free(tf);
+		}
+	}
+	if (bytes)
+		return (unsigned long long)(bytes * 1.05 + 1.0);
+	/* без TagLib-длины (редко) или кодек ALAC — факторы по
+	 * размеру источника; дефолт строгий обоим кодекам */
+	double f = 4.0;
 	if (e) {
-		if (g_ascii_strcasecmp(e, ".m4a") == 0 ||
-		    g_ascii_strcasecmp(e, ".mp4") == 0)
-			return 0; /* как есть, tmpfs не расходует */
 		if (g_ascii_strcasecmp(e, ".flac") == 0)
 			f = 1.5;
 		else if (g_ascii_strcasecmp(e, ".wav") == 0 ||
@@ -1320,21 +1355,30 @@ static void pl_start_from_files(GListModel *files)
 	}
 	/* precheck места (live 05.11: EDQUOT на tmpfs при rc=0 gst-launch
 	 * валит транскоды молча — гасим проблему ДО работы): оценка
-	 * vs свободного места на tmp (90% — не доедаем). v3: tmpfs
-	 * держит заливающуюся порцию + буфер следующей порции (2K) +
-	 * PAR транскодов в полёте — worst-case one × (2K + PAR); для
-	 * дефолтного AAC факторы оценки строго ALAC-оверхед —
-	 * запас поверх ещё и он (транскод AAC ~×4 легче ALAC). */
+	 * vs свободного места на tmp (90% — не доедаем). v3: оценки
+	 * пишутся подрёбно (AAC = длина×битрейт по TagLib), а
+	 * граница честная: в tmpfs живут заливающаяся порция и
+	 * буфер следующей (две порции худших: сумма K худших ×2) +
+	 * PAR транскодов в полёте (худший × PAR). */
 	unsigned long long one = 0;
-	for (guint i = 0; i < g_uf.pl_files->len; i++) {
+	guint cnt = g_uf.pl_files->len;
+	unsigned long long *ests = g_new(unsigned long long, cnt);
+	for (guint i = 0; i < cnt; i++) {
 		const char *p = g_ptr_array_index(g_uf.pl_files, i);
-		unsigned long long e = payload_estimate(p);
-		if (e > one)
-			one = e;
+		ests[i] = payload_estimate(p);
+		if (ests[i] > one)
+			one = ests[i];
 	}
+	qsort(ests, cnt, sizeof ests[0], cmp_ull_desc);
 	unsigned K = pl_chunk_k();
 	unsigned par = pl_par_k();
-	unsigned long long need = one * (2 * (unsigned long long)K + par);
+	unsigned top = K < cnt ? K : (unsigned)cnt;
+	unsigned long long need = 0;
+	for (unsigned i = 0; i < top; i++)
+		need += ests[i];
+	need *= 2; /* заливающаяся + буфер next: по K худших дважды */
+	need += (unsigned long long)par * one; /* в полёте: PAR×худший */
+	g_free(ests);
 	unsigned long long free_b = free_bytes_on(g_get_tmp_dir());
 	unsigned long long avail = free_b / 10 * 9;
 	if (free_b == 0) {
@@ -1344,9 +1388,9 @@ static void pl_start_from_files(GListModel *files)
 			g_get_tmp_dir());
 	} else if (need > avail) {
 		log_fmt("пакет: места на %s мало: нужно ~%llu МиБ "
-			"(2 порции+%u транскодов), свободно ~%llu МиБ "
-			"(составлял по 90%%)",
-			g_get_tmp_dir(), need >> 20, par, avail >> 20);
+			"(2 порции худших K{%u} + %u транкод(ов) худшего), "
+			"свободно ~%llu МиБ (составлял по 90%%)",
+			g_get_tmp_dir(), need >> 20, K, par, avail >> 20);
 		log_fmt("советы: rm /tmp/irm-fill-*.m4a /tmp/irm-fill-*.jpg "
 			"(старые артефакты), или меньший IRMFILL_CHUNK "
 			"(сейчас порция %u), или IRMFILL_PAR=%u пахать "

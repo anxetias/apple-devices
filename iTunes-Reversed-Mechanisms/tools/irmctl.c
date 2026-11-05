@@ -1965,6 +1965,98 @@ close:
 	return rc;
 }
 
+/* afc-pull (read-only): прочитать файл телефона через AFC и
+ * записать ЛОКАЛЬНО (форензика 05.11: проверить, ЧЬИ байты легли
+ * в persistent-путь каждого item'а — теги/дурация выдают
+ * источник). Адрес: IRMA_AFC_PATH (<удалённый>), выход:
+ * IRMA_AFC_OUT (<локальный>), «-» = stdout. */
+static int cmd_afc_pull(const char *path, const char *selector)
+{
+	uint32_t device_id = 0;
+	char udid[128] = "-";
+	if (find_device(path, selector, &device_id, udid, sizeof udid) != 0)
+		return 1;
+	printf("device: id=%u udid=%s\n", device_id, udid);
+
+	irm_pair_t *pair = NULL;
+	if (irm_pair_load(udid, &pair) != 0) {
+		fprintf(stderr, "afc-pull: %s\n", irm_pair_error());
+		return 1;
+	}
+	irm_lk_t *lk = irm_lk_open(path, device_id, IRM_LK_DEFAULT_PORT, 5);
+	if (!lk) {
+		fprintf(stderr, "afc-pull: lockdown: %s\n", irm_lk_error());
+		irm_pair_free(pair);
+		return 1;
+	}
+	if (irm_lk_start_session(lk, pair) != 0) {
+		fprintf(stderr, "afc-pull: session: %s\n", irm_lk_error());
+		irm_lk_close(lk);
+		irm_pair_free(pair);
+		return 1;
+	}
+	int fd = -1;
+	int tls = 0;
+	int rc = 1;
+	if (atc_serve_open(lk, pair, path, device_id, "com.apple.afc",
+			   &fd, &tls) != 0)
+		goto close;
+	irm_afc_t *afc;
+	afc = irm_afc_new(fd, tls, 15);
+	if (!afc)
+		goto close;
+
+	char argbuf[768], outbuf[768];
+	const char *target = getenv("IRMA_AFC_PATH");
+	if (!target || !*target) {
+		snprintf(argbuf, sizeof argbuf,
+			 "iTunes_Control/iTunes/iTunesPrefs");
+		target = argbuf;
+	}
+	const char *out = getenv("IRMA_AFC_OUT");
+	if (!out || !*out) {
+		snprintf(outbuf, sizeof outbuf, "/tmp/afc-pull.out");
+		out = outbuf;
+	}
+	uint8_t *a = NULL;
+	size_t na = 0;
+	if (irm_afc_read_full(afc, target, &a, &na) != 0) {
+		fprintf(stderr, "afc-pull: %s: %s\n", target,
+			irm_afc_error());
+		goto close2;
+	}
+	int to_stdout = strcmp(out, "-") == 0;
+	FILE *f = to_stdout ? stdout : fopen(out, "wb");
+	if (!f) {
+		fprintf(stderr, "afc-pull: %s: %s\n", out, strerror(errno));
+		free(a);
+		goto close2;
+	}
+	if (fwrite(a, 1, na, f) != na) {
+		fprintf(stderr, "afc-pull: %s: запись %zu Б не удалась\n",
+			out, na);
+		free(a);
+		if (!to_stdout)
+			fclose(f);
+		goto close2;
+	}
+	if (!to_stdout)
+		fclose(f);
+	free(a);
+	printf("%s: %zu Б → %s\n", target, na, out);
+	rc = 0;
+close2:
+	irm_afc_free(afc);
+close:
+	if (tls)
+		irm_tls_disarm(fd);
+	if (fd >= 0)
+		irm_mux_close(fd);
+	irm_lk_close(lk);
+	irm_pair_free(pair);
+	return rc;
+}
+
 /* music-id (read-only): frpd-идентичность из iTunesPrefs (E14 §3:
  * catalog_id LE64@[12..20], user_id LE64@[20..28], LibraryID =
  * %016llX(catalog^user)) и якерь Media из MediaLibrary.sqlitedb
@@ -2126,6 +2218,33 @@ static int cmd_music_id(const char *path, const char *selector)
 		free(a);
 		a = NULL;
 		printf("  копия: %s\n", outp);
+	}
+	/* форензика 05.11: наше же READWRITE-открытие копии ниже
+	 * (recovery/чекпоинт) губит живой -wal телефона — при фейле
+	 * recovery/чекпоинта sqlite просто удаляет -wal, и свежие
+	 * заливки пропадают из анализа, остаётся чекпоинт-кадр
+	 * (item=1). IRMA_ATC_DB_KEEP=<dir> переносит обе копии (базу
+	 * и -wal) в указанный каталог ДО sqlite — для послешнего
+	 * анализа одним проходом. */
+	{
+		const char *keep = getenv("IRMA_ATC_DB_KEEP");
+		if (keep && *keep) {
+			if (irm_mkpath(keep) != 0) {
+				fprintf(stderr, "music-id: mkdir %s: %s\n",
+					keep, strerror(errno));
+				goto close2;
+			}
+			for (int di = 0; di < 2; di++) {
+				char sp[640], dp[680];
+				snprintf(sp, sizeof sp, "%s/%s", scratch,
+					 dbs[di]);
+				snprintf(dp, sizeof dp, "%s/%s", keep,
+					 dbs[di]);
+				if (rename(sp, dp) == 0)
+					printf("  форензика: %s → %s\n",
+					       sp, dp);
+			}
+		}
 	}
 	irm_afc_free(afc);
 	afc = NULL;
@@ -5514,6 +5633,9 @@ int main(int argc, char **argv)
 		return cmd_afc_ls(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
 	if (strcmp(cmd, "afc-stat") == 0)
 		return cmd_afc_stat(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
+	if (strcmp(cmd, "afc-pull") == 0)
+		return cmd_afc_pull(path ? path : IRM_MUX_DEFAULT_SOCKET,
+				    arg);
 	if (strcmp(cmd, "music-id") == 0)
 		return cmd_music_id(path ? path : IRM_MUX_DEFAULT_SOCKET, arg);
 	if (strcmp(cmd, "atc-delta") == 0)

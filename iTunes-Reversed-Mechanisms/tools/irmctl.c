@@ -3560,9 +3560,10 @@ static int cmd_atc_insert(const char *path, const char *selector)
 		fseek(f, 0, SEEK_END);
 		long sz = ftell(f);
 		fseek(f, 0, SEEK_SET);
-		if (sz <= 0 || sz > (32L * 1024L * 1024L)) {
+		if (sz <= 0 ||
+		    sz > (64L * 1024L * 1024L)) {
 			fprintf(stderr, "atc-insert: фикстура %s: размер %ld "
-					"нежелателен (1 Б..32 МиБ)\n",
+					"нежелателен (1 Б..64 МиБ)\n",
 				fixt, sz);
 			fclose(f);
 			goto close;

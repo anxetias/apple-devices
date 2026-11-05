@@ -2587,6 +2587,7 @@ struct atc_insert_data {
 	uint64_t samples;       /* duration = сэмплов на канал */
 	uint32_t sample_rate;
 	uint32_t number;     /* item.track_number (1..N в пакете, 9g) */
+	uint64_t artwork_cache_id; /* item.artwork_cache_id (9k; 0 = нет) */
 };
 
 /* {operation:"update_db_info", pid:<db_pid s64>, db_info:{primary_container_pid}}.
@@ -2676,6 +2677,12 @@ static irm_bp_node *atc_op_insert_track(const struct atc_insert_data *t)
 	    irm_bp_dict_set(item, "is_song", irm_bp_bool(1)) != 0 ||
 	    irm_bp_dict_set(item, "remember_bookmark", irm_bp_bool(0)) != 0 ||
 	    irm_bp_dict_set(item, "artwork_checksum", irm_bp_uint(0)) != 0)
+		goto fail;
+	/* (9k) artwork_cache_id — только при наличии обложки: не пишем
+	 * ноль (см. «удочерение» FINDINGS ~1847) */
+	if (t->artwork_cache_id &&
+	    irm_bp_dict_set(item, "artwork_cache_id",
+			    irm_bp_uint(t->artwork_cache_id)) != 0)
 		goto fail;
 	if (irm_bp_dict_set(loc, "kind",
 			    irm_bp_string("Apple Lossless audio file")) != 0)
@@ -3255,6 +3262,81 @@ static uint64_t *atc_collect_pids(sqlite3 *db, size_t *out_n)
 	return vals;
 }
 
+/* --- 9k: обложка ---------------------------------------------------
+
+   Рецепт 3uTools (FINDINGS ~534/743/1561): item-поле
+   "artwork_cache_id" (u32, уникальное — max(u32-токены каталога)+1)
+   + сырой JPEG/PNG маркер в /Airlock/Media/Artwork/<item_pid>.
+   ArtworkDB НЕ пишем (С-путь 01.11: обложки встали без него; формат
+   mhfd не разобран). Потребление маркера — ингест item после FSFM;
+   маркеры ставим рядом с ops/.cig строго ДО FSFM (как 3uTools).
+   Reuse токена даёт чужую/старую обложку (Bangarang-кейс) — поэтому
+   кандидата сверяем со всеми строковыми токенами каталога. */
+static uint64_t atc_artwork_token_max(sqlite3 *db)
+{
+	static const char *const qs[] = {
+		"SELECT CAST(artwork_token AS INTEGER) FROM artwork_token "
+		"WHERE artwork_token GLOB '[0-9]*'",
+		"SELECT CAST(available_artwork_token AS INTEGER) FROM "
+		"best_artwork_token "
+		"WHERE available_artwork_token GLOB '[0-9]*'",
+		"SELECT CAST(artwork_token AS INTEGER) FROM artwork "
+		"WHERE artwork_token GLOB '[0-9]*'",
+		NULL
+	};
+	uint64_t maxs = 0;
+	for (int qi = 0; qs[qi]; qi++) {
+		sqlite3_stmt *st = NULL;
+		if (sqlite3_prepare_v2(db, qs[qi], -1, &st, NULL) !=
+		    SQLITE_OK) {
+			sqlite3_finalize(st);
+			continue;
+		}
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			if (sqlite3_column_type(st, 0) != SQLITE_INTEGER)
+				continue;
+			int64_t v = sqlite3_column_int64(st, 0);
+			/* u32-представимые только: cache_id пишем u32
+			 * (3uTools 483/484/485, старый код guint32) */
+			if (v > 0 && (uint64_t)v <= UINT32_MAX - 1 &&
+			    (uint64_t)v > maxs)
+				maxs = (uint64_t)v;
+		}
+		sqlite3_finalize(st);
+	}
+	return maxs;
+}
+
+/* занят ли численный токен в трёх artwork-таблицах (CAST-сравнение —
+ * страховка от ведущих нулей в строковых токенах) */
+static int atc_artwork_token_taken(sqlite3 *db, uint64_t v)
+{
+	static const char *const qs[] = {
+		"SELECT 1 FROM artwork_token "
+		"WHERE CAST(artwork_token AS INTEGER)=?1 LIMIT 1",
+		"SELECT 1 FROM best_artwork_token "
+		"WHERE CAST(available_artwork_token AS INTEGER)=?1 LIMIT 1",
+		"SELECT 1 FROM artwork "
+		"WHERE CAST(artwork_token AS INTEGER)=?1 LIMIT 1",
+		NULL
+	};
+	for (int qi = 0; qs[qi]; qi++) {
+		sqlite3_stmt *st = NULL;
+		if (sqlite3_prepare_v2(db, qs[qi], -1, &st, NULL) !=
+		    SQLITE_OK) {
+			sqlite3_finalize(st);
+			return 1; /* консервативно: считаем занятым */
+		}
+		int64_t sv = (int64_t)v;
+		sqlite3_bind_int64(st, 1, sv);
+		int row = (sqlite3_step(st) == SQLITE_ROW);
+		sqlite3_finalize(st);
+		if (row)
+			return 1;
+	}
+	return 0;
+}
+
 /* --- собственно команда ------------------------------------------- */
 
 /* (9j) значение env → чистая строка: управляющие символы вон,
@@ -3359,6 +3441,7 @@ static int cmd_atc_insert(const char *path, const char *selector)
 	int64_t db_pid = 0, container = 0; /* каталог db_info (b) */
 	uint32_t anchor_a = 0;            /* якерь A из DB-копии */
 	uint64_t al = 0, ar = 0;          /* свежие PIDs альбома/артиста (c) */
+	uint64_t art_next = 0;            /* первый artwork_cache_id (9k) */
 	char anch[16] = "", anch_next[16] = ""; /* RS=A, FSFM=A+1 */
 	char scratch[512];
 	snprintf(scratch, sizeof scratch, "/tmp/opencode/%s-music", udid);
@@ -3495,6 +3578,67 @@ static int cmd_atc_insert(const char *path, const char *selector)
 		fixn = (size_t)sz;
 	}
 	printf("fixture: %s (%zu Б)\n", fixt, fixn);
+
+	/* (9k) обложка: env IRMA_ATC_ARTWORK = путь к JPEG/PNG. Сырые
+	 * байты уйдут маркером; без env поле artwork_cache_id в декларацию
+	 * не пишем (без обложки телефон «удочеряет» случайный старый
+	 * artwork — способ отключения не проверен, 9k-эксперимент). */
+	uint8_t *art = NULL;
+	size_t artn = 0;
+	{
+		const char *art_e = getenv("IRMA_ATC_ARTWORK");
+		if (art_e && *art_e) {
+			FILE *af = fopen(art_e, "rb");
+			if (!af) {
+				fprintf(stderr, "atc-insert: обложка %s: %s\n",
+					art_e, strerror(errno));
+				goto close;
+			}
+			fseek(af, 0, SEEK_END);
+			long asz = ftell(af);
+			fseek(af, 0, SEEK_SET);
+			if (asz <= 0 || asz > (4L * 1024L * 1024L)) {
+				fprintf(stderr, "atc-insert: обложка %s: "
+						"размер %ld нежелателен "
+						"(1 Б..4 МиБ)\n",
+					art_e, asz);
+				fclose(af);
+				goto close;
+			}
+			art = (uint8_t *)malloc((size_t)asz);
+			if (!art || fread(art, 1, (size_t)asz, af) !=
+					    (size_t)asz) {
+				fprintf(stderr, "atc-insert: обложка %s: "
+						"чтение\n",
+					art_e);
+				fclose(af);
+				goto close;
+			}
+			fclose(af);
+			artn = (size_t)asz;
+			/* магия: JPEG ffd8ff… / PNG 89 50 4e 47 0d 0a 1a 0a;
+			 * прочие форматы телефонам не отсылаем */
+			int fjpg = artn >= 3 && art[0] == 0xff &&
+				   art[1] == 0xd8 && art[2] == 0xff;
+			int fpng = artn >= 8 && art[0] == 0x89 &&
+				   art[1] == 0x50 && art[2] == 0x4e &&
+				   art[3] == 0x47 && art[4] == 0x0d &&
+				   art[5] == 0x0a && art[6] == 0x1a &&
+				   art[7] == 0x0a;
+			if (!fjpg && !fpng) {
+				fprintf(stderr, "atc-insert: обложка %s: "
+						"не JPEG и не PNG — "
+						"вставка без обложки\n",
+					art_e);
+				free(art);
+				art = NULL;
+				artn = 0;
+			} else {
+				printf("обложка: %s (%zu Б, %s)\n", art_e,
+				       artn, fjpg ? "JPEG" : "PNG");
+			}
+		}
+	}
 
 	/* (a) AFC-канал: держим ЖИВЫМ на весь прогон (staging+airlock). */
 	if (atc_serve_open(lk, pair, path, device_id, "com.apple.afc", &cfd,
@@ -3687,6 +3831,30 @@ static int cmd_atc_insert(const char *path, const char *selector)
 		       (unsigned long long)(anchor_a + 1));
 		taken = atc_collect_pids(db, &takenn);
 		printf("PID-набор: %zu значений\n", takenn);
+		/* (9k) токены обложек: u32-max каталога + 1, коллизию
+		 * сверяем по CAST-равенству (3uTools 678 = max+1 «тем же
+		 * алгоритмом» — FINDINGS ~1561) */
+		if (art) {
+			uint64_t amax = atc_artwork_token_max(db);
+			art_next = amax ? (amax + 1) : 481;
+			for (int tries = 0; tries < 64 &&
+			     atc_artwork_token_taken(db, art_next);
+			     tries++)
+				art_next++;
+			if (art_next > UINT32_MAX - 1) {
+				fprintf(stderr, "atc-insert: u32-токены "
+						"обложек исчерпаны — вставка "
+						"без обложки\n");
+				free(art);
+				art = NULL;
+				artn = 0;
+			} else {
+				printf("artwork-токен: max в базе=%llu → "
+				       "новый=%llu\n",
+				       (unsigned long long)amax,
+				       (unsigned long long)art_next);
+			}
+		}
 		sqlite3_close(db);
 
 		/* (c) свежие PIDs: batch_n трековых + 1 альбом + 1 артист;
@@ -3813,6 +3981,8 @@ static int cmd_atc_insert(const char *path, const char *selector)
 					.samples = samples,
 					.sample_rate = rate,
 					.number = batch_n == 1 ? 1 : i + 1,
+					.artwork_cache_id =
+						art ? (art_next + i) : 0,
 				};
 				irm_bp_node *opi = atc_op_insert_track(&td);
 				if (!opi || irm_bp_array_add(arr, opi) != 0) {
@@ -4006,12 +4176,74 @@ static int cmd_atc_insert(const char *path, const char *selector)
 	       "готово; телефон потребляет их ТОЛЬКО на FSFM\n",
 	       ops_n, cig_n);
 
+	/* (9k) маркеры обложки: сырой jpeg/png по
+	 * /Airlock/Media/Artwork/<item_pid>; потребление — ингест item
+	 * после FSFM (3uTools писал маркеры до того же разговора). */
+	if (art) {
+		char **an = NULL;
+		size_t anm = 0;
+		if (irm_afc_dir_list(afc, "/Airlock/Media/Artwork", &an,
+				     &anm) == 0) {
+			for (size_t i = 0; i < anm; i++)
+				free(an[i]);
+			free(an);
+		} else if (irm_afc_mkdir(afc, "/Airlock/Media/Artwork") !=
+			   0) {
+			fprintf(stderr, "atc-insert: mkdir "
+					"/Airlock/Media/Artwork: %s — "
+					"abort до FSFM\n",
+				irm_afc_error());
+			atc_stage_clean(afc, 1);
+			goto close;
+		}
+		unsigned staged = 0;
+		for (unsigned i = 0; i < batch_n; i++) {
+			char amk[96];
+			snprintf(amk, sizeof amk,
+				 "/Airlock/Media/Artwork/%llu",
+				 (unsigned long long)tpids[i]);
+			if (atc_write_verify(afc, amk, art, artn) != 0) {
+				fprintf(stderr, "atc-insert: стейдж "
+						"маркера %s: %s — abort до "
+						"FSFM\n",
+					amk, irm_afc_error());
+				for (unsigned j = 0; j < staged; j++) {
+					char amk2[96];
+					snprintf(amk2, sizeof amk2,
+						 "/Airlock/Media/Artwork/"
+						 "%llu",
+						 (unsigned long long)
+							 tpids[j]);
+					irm_afc_remove(afc, amk2);
+				}
+				atc_stage_clean(afc, 1);
+				goto close;
+			}
+			staged++;
+		}
+		printf("стейдж: обложка %zu Б × %u маркеров (Artwork/"
+		       "<pid>, токены %llu+%u)\n",
+		       artn, batch_n, (unsigned long long)art_next, batch_n);
+	}
+
 	/* (i) FSFM с анкером A+1 (якерь растёт ТОЛЬКО этой сессией). */
 	{
 		/* anch_next = anchor+1 (dec) выведен в (b) из DB-копии. */
 		irm_bp_node *params = atc_build_fsfm_params(anch_next);
 		if (!params) {
 			fprintf(stderr, "atc-insert: FSFM Params\n");
+			/* (9k) телефон FSFM не получил — маркеры никогда
+			 * не потребит, чистим */
+			if (art)
+				for (unsigned mi = 0; mi < batch_n; mi++) {
+					char amk[96];
+					snprintf(amk, sizeof amk,
+						 "/Airlock/Media/Artwork/"
+						 "%llu",
+						 (unsigned long long)
+							 tpids[mi]);
+					irm_afc_remove(afc, amk);
+				}
 			goto close;
 		}
 		irm_bp_node *fsfm = atc_host_msg(2, "FinishedSyncingMetadata",
@@ -4020,6 +4252,18 @@ static int cmd_atc_insert(const char *path, const char *selector)
 			fprintf(stderr, "atc-insert: FSFM: %s\n",
 				atl ? "tls-ошибка" : strerror(errno));
 			irm_bp_free(fsfm);
+			/* (9k) телефон FSFM не получил — маркеры никогда
+			 * не потребит, чистим */
+			if (art)
+				for (unsigned mi = 0; mi < batch_n; mi++) {
+					char amk[96];
+					snprintf(amk, sizeof amk,
+						 "/Airlock/Media/Artwork/"
+						 "%llu",
+						 (unsigned long long)
+							 tpids[mi]);
+					irm_afc_remove(afc, amk);
+				}
 			goto close;
 		}
 		irm_bp_free(fsfm);

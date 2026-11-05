@@ -1148,3 +1148,33 @@ apple-devices/
 - Логи: research/3utools/tools/`irm-fill-gui-fill-2026-11-05.log`
   (9i живой прогон, дословно), `atc-insert-stage-tags-2026-11-05.log`
   (9j-регрессия); FINDINGS §9i/§9j (3utools-research, коммит bd225ece).
+
+#### Шаг 9k — обложки (artwork), реализация порции (05.11)
+
+- **Реверс закрыт** (3utools-research FINDINGS §9k): 3uTools ставил
+  item-поле `artwork_cache_id` (u32) + маркер сырого JPEG/PNG в
+  `/Airlock/Media/Artwork/<item_pid>`; потребление маркера — ингест
+  item после FSFM; ArtworkDB (mhfd, счётчик u32 @0x1c) наш путь
+  НЕ требует (С-путь 01.11 подтвердил 2/2 обложек без него). Reuse
+  токена = чужая/старая обложка (Bangarang-кейс) — поэтому
+  max(u32-токены каталога)+1 и CAST-проверка коллизии.
+- **irmctl**: env `IRMA_ATC_ARTWORK` (файл ≤4 МиБ, магия JPEG/PNG;
+  прочее → вставка без обложки); токены из живой DB-копии (один
+  заход с якерем/PIDs); `artwork_cache_id` в item только когда
+  обложка есть (не пишем 0 — «удочерение» поведения); маркеры
+  стейджатся ДО FSFM рядом с ops/.cig (mkdir по отсутствию);
+  fail ДО отправки FSFM → маркеры чистятся.
+- **irm-fill**: обложка через TagLib complex property «PICTURE»
+  (APIC/covr) → tmp-файл `irm-fill-<base>.jpg|.png` → env;
+  лог «обложка: N Б (mime) → путь» / «в источнике нет».
+- **Проверено**: сборка чисто (чужой pedantic gtk-заголовка — не в
+  счёт), юниты 5/5, make smoke ок, скан мусора чист; **regression
+  stage-only на телефоне** (fuze.m4a + cover-fuze.jpg 43 837 Б
+  JPEG): «обложка: 43837 Б JPEG», «artwork-токен: max в базе =
+  959559002 → новый = 959559003», якерь A=9 (A+1=10), ops 1171 Б
+  (+21 Б = artwork_cache_id), телефон: «записей НЕ делаем». Лог:
+  research/3utools/tools/`atc-insert-stage-artwork-2026-11-05.log`.
+- **Живая проверка (за кликом пользователя)**: выбрать трек
+  с обложкой, снять STAGE-ONLY → вставлен трек ДОЛЖЕН получить
+  обложку альбома в приложении; параллельно — заливка БЕЗ обложки
+  НЕ должна «удочерять» чужой artwork (гипотеза 9k).

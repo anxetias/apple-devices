@@ -68,6 +68,9 @@ typedef struct {
 	char tag_artist[256];
 	char tag_album[256];
 	char tag_genre[256];
+
+	/* 9k: обложка источника → tmp-файл → IRMA_ATC_ARTWORK */
+	char art_path[256];
 } IrmFill;
 
 static IrmFill g_uf;
@@ -367,6 +370,79 @@ static void read_source_tags(const char *path)
 		log_fmt("        жанр: %s", g_uf.tag_genre);
 }
 
+/* ---- 9k: обложка источника --------------------------------------- */
+
+/* 9k: обложка через комплексное свойство "PICTURE" (ID3v2 APIC /
+ * MP4 covr; TagLib 2.2 API tag_c.h ~строка 595) → tmp-файл для
+ * IRMA_ATC_ARTWORK (irmctl ставит маркером в /Airlock/Media/Artwork
+ * /<item_pid>). Нет тега/кадра → art_path пуст → irmctl вставит
+ * декларацию без artwork_cache_id. */
+static void read_source_artwork(const char *path)
+{
+	g_uf.art_path[0] = 0;
+	TagLib_File *tf = taglib_file_new(path);
+	if (!tf || !taglib_file_is_valid(tf)) {
+		if (tf)
+			taglib_file_free(tf);
+		log_fmt("обложка: файл тегов не распознан");
+		return;
+	}
+	TagLib_Complex_Property_Attribute ***props =
+		taglib_complex_property_get(tf, "PICTURE");
+	if (props) {
+		TagLib_Complex_Property_Picture_Data pic;
+		memset(&pic, 0, sizeof pic);
+		taglib_picture_from_complex_property(props, &pic);
+		if (pic.data && pic.size > 0) {
+			const char *ext = "jpg";
+			if (pic.mimeType && *pic.mimeType &&
+			    strstr(pic.mimeType, "png"))
+				ext = "png";
+			char *b = g_path_get_basename(path ? path : "");
+			char *dot = strrchr(b, '.');
+			if (dot && dot != b)
+				*dot = 0;
+			for (char *q = b; *q; q++)
+				if (!g_ascii_isalnum((guchar)*q) &&
+				    *q != '-' && *q != '_')
+					*q = '_';
+			if (!*b) {
+				g_free(b);
+				b = g_strdup("src");
+			}
+			gchar *name = g_strdup_printf(
+				"irm-fill-%s.%s", b, ext);
+			gchar *full = g_build_filename(g_get_tmp_dir(),
+						       name, NULL);
+			FILE *f = fopen(full, "wb");
+			if (!f) {
+				log_fmt("обложка: tmp-файл не открыт");
+			} else if (fwrite(pic.data, 1, pic.size, f) !=
+				   pic.size) {
+				log_fmt("обложка: запись %s не удалась",
+					full);
+				fclose(f);
+				f = NULL;
+			} else {
+				fclose(f);
+				snprintf(g_uf.art_path,
+					 sizeof g_uf.art_path, "%s",
+					 full);
+				log_fmt("обложка: %u Б (%s) → %s", pic.size,
+					pic.mimeType ? pic.mimeType : "?",
+					full);
+			}
+			g_free(full);
+			g_free(name);
+			g_free(b);
+		}
+		taglib_complex_property_free(props);
+	}
+	taglib_file_free(tf);
+	if (!g_uf.art_path[0])
+		log_fmt("обложка: в источнике нет (вставка пойдёт без неё)");
+}
+
 /* ---- низкоуровневый запуск irmctl (busy управляет вызывающий) ---- */
 
 static void irmctl_spawn(const char *subcmd, const char *fixture_override,
@@ -417,6 +493,11 @@ static void irmctl_spawn(const char *subcmd, const char *fixture_override,
 		if (g_uf.tag_genre[0])
 			env = g_environ_setenv(env, "IRMA_ATC_GENRE",
 					       g_uf.tag_genre, TRUE);
+		/* (9k) обложка: tmp-файл от TagLib PICTURE; irmctl
+		 * сам её не увидит — только этот env */
+		if (g_uf.art_path[0])
+			env = g_environ_setenv(env, "IRMA_ATC_ARTWORK",
+					       g_uf.art_path, TRUE);
 		/* метаданные перекода (9i): длительность/сэмплрейт;
 		 * сэмплы irmctl считает сам (ms*rate/1000) */
 		if (meta_ms != 0) {
@@ -726,6 +807,8 @@ static void on_insert_clicked(void)
 	/* (9j) теги берём из ИСТОЧНИКА (в транскоде они не сохраняются:
 	 * mp4mux теги так и не пишет) */
 	read_source_tags(fix);
+	/* (9k) обложку берём тоже из ИСТОЧНИКА (TagLib PICTURE) */
+	read_source_artwork(fix);
 	if (is_m4a(fix)) {
 		run_irmctl_full("atc-insert", NULL, 0, 0);
 		return;

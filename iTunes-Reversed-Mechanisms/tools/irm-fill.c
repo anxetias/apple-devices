@@ -25,6 +25,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <taglib/tag_c.h>
+
 /* путь до irmctl можно переопределить окружением */
 #define IRMFILL_IRMCTL_ENV "IRMFILL_IRMCTL"
 #define IRMFILL_BATCH_MAX 499
@@ -60,6 +62,12 @@ typedef struct {
 	char *tc_src;
 	char *tc_dst;
 	char pending_cmd[32];
+
+	/* 9j: теги источника (TagLib) → env для irmctl; пусто = дефолты */
+	char tag_title[256];
+	char tag_artist[256];
+	char tag_album[256];
+	char tag_genre[256];
 } IrmFill;
 
 static IrmFill g_uf;
@@ -284,6 +292,81 @@ static void log_file_size(const char *path)
 	g_free(s);
 }
 
+/* ---- теги источника (9j; TagLib C-биндинги) ---- */
+
+/* чистка строки тега: управляющие символы вон, хвостовые пробелы
+ * обрезаны, cap по границе utf8 (дубль env_san из irmctl.c —
+ * программы идут раздельно) */
+static void tag_copy_clean(char *dst, size_t len, const char *src)
+{
+	if (!src)
+		return;
+	size_t n = 0;
+	for (const char *p = src; *p && n + 1 < len; p++) {
+		unsigned char c = (unsigned char)*p;
+		if (c < 0x20 && c != '\t')
+			continue;
+		dst[n++] = (char)c;
+	}
+	dst[n] = 0;
+	while (n && (unsigned char)dst[n - 1] == ' ')
+		dst[--n] = 0;
+	size_t k = n;
+	while (k > 0 && ((unsigned char)dst[k - 1] & 0xc0) == 0x80)
+		k--;
+	if (k > 0 && (unsigned char)dst[k - 1] >= 0x80) {
+		unsigned char lb = (unsigned char)dst[k - 1];
+		size_t want = (lb & 0xe0) == 0xc0 ? 2u
+			    : (lb & 0xf0) == 0xe0 ? 3u
+			    : 4u;
+		if (n - (k - 1) < want)
+			dst[k - 1] = 0;
+	}
+}
+
+static void read_source_tags(const char *path)
+{
+	g_uf.tag_title[0] = 0;
+	g_uf.tag_artist[0] = 0;
+	g_uf.tag_album[0] = 0;
+	g_uf.tag_genre[0] = 0;
+
+	TagLib_File *tf = taglib_file_new(path);
+	if (!tf || !taglib_file_is_valid(tf)) {
+		g_uf.tag_title[0] = 0;
+		if (tf)
+			taglib_file_free(tf);
+		log_fmt("теги источника: taglib не распознал «%s» — "
+			"названия останутся фирменными (IRM Tone …)",
+			path ? path : "(пусто)");
+		return;
+	}
+	TagLib_Tag *t = taglib_file_tag(tf);
+	tag_copy_clean(g_uf.tag_title, sizeof g_uf.tag_title,
+		       taglib_tag_title(t));
+	tag_copy_clean(g_uf.tag_artist, sizeof g_uf.tag_artist,
+		       taglib_tag_artist(t));
+	tag_copy_clean(g_uf.tag_album, sizeof g_uf.tag_album,
+		       taglib_tag_album(t));
+	tag_copy_clean(g_uf.tag_genre, sizeof g_uf.tag_genre,
+		       taglib_tag_genre(t));
+	taglib_tag_free_strings();
+	taglib_file_free(tf);
+
+	if (!g_uf.tag_title[0] && !g_uf.tag_artist[0]) {
+		log_fmt("теги источника пусты — названия останутся "
+			"фирменными (IRM Tone …)");
+		return;
+	}
+	log_fmt("теги источника: «%s» — «%s»%s%s",
+		g_uf.tag_title[0] ? g_uf.tag_title : "(нет)",
+		g_uf.tag_artist[0] ? g_uf.tag_artist : "(нет)",
+		g_uf.tag_album[0] ? ", альбом " : "",
+		g_uf.tag_album[0] ? g_uf.tag_album : "");
+	if (g_uf.tag_genre[0])
+		log_fmt("        жанр: %s", g_uf.tag_genre);
+}
+
 /* ---- низкоуровневый запуск irmctl (busy управляет вызывающий) ---- */
 
 static void irmctl_spawn(const char *subcmd, const char *fixture_override,
@@ -320,6 +403,20 @@ static void irmctl_spawn(const char *subcmd, const char *fixture_override,
 		if (stage)
 			env = g_environ_setenv(env, "IRMA_ATC_STAGE_ONLY",
 					       "1", TRUE);
+		/* теги источника (9j): пустые не передаём — irmctl
+		 * подставит фирменные дефолты сам */
+		if (g_uf.tag_title[0])
+			env = g_environ_setenv(env, "IRMA_ATC_TITLE",
+					       g_uf.tag_title, TRUE);
+		if (g_uf.tag_artist[0])
+			env = g_environ_setenv(env, "IRMA_ATC_ARTIST",
+					       g_uf.tag_artist, TRUE);
+		if (g_uf.tag_album[0])
+			env = g_environ_setenv(env, "IRMA_ATC_ALBUM",
+					       g_uf.tag_album, TRUE);
+		if (g_uf.tag_genre[0])
+			env = g_environ_setenv(env, "IRMA_ATC_GENRE",
+					       g_uf.tag_genre, TRUE);
 		/* метаданные перекода (9i): длительность/сэмплрейт;
 		 * сэмплы irmctl считает сам (ms*rate/1000) */
 		if (meta_ms != 0) {
@@ -626,6 +723,9 @@ static void on_insert_clicked(void)
 			(fix && *fix) ? fix : "(пусто)");
 		return;
 	}
+	/* (9j) теги берём из ИСТОЧНИКА (в транскоде они не сохраняются:
+	 * mp4mux теги так и не пишет) */
+	read_source_tags(fix);
 	if (is_m4a(fix)) {
 		run_irmctl_full("atc-insert", NULL, 0, 0);
 		return;

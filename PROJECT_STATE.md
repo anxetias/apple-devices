@@ -1100,3 +1100,41 @@ apple-devices/
   с реальными метаданными; клик = согласие.
 - **Дальше**: живой прогон 9i; Reset-синк; вынос ATC-протокола в
   libirm (прямой вызов из GUI без подпроцесса).
+
+##### Шаг 9j: теги источника при вставке (реальные «Skrillex & ISOxo» вместо «IRM Tone»)
+
+- **Заказ**: живой прогон 9i показал «1 песня, 3 минуты» (env-метаданные
+  дошли до телефона, скриншот), но название осталось фирменным
+  «IRM Tone» — title/artist/album/genre жёстко зашиты в irmctl
+  (пользователь: «трек назывался skrillex, ISOxo - fuze»).
+- **Путь**: gst-discoverer-1.0 CLI теги НЕ печатает (проверено и на
+  реальных файлах, и на синтетике с taginject); mp4mux теги так и не
+  пишет (taginject до/после энкодера — строки в файл не легли); TagLib
+  C-биндинги (taglib_c — pkg-config; в main-приложении уже используется)
+  уверенно читают теги источников: «fuze»/«Skrillex & ISOxo»,
+  альбом «hit me where it hurts x», жанр «Hardgroove Techno / …»,
+  LANDMVRKS «Lost in a Wave».
+- **GUI (irm-fill)**: struct IrmFill + tag_title/artist/album/genre;
+  `read_source_tags()` (TagLib C): чистка строки (контроль-символы
+  выкинуты, обрезка пробелов, cap 255 по границе utf8) — дубль
+  `env_san` из irmctl (программы отдельные); вызывается на кнопку
+  вставки ИЗ ИСТОЧНИКА (в перекоде теги всё равно не сохраняются);
+  лог-строки «теги источника…»; irmctl_spawn ставит env
+  IRMA_ATC_TITLE/ARTIST/ALBUM/GENRE (пустые не передаёт).
+- **irmctl**: `env_san` (file scope перед cmd_atc_insert) + разбор
+  env-строк в блоке (o2): title_e/artist_e/album_e/genre_e; title
+  приоритетнее дефолтов, пакет >1 добавляет « %u» по образцу
+  «IRM Tone %u»; td: .artist/.album/.genre подставляют env при
+  наличии. Stage-only прогон с тегами (CLI): «теги источника: title=
+  fuze artist=Skrillex & ISOxo album=hit me where it hurts x» верно
+  попадает в ops (сигнатура сверена, записей нет; якерь sent=7).
+- **Makefile**: GTK_CFLAGS/GTK_LIBS теперь включают taglib_c
+  (guard-сообщение обновлено).
+- **Проверено**: сборка чисто, юниты 5/5, скан мусора чист, boot-смок
+  6 с (0 CRITICAL), stage-only с тегами на телефоне (без записей).
+- **Живая проверка (за кликом пользователя)**: выбрать трек с тегами,
+  снять STAGE-ONLY, один трек → в приложении «fuze — Skrillex &
+  ISOxo» и альбом «hit me where it hurts x».
+- Логи: research/3utools/tools/`irm-fill-gui-fill-2026-11-05.log`
+  (9i живой прогон, дословно), `atc-insert-stage-tags-2026-11-05.log`
+  (9j-регрессия); FINDINGS §9i/§9j (3utools-research, коммит bd225ece).

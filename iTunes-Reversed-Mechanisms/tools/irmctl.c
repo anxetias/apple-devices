@@ -3257,6 +3257,46 @@ static uint64_t *atc_collect_pids(sqlite3 *db, size_t *out_n)
 
 /* --- собственно команда ------------------------------------------- */
 
+/* (9j) значение env → чистая строка: управляющие символы вон,
+ * хвостовые пробелы обрезаны, cap по границе utf8. NULL = пусто/
+ * отсутствует (дефолты остаётся). Дублируется в irm-fill.c —
+ * программы идут раздельно, общий хелпер мы ещё не вытаскивали. */
+static const char *env_san(char *dst, size_t len, const char *name)
+{
+	const char *e = getenv(name);
+	size_t n = 0;
+
+	if (!e)
+		return NULL;
+	for (const char *p = e; *p && n + 1 < len; p++) {
+		unsigned char c = (unsigned char)*p;
+		if (c < 0x20 && c != '\t')
+			continue;
+		dst[n++] = (char)c;
+	}
+	dst[n] = 0;
+	while (n && (unsigned char)dst[n - 1] == ' ')
+		dst[--n] = 0;
+	if (!dst[0])
+		return NULL;
+	/* cap не должен рвать utf8-серию: отступаем с континуаций,
+	 * затем с незавершённой ведущей */
+	size_t k = n;
+	while (k > 0 && ((unsigned char)dst[k - 1] & 0xc0) == 0x80)
+		k--;
+	if (k > 0 && (unsigned char)dst[k - 1] >= 0x80) {
+		unsigned char lb = (unsigned char)dst[k - 1];
+		size_t want = (lb & 0xe0) == 0xc0 ? 2u
+			    : (lb & 0xf0) == 0xe0 ? 3u
+			    : 4u;
+		if (n - (k - 1) < want)
+			dst[k - 1] = 0;
+	}
+	if (!dst[0])
+		return NULL;
+	return dst;
+}
+
 static int cmd_atc_insert(const char *path, const char *selector)
 {
 	uint32_t device_id = 0;
@@ -3402,6 +3442,24 @@ static int cmd_atc_insert(const char *path, const char *selector)
 	}
 	printf("метаданные: total_ms=%u rate=%u samples=%llu\n", total_ms,
 	       rate, (unsigned long long)samples);
+
+	/* (9j) строки вставки: IRMA_ATC_TITLE/ARTIST/ALBUM/GENRE —
+	 * GUI передаёт теги источника (TagLib). Пустые/отсутствующие =
+	 * прежние фирменные дефолты (IRM Tone/IRM/IRM Tones/Test). */
+	char s_title[256], s_artist[256], s_album[256], s_genre[256];
+	const char *title_e = env_san(s_title, sizeof s_title,
+				      "IRMA_ATC_TITLE");
+	const char *artist_e = env_san(s_artist, sizeof s_artist,
+				       "IRMA_ATC_ARTIST");
+	const char *album_e = env_san(s_album, sizeof s_album,
+				      "IRMA_ATC_ALBUM");
+	const char *genre_e = env_san(s_genre, sizeof s_genre,
+				      "IRMA_ATC_GENRE");
+	if (title_e || artist_e)
+		printf("теги источника: title=%s artist=%s album=%s\n",
+		       title_e ? title_e : "(нет)",
+		       artist_e ? artist_e : "(нет)",
+		       album_e ? album_e : "(нет)");
 
 	/* (p) фикстура (валидный ALAC; берём из env; обязательно). */
 	if (!fixt || !*fixt) {
@@ -3670,12 +3728,24 @@ static int cmd_atc_insert(const char *path, const char *selector)
 			}
 		}
 		for (unsigned i = 0; i < batch_n; i++) {
-			if (batch_n == 1)
+			/* (9j) env-тегам приоритет; пакету добавляем номер
+			 * по образцу прежнего «IRM Tone %u» */
+			if (title_e) {
+				if (batch_n == 1)
+					snprintf(titles[i],
+						 sizeof titles[i], "%s",
+						 title_e);
+				else
+					snprintf(titles[i],
+						 sizeof titles[i], "%s %u",
+						 title_e, i + 1);
+			} else if (batch_n == 1) {
 				snprintf(titles[i], sizeof titles[i],
 					 "IRM Tone");
-			else
+			} else {
 				snprintf(titles[i], sizeof titles[i],
 					 "IRM Tone %u", i + 1);
+			}
 		}
 		printf("PIDs: album=%lld artist=%lld; треков %u:",
 		       (long long)al, (long long)ar, batch_n);
@@ -3730,9 +3800,12 @@ static int cmd_atc_insert(const char *path, const char *selector)
 			for (unsigned i = 0; i < batch_n; i++) {
 				struct atc_insert_data td = {
 					.title = titles[i],
-					.artist = "IRM",
-					.album = "IRM Tones",
-					.genre = "Test",
+					.artist = artist_e ? artist_e
+							   : "IRM",
+					.album = album_e ? album_e
+							 : "IRM Tones",
+					.genre = genre_e ? genre_e
+							 : "Test",
 					.track_pid = (int64_t)tpids[i],
 					.album_pid = (int64_t)al,
 					.artist_pid = (int64_t)ar,

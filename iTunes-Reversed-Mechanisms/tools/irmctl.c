@@ -3653,15 +3653,32 @@ static int cmd_atc_insert(const char *path, const char *selector)
 		goto close;
 	}
 
-	/* (a2) staging ДОЛЖЕН быть пуст (инвариант §8.2). */
+	/* (a2) staging ДОЛЖЕН быть пуст (инвариант §8.2). Исключение:
+	 * брошенный СТЕЙДЖ НАШЕЙ прошлой aborted-сессии (только наша
+	 * пара naming'а: Sync_00000000.plist + .plist.cig) — телефон
+	 * потребляет стейдж ТОЛЬКО на FSFM (факт 9f), она не состоялась;
+	 * чистим и идём дальше. ЧУЖИЕ файлы = abort как раньше. */
 	{
 		char **names = NULL;
-		size_t nn = 0, nfiles = 0;
+		size_t nn = 0, nfiles = 0, nown = 0;
 		if (irm_afc_dir_list(afc, "/iTunes_Control/Sync/Media",
 				     &names, &nn) == 0) {
 			for (size_t i = 0; i < nn; i++) {
-				if (strcmp(names[i], ".") &&
-				    strcmp(names[i], "..")) {
+				if (!strcmp(names[i], ".") ||
+				    !strcmp(names[i], "..")) {
+					free(names[i]);
+					continue;
+				}
+				if (!strcmp(names[i],
+					    "Sync_00000000.plist") ||
+				    !strcmp(names[i],
+					    "Sync_00000000.plist.cig")) {
+					nown++;
+					nfiles++;
+					printf("  стейдж: брошенный наш "
+					       "%s\n",
+					       names[i]);
+				} else {
 					printf("  стейдж не пуст: %s\n",
 					       names[i]);
 					nfiles++;
@@ -3669,10 +3686,21 @@ static int cmd_atc_insert(const char *path, const char *selector)
 				free(names[i]);
 			}
 			free(names);
-			if (nfiles) {
-				fprintf(stderr, "atc-insert: staging НЕ ПУСТ —"
-						" abort до любых операций\n");
+			if (nfiles > nown) {
+				fprintf(stderr, "atc-insert: staging НЕ ПУСТ "
+						"(чужие файлы) — abort до "
+						"любых операций\n");
 				goto close;
+			}
+			if (nfiles) {
+				irm_afc_remove(afc,
+					       "/iTunes_Control/Sync/Media/"
+					       "Sync_00000000.plist");
+				irm_afc_remove(afc,
+					       "/iTunes_Control/Sync/Media/"
+					       "Sync_00000000.plist.cig");
+				printf("  стейдж: брошенный наш очищен — "
+				       "продолжаю\n");
 			}
 		}
 		printf("staging /iTunes_Control/Sync/Media: пуст (ок)\n");
@@ -3921,6 +3949,94 @@ static int cmd_atc_insert(const char *path, const char *selector)
 			printf(" %llu", (unsigned long long)tpids[i]);
 		printf("\n");
 
+		/* (9k, d0) маркеры обложки: mkdir /Airlock/Media/Artwork
+		 * (при отсутствии) + сырой jpeg/png по
+		 * /Airlock/Media/Artwork/<item_pid>; потребление — ингест
+		 * item после FSFM. Стейдж ПОСЛЕ выделения tpids (прежде
+		 * блок стоял до (c) и читал ещё НЕвыделенный массив —
+		 * SIGSEGV 05.11) и ДО сборки ops. ТОЛЬКО при живой вставке:
+		 * stage-only маркеры на телефон не пишет (обязательство
+		 * «записей НЕ делаем»), а ops обложку сохраняет. */
+		if (stage_only && art)
+			printf("  artwork-маркеры: только стадия — на "
+			       "телефон НЕ пишем\n");
+		if (art && !stage_only) {
+			char **bn = NULL;
+			size_t bn_n = 0;
+			int have_artdir =
+				irm_afc_dir_list(afc, "/Airlock/Media/Artwork",
+						 &bn, &bn_n) == 0;
+			if (have_artdir) {
+				for (size_t i = 0; i < bn_n; i++)
+					free(bn[i]);
+				free(bn);
+				printf("  artwork-каталог: есть\n");
+			} else {
+				int mrc = irm_afc_mkdir(afc,
+							"/Airlock/Media/"
+							"Artwork");
+				if (mrc != 0) {
+					fprintf(stderr, "atc-insert: mkdir "
+							"/Airlock/Media/Artwork"
+							": %s — вставка БЕЗ "
+							"обложки\n",
+						irm_afc_error());
+					free(art);
+					art = NULL;
+					artn = 0;
+					art_next = 0;
+				} else {
+					printf("  artwork-каталог: создан\n");
+				}
+			}
+			for (unsigned i = 0; i < batch_n && art; i++) {
+				char amk[96];
+				snprintf(amk, sizeof amk,
+					 "/Airlock/Media/Artwork/%llu",
+					 (unsigned long long)tpids[i]);
+				int wrote = 0;
+				for (int attempt = 1; attempt <= 2 &&
+				     !wrote; attempt++) {
+					if (atc_write_verify(afc, amk, art,
+							     artn) != 0) {
+						fprintf(stderr,
+							"atc-insert: маркер "
+							"%s (попытка %d): %s"
+							"\n",
+							amk, attempt,
+							irm_afc_error());
+						if (attempt == 1) {
+							printf("  пауза 1 с "
+							       "перед "
+							       "повтором\n");
+							sleep(1);
+						}
+					} else {
+						wrote = 1;
+						printf("  маркер %s: %zu Б "
+						       "записано (read-back "
+						       "ок)\n",
+						       amk, artn);
+					}
+				}
+				if (!wrote) {
+					fprintf(stderr, "atc-insert: "
+							"обложка не залита — "
+							"вставка БЕЗ обложки "
+							"(маркер-функция "
+							"того же пути у 3uTools "
+							"работала; см. "
+							"FINDINGS §9k open)."
+							"\n");
+					free(art);
+					art = NULL;
+					artn = 0;
+					art_next = 0;
+					break;
+				}
+			}
+		}
+
 		/* (d) конверт операций (порядок ключей 1:1 alac.rs):
 		 * ОДИН конверт на пакет [update_db_info, insert_track × N],
 		 * один revision/timestamp (rustunes insert_batch:
@@ -4012,6 +4128,31 @@ static int cmd_atc_insert(const char *path, const char *selector)
 		for (size_t i = 0; i < ops_n && i < 24; i++)
 			printf(" %02x", ops_bytes[i]);
 		printf("...)\n");
+		{
+			/* (9k) локальный дамп конверта для разбора
+			 * (телефона не касается; env IRMA_ATC_DUMP_OPS) */
+			const char *dops = getenv("IRMA_ATC_DUMP_OPS");
+			if (dops && *dops) {
+				FILE *f = fopen(dops, "wb");
+				if (f) {
+					size_t w = fwrite(ops_bytes, 1,
+							  ops_n, f);
+					fclose(f);
+					if (w == ops_n)
+						printf("ops-дамп: %s (%zu "
+						       "байт)\n", dops, ops_n);
+					else
+						fprintf(stderr,
+							"atc-insert: дамп "
+							"ops: fwrite %zu/%zu"
+							"\n", w, ops_n);
+				} else {
+					fprintf(stderr, "atc-insert: дамп "
+							"ops: %s: %s\n", dops,
+						strerror(errno));
+				}
+			}
+		}
 	}
 
 	/* (e) ATC: Ping S1 → SyncAllowed → RS S2 (anchor A) → Ready. */
@@ -4175,56 +4316,6 @@ static int cmd_atc_insert(const char *path, const char *selector)
 	printf("стейдж: Sync_00000000.plist (%zu Б) + .plist.cig (%zu Б) — "
 	       "готово; телефон потребляет их ТОЛЬКО на FSFM\n",
 	       ops_n, cig_n);
-
-	/* (9k) маркеры обложки: сырой jpeg/png по
-	 * /Airlock/Media/Artwork/<item_pid>; потребление — ингест item
-	 * после FSFM (3uTools писал маркеры до того же разговора). */
-	if (art) {
-		char **an = NULL;
-		size_t anm = 0;
-		if (irm_afc_dir_list(afc, "/Airlock/Media/Artwork", &an,
-				     &anm) == 0) {
-			for (size_t i = 0; i < anm; i++)
-				free(an[i]);
-			free(an);
-		} else if (irm_afc_mkdir(afc, "/Airlock/Media/Artwork") !=
-			   0) {
-			fprintf(stderr, "atc-insert: mkdir "
-					"/Airlock/Media/Artwork: %s — "
-					"abort до FSFM\n",
-				irm_afc_error());
-			atc_stage_clean(afc, 1);
-			goto close;
-		}
-		unsigned staged = 0;
-		for (unsigned i = 0; i < batch_n; i++) {
-			char amk[96];
-			snprintf(amk, sizeof amk,
-				 "/Airlock/Media/Artwork/%llu",
-				 (unsigned long long)tpids[i]);
-			if (atc_write_verify(afc, amk, art, artn) != 0) {
-				fprintf(stderr, "atc-insert: стейдж "
-						"маркера %s: %s — abort до "
-						"FSFM\n",
-					amk, irm_afc_error());
-				for (unsigned j = 0; j < staged; j++) {
-					char amk2[96];
-					snprintf(amk2, sizeof amk2,
-						 "/Airlock/Media/Artwork/"
-						 "%llu",
-						 (unsigned long long)
-							 tpids[j]);
-					irm_afc_remove(afc, amk2);
-				}
-				atc_stage_clean(afc, 1);
-				goto close;
-			}
-			staged++;
-		}
-		printf("стейдж: обложка %zu Б × %u маркеров (Artwork/"
-		       "<pid>, токены %llu+%u)\n",
-		       artn, batch_n, (unsigned long long)art_next, batch_n);
-	}
 
 	/* (i) FSFM с анкером A+1 (якерь растёт ТОЛЬКО этой сессией). */
 	{
@@ -4708,8 +4799,10 @@ static void usage(FILE *f)
 		"                                   (вставок в ОДНОМ конверте; ops ≤4\n"
 		"                                   МиБ, якерь A+1 на пакет),\n"
 		"                                   IRMA_ATC_STAGE_ONLY=1 (без записей на\n"
-		"                                   телефон), IRMA_ATC_LIBID/ANCHOR/\n"
-		"                                   VERSION/SERVICE\n"
+		"                                   телефон), env IRMA_ATC_LIBID/ANCHOR/\n"
+		"                                   VERSION/SERVICE; IRMA_ATC_DUMP_OPS=\n"
+		"                                   путь (локальный дамп ops-конверта,\n"
+		"                                   телефон не касается)\n"
 		"  irmctl [-s SOCKET] lk-dump [ДОМЕН[/КЛЮЧ]]\n"
 		"                                   read-only GetValue доменов lockdown\n"
 		"                                   внутри StartSession (LibraryID/синк-домены,\n"

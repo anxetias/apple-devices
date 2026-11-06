@@ -19,18 +19,7 @@
  * UI-заголовок irm-fill (якерь, одиночная заливка) не переносим. */
 #include "irmfill.h"
 #include "application.h"
-
-#include <errno.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <sys/statvfs.h>
-#include <time.h>
-#include <unistd.h>
-#include "irmfill.h"
-#include "application.h"
+#include "transcode.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -83,7 +72,6 @@ typedef struct {
 	GtkButton *btn_pl;
 	GtkButton *btn_clear;
 	GtkSpinButton *sp_batch;
-	GtkCheckButton *ck_stage;
 	GtkButton *btn_browse;
 	GtkEntry *en_fixture;
 	GtkEntry *en_libid;
@@ -561,15 +549,7 @@ static void irmctl_spawn(const char *subcmd, const char *fixture_override,
 		 * построчные данные — в файле плейлиста */
 		env = g_environ_setenv(env, "IRMA_ATC_PLAYLIST",
 				       tsv_override, TRUE);
-		gboolean stage = ifl.ck_stage
-					 ? gtk_check_button_get_active(
-						   ifl.ck_stage)
-					 : FALSE;
-		if (stage)
-			env = g_environ_setenv(env, "IRMA_ATC_STAGE_ONLY",
-					       "1", TRUE);
-		ifl_log("    плейлист=%s%s", tsv_override,
-			stage ? " (STAGE-ONLY)" : "");
+		ifl_log("    плейлист=%s", tsv_override);
 	} else if (is_insert) {
 		const char *fix =
 			fixture_override
@@ -593,13 +573,6 @@ static void irmctl_spawn(const char *subcmd, const char *fixture_override,
 			batch = IRMFILL_BATCH_MAX;
 		snprintf(nb, sizeof nb, "%u", batch);
 		env = g_environ_setenv(env, "IRMA_ATC_BATCH_N", nb, TRUE);
-		gboolean stage = ifl.ck_stage
-					 ? gtk_check_button_get_active(
-						   ifl.ck_stage)
-					 : FALSE;
-		if (stage)
-			env = g_environ_setenv(env, "IRMA_ATC_STAGE_ONLY",
-					       "1", TRUE);
 		/* теги источника (9j): пустые не передаём — irmctl
 		 * подставит фирменные дефолты сам */
 		if (ifl.tag_title[0])
@@ -636,9 +609,8 @@ static void irmctl_spawn(const char *subcmd, const char *fixture_override,
 			env = g_environ_setenv(env, "IRMA_ATC_SAMPLES",
 					       bs, TRUE);
 		}
-		ifl_log("    фикс=%s%s батч=%u%s", fix,
-			fixture_override ? " (перекод)" : "", batch,
-			stage ? " (STAGE-ONLY)" : "");
+		ifl_log("    фикс=%s%s батч=%u", fix,
+			fixture_override ? " (перекод)" : "", batch);
 		if (meta_ms != 0)
 			ifl_log("    метаданные: %llu мс, %u Гц",
 				meta_ms, meta_rate);
@@ -926,19 +898,6 @@ static void pl_progress_show(void)
 		gtk_widget_set_size_request(GTK_WIDGET(ifl.pb_prog), 420,
 					    -1);
 		gtk_box_append(GTK_BOX(box), GTK_WIDGET(ifl.pb_prog));
-		/* полигон (stage-only): галка переносится из параметра
-		 * irm-fill в само окно прогресса — режим читается в
-		 * момент заливки порции */
-		ifl.ck_stage = GTK_CHECK_BUTTON(gtk_check_button_new());
-		gtk_button_set_label(GTK_BUTTON(ifl.ck_stage),
-				     "Полигон (stage-only, телефон не "
-				     "заливать)");
-		gtk_widget_set_tooltip_text(
-			GTK_WIDGET(ifl.ck_stage),
-			"не писать в телефон: только стейдж порции для "
-			"разбора (atc-insert stage-only, требует пустой "
-			"стейдж)");
-		gtk_box_append(GTK_BOX(box), GTK_WIDGET(ifl.ck_stage));
 		GtkWidget *hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
 		ifl.btn_prog_cancel = GTK_BUTTON(
 			gtk_button_new_with_label("Отмена"));
@@ -977,6 +936,42 @@ static void pl_job_free(struct pl_job *j)
 	g_free(j->album);
 	g_free(j->genre);
 	g_free(j);
+}
+
+/* теги + обложка переносим В САМ пейлоад (владелец 05.11: «теги не
+ * читает»): телефон берёт их из TSV-конверта в свою базу, а скан
+ * приложения читает метаданные ИЗ ФАЙЛОВ — а mp4mux пишет голый
+ * moov без ilst, поэтому на iPhone всё показывалось, в приложении
+ * нет. Повторно используем transcodeWriteTags (TagLib, формат по
+ * файлу); ошибка не срывает конвейер — строка уедет, просто файл
+ * останется с пустыми тегами. */
+static void ifl_write_tags_into(struct pl_job *j)
+{
+	MedialibMeta m;
+	memset(&m, 0, sizeof m);
+	m.title = j->title && j->title[0] ? j->title : NULL;
+	m.artist = j->artist && j->artist[0] ? j->artist : NULL;
+	m.album = j->album && j->album[0] ? j->album : NULL;
+	m.genre = j->genre && j->genre[0] ? j->genre : NULL;
+	if (j->art && g_file_test(j->art, G_FILE_TEST_IS_REGULAR)) {
+		gsize alen = 0;
+		gchar *adata = NULL;
+		if (g_file_get_contents(j->art, &adata, &alen, NULL) &&
+		    alen > 0) {
+			m.has_cover = TRUE;
+			/* владение у MedialibMeta (g_free в free-функции
+			 * семантики) */
+			m.cover_data = (guint8 *)adata;
+			m.cover_len = alen;
+		}
+	}
+	GError *terr = NULL;
+	gboolean ok = transcodeWriteTags(j->dst, &m, &terr);
+	g_free(m.cover_data);
+	if (!ok)
+		ifl_log("    [%u] теги вшить в файл не удалось: %s",
+			j->idx, terr ? terr->message : "?");
+	g_clear_error(&terr);
 }
 
 static void pl_job_ready_add(struct pl_job *j)
@@ -1062,6 +1057,9 @@ static void pl_job_transcode_done(GObject *src, GAsyncResult *res,
 		return;
 	}
 	ifl_log("    [%u] транскод готов", j->idx);
+	/* теги/обложка вшиваем в пейлоад (файлы становятся
+	 * самодостаточными — скан приложения читает их напрямую) */
+	ifl_write_tags_into(j);
 	log_file_size(j->dst);
 	g_free(txt);
 	g_free(etext);
@@ -1115,7 +1113,10 @@ static struct pl_job *pl_job_new(const char *src, unsigned idx,
 	read_source_tags(src);
 	read_source_artwork2(src, uname);
 	j->src = g_strdup(src);
-	j->dst = is_m4a(src) ? g_strdup(src) : tc_make_dst2(src, uname);
+	/* пейлоад ВСЕГДА наш tmp-артефакт: транскод для не-.m4a, для
+	 * родного .m4a — копия (в неё вшиваются теги/обложка, файл
+	 * владельца не трогаем) */
+	j->dst = tc_make_dst2(src, uname);
 	g_free(uname);
 	j->title = g_strdup(ifl.tag_title);
 	j->artist = g_strdup(ifl.tag_artist);
@@ -1123,7 +1124,10 @@ static struct pl_job *pl_job_new(const char *src, unsigned idx,
 	j->genre = g_strdup(ifl.tag_genre);
 	j->art = g_strdup(ifl.art_path);
 	j->idx = idx;
-	j->trans = !is_m4a(src);
+	/* «trans» = пейлоад — НАШ tmp-артефакт: только такие файлы
+	 * разрешены в уборку после живой заливки (rc=0); источник
+	 * владельца переживает конвейер всегда */
+	j->trans = TRUE;
 	j->gen = ifl.pl_gen;
 	/* маска живых job'ов (см. pl_alive): планировка держит порцию
 	 * закрытой, пока этот файл не превратится в строку или скип */
@@ -1226,7 +1230,30 @@ static void pl_advance(void)
 					      (unsigned)n);
 		ifl.pl_running++;
 		if (is_m4a(src)) {
-			/* как есть — tmpfs не расходует */
+			/* родный .m4a: копируем во временную копию и
+			 * вшиваем теги/обложку (оригинал владельца
+			 * переживает конвейер нетронутым) */
+			GError *cerr = NULL;
+			GFile *gf = g_file_new_for_path(src);
+			GFile *df = g_file_new_for_path(j->dst);
+			gboolean copied =
+				g_file_copy(gf, df, G_FILE_COPY_OVERWRITE,
+					    NULL, NULL, NULL, &cerr);
+			g_object_unref(gf);
+			g_object_unref(df);
+			if (!copied) {
+				ifl_log("  [%u] копия .m4a не удалась: %s",
+					j->idx,
+					cerr ? cerr->message : "?");
+				g_clear_error(&cerr);
+				ifl.pl_running--;
+				ifl.pl_skip++;
+				ifl.pl_rows_done++;
+				pl_progress_update();
+				pl_job_free(j);
+				continue;
+			}
+			ifl_write_tags_into(j);
 			pl_job_ready_add(j);
 		} else {
 			pl_job_start(j);
@@ -1398,10 +1425,10 @@ static void pl_flush_chunk(void)
 	}
 	for (guint i = 0; i < nr; i++) {
 		struct pl_row *r = g_ptr_array_index(ifl.pl_rows, i);
-		/* артефакты порции: только НАШИ (trans — tmp-перекод и
-		 * обложка) уходят на уборку после живой (не stage-only)
-		 * заливки rc=0. Родной .m4a владельца (trans=0) в
-		 * списке уборки запрещён — источник выживает. */
+		/* артефакты порции: наши tmp-пейлоады (копия .m4a,
+		 * транскод) и обложки — уходят на уборку после живой
+		 * заливки rc=0. Источник владельца в списке уборки
+		 * запрещён — файл выживает всегда. */
 		if (r->dst[0] && r->trans)
 			g_ptr_array_add(ifl.pl_chunk_art,
 					g_strdup(r->dst));
@@ -1467,17 +1494,11 @@ static void pl_chunk_done(gboolean ok)
 		return;
 	}
 	guint nart = ifl.pl_chunk_art ? ifl.pl_chunk_art->len : 0;
-	if (!ifl.ck_stage || !gtk_check_button_get_active(ifl.ck_stage)) {
-		for (guint i = 0; i < nart; i++)
-			unlink(g_ptr_array_index(ifl.pl_chunk_art, i));
-		ifl_log("порция %u/%u: залита (rc=0); временных файлов "
-			"убрано %u шт",
-			num, total, (unsigned)nart);
-	} else {
-		ifl_log("порция %u/%u: стадия ok (stage-only не чистит; "
-			"в /tmp осталось %u шт)",
-			num, total, (unsigned)nart);
-	}
+	for (guint i = 0; i < nart; i++)
+		unlink(g_ptr_array_index(ifl.pl_chunk_art, i));
+	ifl_log("порция %u/%u: залита (rc=0); временных файлов убрано "
+		"%u шт",
+		num, total, (unsigned)nart);
 	if (ifl.pl_chunk_art) {
 		g_ptr_array_unref(ifl.pl_chunk_art);
 		ifl.pl_chunk_art = NULL;
@@ -1493,8 +1514,9 @@ static void pl_chunk_done(gboolean ok)
 	pl_advance();
 }
 
-/* выбор нескольких файлов (GtkFileDialog open_multiple): безопасность
- * (stage-only) и очередь источника; сама обработка — по одному */
+/* выбор нескольких файлов (GtkFileDialog open_multiple): защита
+ * от повторного старта и очередь источников; сама обработка —
+ * по одному файлу */
 static void pl_start_from_files(GListModel *files)
 {
 	if (ifl.pl_active) {

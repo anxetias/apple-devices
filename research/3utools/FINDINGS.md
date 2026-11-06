@@ -3187,3 +3187,20 @@ precheck/unlink) стек 9l прошёл целиком — 36/36.
   pl_job_finalize(); дальше колесо крутится сам: копия → discoverer
   → строка → row_done → advance → следующий файл, хвост (г) →
   pl_finish.
+
+- **06.11 приёмка «сбой воспроизведения» на mp3-«как есть» (владелец):
+  наша ALAC-карта была жёсткой для всех пейлоадов. В atc-insert
+  (irmctl) раньше ВСЕГДА шло: location kind «Apple Lossless audio
+  file», avformat audio_format=601/bit_rate=1411 (PCM-ставка),
+  постоянный файл Fnn/XXXX.m4a (atc_permanent_path жёстко .m4a).
+  Телефон открывал mp3-файл как Apple Lossless → «сбой
+  воспроизведения» + треки выглядели «не скачано». РЕШЕНИЕ: карта по
+  расширению TSV-пейлоада (suffix .mp3), значения — живая декларация
+  3uTools из ЭТИХ FINDINGS: kind «MPEG Audio», audio_format=301,
+  bit_rate фактический (байты × 8 / длительность; 3u-образец 320),
+  sample_rate=0, album_pid=0, artist_pid=0 (pid 0 — телефон сам
+  сверяет контейнеры по строкам: повторы залива не плодят пустых
+  альбомов), +album_artist/+sort_album_artist (по artist), файл
+  XXXX.mp3. ALAC/AAC-ветка базы (фикстура/перекод) осталась прежней.
+  Старые сбойные записи на телефоне вручную удаляются; их карту не
+  поправишь задним числом. (music-mac-style 3150bd20.)

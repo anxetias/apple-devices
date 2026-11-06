@@ -1628,3 +1628,34 @@ apple-devices/
   появились ~8 новых «не скачано». Удалить вручную вместе со старыми.
 - Пересобран deb (apple-devices_1.0.0-1_amd64.deb) с фиксом; приложение и irmctl собраны
   чисто, скан 0.
+
+## 06.11 — интерфейс заливки упрощён: остаётся только «Залить (IRM)»
+- Владелец: «успешное есть, давай упростим интерфейс заливки и оставим
+  только irm для заливки, прямую заливку с правкой бд под корень
+  вырезаем».
+- Живой прогон 13:50 с фиксом планировщика отработал (db8395b5) —
+  вырезку делаем после приёмки.
+- Снято целиком (владелец 06.11 «обрезаем до корня»):
+  - src/sync3u.c / src/sync3u.h — серверный импорт через a2-s.3u.com
+    (HTTPS-клиент OpenSSL, cig, собственный atc-диалог, батч с
+    RETRY-раундами 3×60 с) — второй путь заливки. «Прямой» путь
+    (Imported/ + запись MediaLibrary.sqlitedb) сняли ещё раньше — от
+    него оставался только комментарий в musicImportThread.
+  - src/application.c: кнопка «Импорт» (onMusicImportClicked,
+    onImportDialogDone, musicImportThread, onMusicImportFinished,
+    MusicImportCtx), +20 строк тр-таблицы (импорт-конвертация/
+    3u-сервер), кнопка исключена из строки кнопок.
+  - src/transcode.c/.h — transcodeToMp3 (lamemp3enc 320k через
+    gst-launch) и transcodeCleanupTmpDir; остался transcodeWriteTags
+    (вшивание в перекоде 9l). Header-комментарий переписан.
+  - src/medialib.c/.h — medialibReadMeta (мёртвое после вырезки).
+  - src/meson.build — sync3u.c из источников, dependency('openssl')
+    снят (клиент HTTPS удалился с ним).
+  - src/application.h — поле music_import_btn; src/uiWidgets.c —
+    гейт кнопки в updateMusicButtons.
+  - Пустая MediaLibrary-плашка на «Музыке» теперь зовёт
+    «Залейте музыку кнопкой «Залить (IRM)»», описание deb
+    (scripts/build-deb.sh) уточнено на IRM-заливку.
+- Сборка чисто (0/0), скан 0 (в application.c предсуществующие
+  2 шт. на бывшей стр. 194 после вырезки сместились на 159), deb
+  пересобран.

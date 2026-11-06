@@ -64,10 +64,6 @@ void medialibMetaFree(gpointer p);
 /* Копирует теги и обложку из одного трека в другой (для кэша). */
 void medialibTrackCopyTags(MusicTrack *dst, const MusicTrack *src);
 
-/* Читать теги локального файла для вставки в базу. FALSE — файл не читается. */
-gboolean medialibReadMeta(const char *local_path, const char *location,
-                          MedialibMeta *m, GError **error);
-
 /* --- Низкоуровневые helpers --- */
 
 gboolean dbRunN(sqlite3 *db, const char *sql, gint64 v, GError **error);

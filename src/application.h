@@ -72,7 +72,6 @@ struct _AppleApplication {
   GtkWidget *music_stack;
   GtkWidget *music_status;
   GtkWidget *music_list;
-  GtkWidget *music_import_btn;
   GtkWidget *music_irmfill_btn;
   GtkWidget *music_export_btn;
   GtkWidget *music_delete_btn;

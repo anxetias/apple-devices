@@ -87,13 +87,13 @@ Architecture: ${ARCH}
 Maintainer: Saitexna <anxetias@users.noreply.github.com>
 Homepage: https://github.com/anxetias/apple-devices
 Depends: ${DEPENDS}
-Description: Manage Apple devices over USB - GNOME application
+Description: Manage Apple devices over USB - GTK4 application
  Apple Devices is a GTK4/libadwaita application for managing Apple
  devices (iPhone, iPad, iPod touch) connected over USB, built on the
- open libimobiledevice stack. It browses the on-device music library,
- imports tracks with embedded cover art (covers appear in the device
- Music app immediately), exports and deletes tracks, and shows device
- information. A database backup is taken before every write.
+ open libimobiledevice stack. It browses the on-device music library
+ with embedded cover art, fills tracks on the device with the IRM
+ pipeline (irmctl atc-insert), exports and deletes tracks, and shows
+ device information. A database backup is taken before every write.
 EOF
 
 cat > "$STAGE/DEBIAN/postinst" <<'EOF'

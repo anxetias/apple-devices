@@ -251,8 +251,6 @@ void musicApplyFilter(AppleApplication *self)
 void updateMusicButtons(AppleApplication *self)
 {
   gboolean has = self->selected_track != NULL;
-  if (self->music_import_btn)
-    gtk_widget_set_sensitive(self->music_import_btn, !self->music_busy);
   if (self->music_irmfill_btn)
     gtk_widget_set_sensitive(self->music_irmfill_btn, !self->music_busy);
   if (self->music_refresh_btn)

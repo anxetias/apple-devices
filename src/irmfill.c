@@ -20,6 +20,7 @@
 #include "irmfill.h"
 #include "application.h"
 #include "transcode.h"
+#include <glib/gstdio.h>
 
 #include <errno.h>
 #include <stdarg.h>
@@ -85,6 +86,14 @@ typedef struct {
 	GtkLabel *la_prog;
 	GtkButton *btn_prog_cancel;
 
+	/* диалог подтверждения перед пакетом (владелец 06.11):
+	 * инфа о загрузке + выбор «перекодировать/как есть» +
+	 * «Старт/Отмена»; собирается лениво, живёт между пакетами */
+	GtkWindow *win_confirm;
+	GtkLabel *la_confirm;
+	GtkTextView *tv_confirm;
+	GtkCheckButton *ck_trans;
+
 	GSubprocess *proc;
 	GDataInputStream *stream;
 	GCancellable *cancel;
@@ -124,6 +133,11 @@ typedef struct {
 	unsigned pl_rows_done; /* доведено до строки/скипа — прогресс
 				* окна (владелец 05.11) */
 	GPtrArray *pl_files; /* выбранное: gchar* пути источника */
+	GPtrArray *pl_pending; /* выбор владельца до подтверждения
+				* (диалог «Старт/Отмена») */
+	gboolean trans_mode; /* перекодировать в .m4a? (диалог; владелец
+			      * 06.11: конверт не обязателен — 3uTools
+			      * льёт mp3 как есть) */
 	GPtrArray *pl_rows;  /* готовые строки: struct pl_row* */
 
 	/* 9l-live v2 (владелец 12:53): серийный цикл — перекод K треков
@@ -670,6 +684,7 @@ static void chain_paths_free(void);
 static void chain_discover(gpointer job);
 static GSubprocess *transcode_spawn(const char *src, const char *dst);
 static gchar *tc_make_dst2(const char *src, const char *uniq);
+static gchar *tc_make_dst3(const char *src, const char *uniq);
 static void pl_finish(void);
 static unsigned pl_chunk_k(void);
 static unsigned pl_par_k(void);
@@ -1113,10 +1128,12 @@ static struct pl_job *pl_job_new(const char *src, unsigned idx,
 	read_source_tags(src);
 	read_source_artwork2(src, uname);
 	j->src = g_strdup(src);
-	/* пейлоад ВСЕГДА наш tmp-артефакт: транскод для не-.m4a, для
-	 * родного .m4a — копия (в неё вшиваются теги/обложка, файл
-	 * владельца не трогаем) */
-	j->dst = tc_make_dst2(src, uname);
+	/* пейлоад ВСЕГДА наш tmp-артефакт: перекод — .m4a; «как есть» —
+	 * копия с оригинальным расширением и чистым именем (теги не
+	 * трогаем — телефон сядет на права из TSV). Файл владельца не
+	 * трогаем всегда */
+	j->dst = ifl.trans_mode ? tc_make_dst2(src, uname)
+				: tc_make_dst3(src, uname);
 	g_free(uname);
 	j->title = g_strdup(ifl.tag_title);
 	j->artist = g_strdup(ifl.tag_artist);
@@ -1210,6 +1227,17 @@ static void pl_advance(void)
 	       ifl.pl_rows && ifl.pl_rows->len < (guint)pl_chunk_k()) {
 		const char *src = g_ptr_array_index(ifl.pl_files,
 						    ifl.pl_idx);
+		/* копии (нативный вход) синхронные: без лимита
+		 * первый проход завал бы ВЕСЬ пакет (пик tmpfs на
+		 * всё); держим ≤ PAR боев в полёте, серийно.
+		 * Транскоды грызут свой предел через pl_tct — им
+		 * не мешаем. Файл возвращается в очередь (idx--)
+		 * — перечитаем его на следующем advance */
+		if (!(ifl.trans_mode && !is_m4a(src)) &&
+		    ifl.pl_running >= (guint)ifl.pl_par) {
+			ifl.pl_idx--;
+			break;
+		}
 		ifl.pl_idx++;
 		if (strchr(src, '\t')) {
 			/* таб в пути разобьёт колонки TSV */
@@ -1229,10 +1257,21 @@ static void pl_advance(void)
 		struct pl_job *j = pl_job_new(src, ifl.pl_idx,
 					      (unsigned)n);
 		ifl.pl_running++;
-		if (is_m4a(src)) {
-			/* родный .m4a: копируем во временную копию и
-			 * вшиваем теги/обложку (оригинал владельца
-			 * переживает конвейер нетронутым) */
+		if (ifl.trans_mode && !is_m4a(src)) {
+			/* перекод: gst — единственный путь не-.m4a в
+			 * конвейере; «как есть» gst не запускает
+			 * вовсе (владелец 06.11: mp3 льём без
+			 * конвертирования, как 3uTools) */
+			pl_job_start(j);
+		} else {
+			/* пейлоад-копия: родный .m4a при перекоде и
+			 * ВСЕ файлы в «как есть» (расширение
+			 * оригинала, имя без пробелов). Теги вшиваем
+			 * ТОЛЬКО при перекоде (в копию .m4a);
+			 * mp3 в «как есть» уезжает со своим ID3 —
+			 * телефон возьмёт теги из TSV, а скан
+			 * прочитает их прямо из файла. Оригинал
+			 * владельца не тронут. */
 			GError *cerr = NULL;
 			GFile *gf = g_file_new_for_path(src);
 			GFile *df = g_file_new_for_path(j->dst);
@@ -1242,7 +1281,7 @@ static void pl_advance(void)
 			g_object_unref(gf);
 			g_object_unref(df);
 			if (!copied) {
-				ifl_log("  [%u] копия .m4a не удалась: %s",
+				ifl_log("  [%u] копия не удалась: %s",
 					j->idx,
 					cerr ? cerr->message : "?");
 				g_clear_error(&cerr);
@@ -1253,10 +1292,9 @@ static void pl_advance(void)
 				pl_job_free(j);
 				continue;
 			}
-			ifl_write_tags_into(j);
+			if (ifl.trans_mode)
+				ifl_write_tags_into(j);
 			pl_job_ready_add(j);
-		} else {
-			pl_job_start(j);
 		}
 	}
 	/* (г) очередь кончилась и всё разошлось; inflight ждёт последний
@@ -1517,68 +1555,244 @@ static void pl_chunk_done(gboolean ok)
 /* выбор нескольких файлов (GtkFileDialog open_multiple): защита
  * от повторного старта и очередь источников; сама обработка —
  * по одному файлу */
-static void pl_start_from_files(GListModel *files)
+static void pl_confirm_dialog_show(void);
+static void pl_confirm_start(void);
+
+/* копия «как есть»: тот же чистый паттерн /tmp/irm-fill-<метка>-<имя>,
+ * но с ОРИГИНАЛЬНЫМ расширением — пейлоад mp3 остаётся mp3, m4a
+ * остаётся m4a (владелец 06.11: конверт не обязателен, 3uTools льёт
+ * mp3 как есть; wire-путь по-прежнему без пробелов). */
+static gchar *tc_make_dst3(const char *src, const char *uniq)
 {
-	if (ifl.pl_active) {
-		ifl_log("пакет уже идёт — новый запуск игнорирую");
+	char *b = g_path_get_basename(src);
+	char *dot = strrchr(b, '.');
+	gchar *ext = dot && dot != b ? g_strdup(dot) : g_strdup("");
+	if (dot && dot != b)
+		*dot = 0;
+	for (char *q = b; *q; q++)
+		if (!g_ascii_isalnum((guchar)*q) && *q != '-' && *q != '_')
+			*q = '_';
+	if (!*b) {
+		g_free(b);
+		b = g_strdup("out");
+	}
+	gchar *name = uniq ? g_strdup_printf("irm-fill-%s-%s%s", uniq, b,
+					     ext)
+			   : g_strdup_printf("irm-fill-%s%s", b, ext);
+	g_free(b);
+	g_free(ext);
+	return g_build_filename(g_get_tmp_dir(), name, NULL);
+}
+
+/* ---- диалог подтверждения перед пакетом (владелец 06.11) ---- */
+
+/* Отмена на подтверждении: окно гасим, выбор забываем. */
+static void pl_confirm_cancel(const char *why)
+{
+	if (ifl.win_confirm)
+		gtk_widget_set_visible(GTK_WIDGET(ifl.win_confirm), FALSE);
+	if (!ifl.pl_pending)
 		return;
+	ifl_log("%s", why);
+	g_ptr_array_unref(ifl.pl_pending);
+	ifl.pl_pending = NULL;
+}
+
+static void on_confirm_cancel_clicked(GtkButton *btn, gpointer user)
+{
+	(void)btn;
+	(void)user;
+	pl_confirm_cancel("пакет отменён на подтверждении");
+}
+
+static gboolean on_confirm_close_request(GtkWindow *win, gpointer user)
+{
+	(void)win;
+	(void)user;
+	pl_confirm_cancel(
+		"пакет отменён на подтверждении (окно закрыто)");
+	return TRUE;
+}
+
+/* подпись сверху + список файлов под текущим выбором */
+static void pl_confirm_dialog_refresh(void)
+{
+	GPtrArray *pp = ifl.pl_pending;
+	guint n = pp ? pp->len : 0;
+	unsigned K = pl_chunk_k();
+	unsigned ports = (n + K - 1) / K;
+	unsigned long long total = 0;
+	GString *gs = g_string_new(NULL);
+	enum { CONFIRM_LIST_CAP = 400 };
+	for (guint i = 0; pp && i < n; i++) {
+		const char *p = g_ptr_array_index(pp, i);
+		GStatBuf st;
+		if (g_stat(p, &st) == 0)
+			total += (unsigned long long)st.st_size;
+		if (i < CONFIRM_LIST_CAP) {
+			gchar *b = g_path_get_basename(p);
+			g_string_append_printf(gs, "%s\n", b);
+			g_free(b);
+		}
 	}
-	guint n = files ? g_list_model_get_n_items(files) : 0;
-	if (n == 0) {
-		ifl_log("пакет: ничего не выбрано");
-		return;
+	if (n > (guint)CONFIRM_LIST_CAP)
+		g_string_append_printf(gs, "… и ещё %u\n",
+				       (unsigned)(n - CONFIRM_LIST_CAP));
+	gboolean conv = ifl.ck_trans &&
+			gtk_check_button_get_active(ifl.ck_trans);
+	gchar *info = g_strdup_printf(
+		"файлов: %u • объём: %s • порций по %u (~%u порций)\n"
+		"перекодирование: %s",
+		n, g_format_size(total), K, ports,
+		conv ? "включено — не-.m4a станет AAC"
+		     : "выключено — файлы уйдут как есть");
+	gtk_label_set_text(ifl.la_confirm, info);
+	g_free(info);
+	GtkTextBuffer *buf = gtk_text_view_get_buffer(ifl.tv_confirm);
+	gtk_text_buffer_set_text(buf, gs->str, -1);
+	g_string_free(gs, TRUE);
+}
+
+static void pl_confirm_dialog_changed(GtkCheckButton *ck, gpointer user)
+{
+	(void)ck;
+	(void)user;
+	pl_confirm_dialog_refresh();
+}
+
+static void on_confirm_start_clicked(GtkButton *btn, gpointer user)
+{
+	(void)btn;
+	(void)user;
+	pl_confirm_start();
+}
+
+/* окно строится лениво и живёт между пакетами (hide, как окно
+ * прогресса) */
+static void pl_confirm_dialog_show(void)
+{
+	if (!ifl.win_confirm) {
+		GtkWidget *w = gtk_window_new();
+		gtk_window_set_title(GTK_WINDOW(w),
+				     "Заливка на телефон — подтверждение");
+		gtk_window_set_resizable(GTK_WINDOW(w), TRUE);
+		gtk_window_set_modal(GTK_WINDOW(w), TRUE);
+		gtk_window_set_transient_for(GTK_WINDOW(w),
+					     GTK_WINDOW(ifl.win));
+		gtk_window_set_default_size(GTK_WINDOW(w), 460, 540);
+		GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+		gtk_widget_set_margin_top(box, 12);
+		gtk_widget_set_margin_bottom(box, 12);
+		gtk_widget_set_margin_start(box, 16);
+		gtk_widget_set_margin_end(box, 16);
+
+		ifl.la_confirm = GTK_LABEL(gtk_label_new(NULL));
+		gtk_label_set_xalign(ifl.la_confirm, 0.0);
+		gtk_label_set_wrap(ifl.la_confirm, TRUE);
+		gtk_widget_set_halign(GTK_WIDGET(ifl.la_confirm),
+				      GTK_ALIGN_START);
+		gtk_box_append(GTK_BOX(box), GTK_WIDGET(ifl.la_confirm));
+
+		/* список файлов: read-only текст в прокрутке */
+		ifl.tv_confirm = GTK_TEXT_VIEW(gtk_text_view_new());
+		gtk_text_view_set_editable(ifl.tv_confirm, FALSE);
+		gtk_text_view_set_cursor_visible(ifl.tv_confirm, FALSE);
+		gtk_text_view_set_monospace(ifl.tv_confirm, TRUE);
+		GtkWidget *sv = gtk_scrolled_window_new();
+		gtk_scrolled_window_set_min_content_height(
+			GTK_SCROLLED_WINDOW(sv), 220);
+		gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sv),
+					      GTK_WIDGET(ifl.tv_confirm));
+		gtk_widget_set_vexpand(sv, TRUE);
+		gtk_widget_set_hexpand(sv, TRUE);
+		gtk_box_append(GTK_BOX(box), sv);
+
+		ifl.ck_trans = GTK_CHECK_BUTTON(
+			gtk_check_button_new_with_label(
+				"Перекодировать в .m4a (AAC)"));
+		gtk_widget_set_tooltip_text(
+			GTK_WIDGET(ifl.ck_trans),
+			"по умолчанию ВЫКЛЮЧЕНО: файлы уходят как есть "
+			"(3uTools шлёт mp3 без конвертирования); при "
+			"включении gst перекодирует не-.m4a в AAC — "
+			"байты легче, tmpfs несут перекоды");
+		g_signal_connect(ifl.ck_trans, "toggled",
+				 G_CALLBACK(pl_confirm_dialog_changed),
+				 NULL);
+		gtk_box_append(GTK_BOX(box), GTK_WIDGET(ifl.ck_trans));
+
+		GtkWidget *hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+		GtkWidget *cancel = gtk_button_new_with_label("Отмена");
+		g_signal_connect(cancel, "clicked",
+				 G_CALLBACK(on_confirm_cancel_clicked),
+				 NULL);
+		GtkWidget *start = gtk_button_new_with_label("Старт");
+		gtk_widget_add_css_class(start, "suggested-action");
+		g_signal_connect(start, "clicked",
+				 G_CALLBACK(on_confirm_start_clicked),
+				 NULL);
+		gtk_box_append(GTK_BOX(hb), cancel);
+		gtk_box_append(GTK_BOX(hb), start);
+		gtk_widget_set_halign(hb, GTK_ALIGN_END);
+		gtk_box_append(GTK_BOX(box), hb);
+		gtk_window_set_child(GTK_WINDOW(w), box);
+		g_signal_connect(w, "close-request",
+				 G_CALLBACK(on_confirm_close_request),
+				 NULL);
+		ifl.win_confirm = GTK_WINDOW(w);
 	}
-	if (n > IRMFILL_BATCH_MAX) {
-		ifl_log("пакет: ограничение %u — беру первые %u",
-			IRMFILL_BATCH_MAX, IRMFILL_BATCH_MAX);
-		n = IRMFILL_BATCH_MAX;
-	}
-	if (!ifl.irmctl) {
-		ifl_log("irmctl не найден (env %s, PATH или рядом с "
-			"бинарником irm-fill)",
-			IRMFILL_IRMCTL_ENV);
-		return;
-	}
-	if (!ifl.gst_discover) {
-		ifl_log("пакет невозможен: нет gst-discoverer-1.0 в PATH");
-		return;
-	}
-	if (!ifl.gst_launch) {
+	pl_confirm_dialog_refresh();
+	gtk_widget_set_visible(GTK_WIDGET(ifl.win_confirm), TRUE);
+}
+
+/* «Старт» в диалоге: выбор становится пакетом, режим — из галки,
+ * precheck только для перекода (копии «как есть» считаются
+ * размерами источников) */
+static void pl_confirm_start(void)
+{
+	if (ifl.win_confirm)
+		gtk_widget_set_visible(GTK_WIDGET(ifl.win_confirm), FALSE);
+	ifl.trans_mode =
+		ifl.ck_trans && gtk_check_button_get_active(ifl.ck_trans);
+	/* снёс старый пакет ДО передачи выбора: pl_reset вместе с
+	 * прочим чистит и pl_files — после передачи уходило бы
+	 * вместе с pending */
+	pl_reset();
+	if (ifl.trans_mode && !ifl.gst_launch) {
 		ifl_log("пакет невозможен: нет gst-launch-1.0 в PATH "
 			"(перекод %s для не-.m4a входов)",
 			ifl.gst_codec);
+		g_clear_pointer(&ifl.pl_pending, g_ptr_array_unref);
 		return;
 	}
-	pl_reset();
-	ifl.pl_files = g_ptr_array_new_with_free_func(g_free);
-	for (guint i = 0; i < n; i++) {
-		GFile *gf = g_list_model_get_item(files, i);
-		gchar *path = gf ? g_file_get_path(gf) : NULL;
-		if (path) {
-			g_ptr_array_add(ifl.pl_files, path);
-		} else {
-			ifl_log("  пропущен — не локальный: %s",
-				gf ? g_file_peek_path(gf) : "?");
-		}
-		g_clear_object(&gf);
-	}
-	if (ifl.pl_files->len == 0) {
-		pl_reset();
+	/* подтверждённый выбор становится пакетом (владение перешло) */
+	ifl.pl_files = ifl.pl_pending;
+	ifl.pl_pending = NULL;
+	if (!ifl.pl_files || ifl.pl_files->len == 0)
 		return;
-	}
-	/* precheck места (live 05.11: EDQUOT на tmpfs при rc=0 gst-launch
-	 * валит транскоды молча — гасим проблему ДО работы): оценка
-	 * vs свободного места на tmp (90% — не доедаем). v3: оценки
-	 * пишутся подрёбно (AAC = длина×битрейт по TagLib), а
-	 * граница честная: в tmpfs живут заливающаяся порция и
-	 * буфер следующей (две порции худших: сумма K худших ×2) +
-	 * PAR транскодов в полёте (худший × PAR). */
+
+	/* precheck места (live 05.11: EDQUOT на tmpfs при rc=0
+	 * gst-launch валит транскоды молча — гасим проблему ДО
+	 * работы): оценка vs свободного места на tmp (90% — не
+	 * доедаем). Перекод — оценки битрейтов (payload_estimate:
+	 * длительность × битрейт AAC); «как есть» — размеры
+	 * источников (пейлоад — точная копия). Граница честная:
+	 * в tmpfs живут заливающаяся порция и буфер следующей
+	 * (две порции худших: сумма K худших ×2) + PAR транскодов
+	 * в полёте (худший × PAR). */
 	unsigned long long one = 0;
 	guint cnt = ifl.pl_files->len;
 	unsigned long long *ests = g_new(unsigned long long, cnt);
 	for (guint i = 0; i < cnt; i++) {
 		const char *p = g_ptr_array_index(ifl.pl_files, i);
-		ests[i] = payload_estimate(p);
+		if (ifl.trans_mode) {
+			ests[i] = payload_estimate(p);
+		} else {
+			GStatBuf st;
+			ests[i] = g_stat(p, &st) == 0
+					  ? (unsigned long long)st.st_size
+					  : 0;
+		}
 		if (ests[i] > one)
 			one = ests[i];
 	}
@@ -1601,13 +1815,12 @@ static void pl_start_from_files(GListModel *files)
 			g_get_tmp_dir());
 	} else if (need > avail) {
 		ifl_log("пакет: места на %s мало: нужно ~%llu МиБ "
-			"(2 порции худших K{%u} + %u транкод(ов) худшего), "
-			"свободно ~%llu МиБ (составлял по 90%%)",
+			"(2 порции худших K{%u} + %u шт худшего в "
+			"полёте), свободно ~%llu МиБ (составлял по 90%%)",
 			g_get_tmp_dir(), need >> 20, K, par, avail >> 20);
-		ifl_log("советы: rm /tmp/irm-fill-*.m4a /tmp/irm-fill-*.jpg "
-			"(старые артефакты), или меньший IRMFILL_CHUNK "
-			"(сейчас порция %u), или точка монтирования /tmp "
-			"с большим объёмом",
+		ifl_log("советы: rm /tmp/irm-fill-* (старые артефакты), "
+			"или меньший IRMFILL_CHUNK (сейчас порция %u), "
+			"или точка монтирования /tmp с большим объёмом",
 			K);
 		pl_reset();
 		return;
@@ -1626,15 +1839,76 @@ static void pl_start_from_files(GListModel *files)
 	ifl.pl_chunk_total = (unsigned)((ifl.pl_files->len + K - 1) / K);
 	ifl.pl_active = TRUE;
 	ifl.pl_idx = 0;
-	ifl_log("пакет: %u файл(ов), порций по %u, перекод %s ×%u, "
-		"цикл «транскод → заливка → чистка»…",
-		ifl.pl_files->len, K, ifl.gst_codec, par);
+	if (ifl.trans_mode)
+		ifl_log("пакет: %u файл(ов), порций по %u, перекод %s "
+			"×%u, цикл «транскод → заливка → чистка»…",
+			ifl.pl_files->len, K, ifl.gst_codec, par);
+	else
+		ifl_log("пакет: %u файл(ов), порций по %u, без "
+			"перекодирования (как есть)…",
+			ifl.pl_files->len, K);
 	ifl_busy(1);
 	/* окно прогресса с кнопкой отмены (владелец 05.11): до отмены
 	 * фракция 0, дальше ведут pl_row_done/pl_job_fail/порции */
 	pl_progress_show();
 	pl_advance();
 }
+
+static void pl_start_from_files(GListModel *files)
+{
+	if (ifl.pl_active) {
+		ifl_log("пакет уже идёт — новый запуск игнорирую");
+		return;
+	}
+	if (ifl.pl_pending) {
+		ifl_log("диалог подтверждения уже открыт — новый выбор "
+			"игнорирую");
+		return;
+	}
+	guint n = files ? g_list_model_get_n_items(files) : 0;
+	if (n == 0) {
+		ifl_log("пакет: ничего не выбрано");
+		return;
+	}
+	if (n > IRMFILL_BATCH_MAX) {
+		ifl_log("пакет: ограничение %u — беру первые %u",
+			IRMFILL_BATCH_MAX, IRMFILL_BATCH_MAX);
+		n = IRMFILL_BATCH_MAX;
+	}
+	if (!ifl.irmctl) {
+		ifl_log("irmctl не найден (env %s, PATH или рядом с "
+			"бинарником irm-fill)",
+			IRMFILL_IRMCTL_ENV);
+		return;
+	}
+	if (!ifl.gst_discover) {
+		ifl_log("пакет невозможен: нет gst-discoverer-1.0 в PATH");
+		return;
+	}
+	/* gst-launch нужен только перекоду — проверяем на «Старте»,
+	 * после того как владелец выбрал режим в диалоге */
+	GPtrArray *paths = g_ptr_array_new_with_free_func(g_free);
+	for (guint i = 0; i < n; i++) {
+		GFile *gf = g_list_model_get_item(files, i);
+		gchar *path = gf ? g_file_get_path(gf) : NULL;
+		if (path) {
+			g_ptr_array_add(paths, path);
+		} else {
+			ifl_log("  пропущен — не локальный: %s",
+				gf ? g_file_peek_path(gf) : "?");
+		}
+		g_clear_object(&gf);
+	}
+	if (paths->len == 0) {
+		g_ptr_array_unref(paths);
+		return;
+	}
+	/* выбор ждёт подтверждения (инфа + режим + «Старт/Отмена») */
+	ifl.pl_pending = paths;
+	ifl.trans_mode = FALSE;
+	pl_confirm_dialog_show();
+}
+
 static void chain_paths_free(void)
 {
 	g_free(ifl.tc_src);

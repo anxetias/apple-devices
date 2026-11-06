@@ -1297,6 +1297,13 @@ static void pl_advance(void)
 			pl_job_ready_add(j);
 		}
 	}
+	/* (б2) копии уходят в ready СИНХРОННО внутри (в) этого же
+	 * tick'а — базовый (б) давно прошёл; без добора job'ы так и
+	 * сидят в очереди, финализация не зовётся и пакет ВИСНЕТ
+	 * (живой факт 06.11: «когда без конверта, то висит»).
+	 * Дальше колесо ведут pl_row_done/pl_chunk_done → pl_advance. */
+	if (!ifl.pl_fin_job && ifl.pl_ready->len)
+		pl_job_finalize();
 	/* (г) очередь кончилась и всё разошлось; inflight ждёт последний
 	 * rc — хвост разборок поведёт pl_chunk_done → pl_advance */
 	if (!ifl.pl_inflight && ifl.pl_idx >= n &&

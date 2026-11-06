@@ -2685,11 +2685,16 @@ close:
 /* atc-insert: РЕАЛЬНЫЙ Delta с треками (шаг 9f). Карта полей и порядок  */
 /* ключей — 1:1 из живой реализации rustunes (protocol/alac.rs serialize */
 /* — CONFIRMED живыми Linux-сессиями на этом протоколе).                 */
-/* Правила: op={operation,pid,avformat_info,item_stats,item,location},   */
+/* Карта кодека (06.11): ALAC-пейлоады — прежняя 1:1 rustunes-карта;
+ * mp3-пейлоады («как есть») — живой след 3uTools (FINDINGS 152/545):
+ * location {kind:"MPEG Audio"}, avformat {audio_format:301, bit_rate
+ * — фактический, sample_rate:0}, item album_pid/artist_pid=0
+ * (+album_artist/sort_album_artist), постоянный файл XXXX.mp3.
+ * Правила: op={operation,pid,avformat_info,item_stats,item,location},   */
 /* item_stats — ПОЛНЫЙ словарь (4 нуля + has_been_played=false),         */
-/* gapless-группа всегда 4 ключа (0,0,1,0), bit_rate = PCM-ставка       */
-/* ((44100×16×2+500)/1000 = 1411), artwork_checksum=0, album_artist      */
-/* отсутствует, location={kind:"Apple Lossless audio file"}.             */
+/* gapless-группа всегда 4 ключа (0,0,1,0), bit_rate = PCM-ставка        */
+/* ((44100×16×2+500)/1000 = 1411) для ALAC, artwork_checksum=0,          */
+/* album_artist — только в mp3-ветке, location={kind: по кодеку}.        */
 /* ==================================================================== */
 
 #define ATC_EPOCH_2001 978307200.0 /* Unix-время 2001-01-01T00:00:00Z */
@@ -2698,6 +2703,7 @@ struct atc_insert_data {
 	const char *title;
 	const char *artist;
 	const char *album;
+	const char *album_artist;
 	const char *genre;
 	int64_t track_pid;
 	int64_t album_pid;
@@ -2707,6 +2713,16 @@ struct atc_insert_data {
 	uint32_t sample_rate;
 	uint32_t number;     /* item.track_number (1..N в пакете, 9g) */
 	uint64_t artwork_cache_id; /* item.artwork_cache_id (9k; 0 = нет) */
+	/* карта кодека (06.11, живой сбой «mp3 не играет»: прежняя
+	 * ALAC-карта 601/"Apple Lossless"/.m4a отправлялась ВСЕМ
+	 * пейлоадам — телефон открывал mp3 как Apple Lossless →
+	 * «сбой воспроизведения»):
+	 * mp3=1 → 3uTools-след (FINDINGS 152/545): kind "MPEG Audio",
+	 * avformat {audio_format 301, bit_rate фактический,
+	 * sample_rate 0}, album_pid/artist_pid = 0 (телефон
+	 * сверяет контейнеры сам) */
+	int mp3;
+	uint32_t bit_rate; /* кбит/с (mp3; 0 → 320 — живой образец) */
 };
 
 /* {operation:"update_db_info", pid:<db_pid s64>, db_info:{primary_container_pid}}.
@@ -2755,9 +2771,29 @@ static irm_bp_node *atc_op_insert_track(const struct atc_insert_data *t)
 	irm_bp_node *op = irm_bp_dict();
 	if (!avf || !stats || !item || !loc || !op)
 		goto fail;
-	if (irm_bp_dict_set(avf, "audio_format", irm_bp_uint(601)) != 0 ||
-	    irm_bp_dict_set(avf, "bit_rate", irm_bp_uint(bit_rate)) != 0 ||
-	    irm_bp_dict_set(avf, "duration", irm_bp_uint(t->samples)) != 0 ||
+	if (t->mp3) {
+		/* mp3-карта 3uTools (живая декларация): 301, фак-
+		 * тический битрейт, sample_rate 0. Прочие ключи AVR-
+		 * словаря (duration/gapless) не слал и 3u — но наш
+		 * полный словарь телефон принимал в ALAC-режиме, так
+		 * что duration/gapless остаются реальными значениями
+		 * строки (ограничение не выявлено) */
+		if (irm_bp_dict_set(avf, "audio_format", irm_bp_uint(301)) !=
+			    0 ||
+		    irm_bp_dict_set(avf, "bit_rate",
+				    irm_bp_uint((uint64_t)(t->bit_rate ?
+								    t->bit_rate
+								    : 320))) !=
+			    0 ||
+		    irm_bp_dict_set(avf, "sample_rate", irm_bp_real(0.0)) !=
+			    0)
+			goto fail;
+	} else if (irm_bp_dict_set(avf, "audio_format", irm_bp_uint(601)) !=
+			   0 ||
+		   irm_bp_dict_set(avf, "bit_rate", irm_bp_uint(bit_rate)) !=
+			   0 ||
+		   irm_bp_dict_set(avf, "duration", irm_bp_uint(t->samples)) !=
+			   0 ||
 	    irm_bp_dict_set(avf, "gapless_encoding_delay", irm_bp_uint(0)) !=
 		    0 ||
 	    irm_bp_dict_set(avf, "gapless_encoding_drain", irm_bp_uint(0)) !=
@@ -2778,12 +2814,26 @@ static irm_bp_node *atc_op_insert_track(const struct atc_insert_data *t)
 	    irm_bp_dict_set(stats, "has_been_played", irm_bp_bool(0)) != 0)
 		goto fail;
 	if (irm_bp_dict_set(item, "album_pid",
-			    irm_bp_uint((uint64_t)t->album_pid)) != 0 ||
+			    irm_bp_uint(t->mp3 ? 0u : (uint64_t)t->album_pid)) !=
+			    0 ||
 	    irm_bp_dict_set(item, "artist_pid",
-			    irm_bp_uint((uint64_t)t->artist_pid)) != 0 ||
+			    irm_bp_uint(t->mp3 ? 0u : (uint64_t)t->artist_pid)) !=
+			    0 ||
 	    irm_bp_dict_set(item, "title", irm_bp_string(t->title)) != 0 ||
 	    irm_bp_dict_set(item, "artist", irm_bp_string(t->artist)) != 0 ||
 	    irm_bp_dict_set(item, "album", irm_bp_string(t->album)) != 0 ||
+	    /* album_artist 3u шлёт всегда (FINDINGS 536) — контейнер
+	     * альбома сверяется парой строк: pid 0 + строки */
+	    (t->mp3 && (irm_bp_dict_set(item, "album_artist",
+					 irm_bp_string(t->album_artist ?
+							       t->album_artist
+							       : t->artist)) !=
+			    0)) ||
+	    (t->mp3 && (irm_bp_dict_set(item, "sort_album_artist",
+					 irm_bp_string(t->album_artist ?
+							       t->album_artist
+							       : t->artist)) !=
+			    0)) ||
 	    irm_bp_dict_set(item, "sort_name", irm_bp_string(t->title)) != 0 ||
 	    irm_bp_dict_set(item, "sort_artist", irm_bp_string(t->artist)) !=
 		    0 ||
@@ -2804,7 +2854,11 @@ static irm_bp_node *atc_op_insert_track(const struct atc_insert_data *t)
 			    irm_bp_uint(t->artwork_cache_id)) != 0)
 		goto fail;
 	if (irm_bp_dict_set(loc, "kind",
-			    irm_bp_string("Apple Lossless audio file")) != 0)
+			    irm_bp_string(t->mp3 ? "MPEG Audio"
+						 /* 3uTools mp3 (живая
+						  * декларация) */
+						 : "Apple Lossless audio "
+						   "file")) != 0)
 		goto fail;
 	if (irm_bp_dict_set(op, "operation", irm_bp_string("insert_track")) !=
 		    0 ||
@@ -2888,6 +2942,44 @@ static int atc_four_letters(char out[5])
 	}
 	out[4] = 0;
 	return 0;
+}
+
+/* Карта пейлоада (06.11 «mp3 не играет»): расширение источника не
+ * печатается на телефонном пути (FileComplete несёт ПОСТОЯННЫЙ путь
+ * с .m4a — телефон открывает mp3 как Apple Lossless и сбоит).
+ * mp3-пейлоады едут картой 3uTools: kind MPEG Audio, avformat 301,
+ * файл — XXXX.mp3. */
+static int atc_path_is_mp3(const char *path)
+{
+	size_t n = path ? strlen(path) : 0;
+	if (n < 5)
+		return 0;
+	char a = path[n - 4], b = path[n - 3], c = path[n - 2],
+	     d = path[n - 1];
+	if (a >= 'A' && a <= 'Z')
+		a = (char)(a - 'A' + 'a');
+	if (b >= 'A' && b <= 'Z')
+		b = (char)(b - 'A' + 'a');
+	if (c >= 'A' && c <= 'Z')
+		c = (char)(c - 'A' + 'a');
+	if (d >= 'A' && d <= 'Z')
+		d = (char)(d - 'A' + 'a');
+	return a == '.' && b == 'm' && c == 'p' && d == '3';
+}
+
+/* битрейт mp3 из фактических байтов и длительности (3uTools слал
+ * реальный битрейт файла: 320 для CBR-образца); не вычитали — 320
+ * (живой образец декларации) */
+static uint32_t atc_mp3_bitrate(const char *path, unsigned total_ms)
+{
+	struct stat st;
+	if (!path || stat(path, &st) != 0 || st.st_size <= 0 || total_ms == 0)
+		return 320;
+	double kbps = (double)(unsigned long long)st.st_size * 8.0 /
+		      ((double)total_ms / 1000.0) / 1000.0;
+	if (kbps < 16.0 || kbps > 4000.0)
+		return 320;
+	return (uint32_t)(kbps + 0.5);
 }
 
 /* Запись с read-back-сверкой байт-в-байт (обязательна у стейджа, §8.2). */
@@ -2999,8 +3091,8 @@ static void atc_stage_clean(irm_afc_t *afc, int verbose)
  * рованно от track PID), имя — 4 случайные заглавные буквы + .m4a,
  * без столкновений с существующими в папке; отсутствующую Fnn создаём
  * mkdir'ом. Возвращает ROOT-RELATIVE путь (без ведущего /). */
-static int atc_permanent_path(irm_afc_t *afc, int64_t track_pid, char *out,
-			      size_t outcap)
+static int atc_permanent_path(irm_afc_t *afc, int64_t track_pid,
+			      const char *ext, char *out, size_t outcap)
 {
 	for (int try_off = 0; try_off < 4; try_off++) {
 		unsigned fidx =
@@ -3040,7 +3132,8 @@ static int atc_permanent_path(irm_afc_t *afc, int64_t track_pid, char *out,
 			char letters[5], nm[12];
 			if (atc_four_letters(letters) != 0)
 				return -1;
-			snprintf(nm, sizeof nm, "%s.m4a", letters);
+			snprintf(nm, sizeof nm, "%s.%s",
+				 letters, ext ? ext : "m4a");
 			int busy = 0;
 			for (size_t i = 0; i < usedn; i++) {
 				if (strcmp(used[i], nm) == 0) {
@@ -3271,10 +3364,12 @@ static int atc_file_error(int fd, int tls, const char *asset_id)
 /* Свой ассет: Airlock-загрузка → read-back — rename → bare →
  * read-back → постоянный путь → FileComplete. */
 static int atc_own_asset(irm_afc_t *afc, int fd, int tls, int64_t track_pid,
-			 const char *own_id, const uint8_t *bytes, size_t n)
+			 const char *own_id, const char *ext,
+			 const uint8_t *bytes, size_t n)
 {
 	char stage[80], stage2[72];
-	snprintf(stage, sizeof stage, "/Airlock/Media/%s.m4a", own_id);
+	snprintf(stage, sizeof stage, "/Airlock/Media/%s.%s",
+		 own_id, ext ? ext : "m4a");
 	if (atc_write_verify(afc, stage, bytes, n) != 0)
 		return -1;
 	snprintf(stage2, sizeof stage2, "/Airlock/Media/%s", own_id);
@@ -3297,7 +3392,7 @@ static int atc_own_asset(irm_afc_t *afc, int fd, int tls, int64_t track_pid,
 		}
 	}
 	char perm[96];
-	if (atc_permanent_path(afc, track_pid, perm, sizeof perm) != 0) {
+	if (atc_permanent_path(afc, track_pid, ext, perm, sizeof perm) != 0) {
 		fprintf(stderr, "atc-insert: не выбрали постоянный путь\n");
 		return -1;
 	}
@@ -4752,6 +4847,7 @@ static int cmd_atc_insert(const char *path, const char *selector)
 			ops1 = NULL; /* arr владеет */
 			for (unsigned i = 0; i < batch_n; i++) {
 				struct atc_insert_data td;
+				memset(&td, 0, sizeof td);
 				if (playlist) {
 					/* 9l: per-item мета из строк
 					 * плейлиста; пустые текстовые —
@@ -4771,6 +4867,31 @@ static int cmd_atc_insert(const char *path, const char *selector)
 					td.album_pid = (int64_t)apids[i];
 					td.artist_pid = (int64_t)rps[i];
 					td.artwork_cache_id = pl[i].art_token;
+					/* mp3-пейлоады (06.11): карта
+					 * 3uTools — kind MPEG Audio,
+					 * 301, фактический битрейт;
+					 * album/artist pid = 0, аль-
+					 * бом-исполнителем сверяются
+					 * строки (телефон подберёт
+					 * контейнер сам — повторы
+					 * залива не плодят пустых
+					 * альбомов) */
+					td.mp3 = atc_path_is_mp3(pl[i].path);
+					if (td.mp3) {
+						td.bit_rate =
+							atc_mp3_bitrate(
+								pl[i].path,
+								pl[i].total_ms);
+						td.album_pid = 0;
+						td.artist_pid = 0;
+						td.album_artist =
+							pl[i].artist;
+						printf("  карта[%u]: mp3 "
+						       "(MPEG Audio/301, "
+						       "%u кбит/с, "
+						       "album/artist pid 0)\n",
+						       i + 1, td.bit_rate);
+					}
 				} else {
 					td.title = titles[i];
 					td.artist = artist_e ? artist_e
@@ -5266,6 +5387,10 @@ static int cmd_atc_insert(const char *path, const char *selector)
 											    afc, afd, atl,
 											    (int64_t)pid_i,
 											    own_ids[i],
+											    atc_path_is_mp3(
+												    pl[pj].path)
+												    ? "mp3"
+												    : "m4a",
 											    pay,
 											    payn) !=
 									    0)
@@ -5275,7 +5400,8 @@ static int cmd_atc_insert(const char *path, const char *selector)
 							} else if (atc_own_asset(
 									   afc, afd, atl,
 									   (int64_t)pid_i,
-									   own_ids[i], fix,
+									   own_ids[i], "m4a",
+									   fix,
 									   fixn) != 0)
 								failed = 1;
 						}
@@ -5318,6 +5444,10 @@ static int cmd_atc_insert(const char *path, const char *selector)
 											    afc, afd, atl,
 											    (int64_t)pid_f,
 											    foreigns[i].asset_id,
+											    atc_path_is_mp3(
+												    pl[0].path)
+												    ? "mp3"
+												    : "m4a",
 											    pay,
 											    payn) !=
 									    0)
@@ -5328,6 +5458,7 @@ static int cmd_atc_insert(const char *path, const char *selector)
 									   afc, afd, atl,
 									   (int64_t)pid_f,
 									   foreigns[i].asset_id,
+									   "m4a",
 									   fix,
 									   fixn) != 0)
 								failed = 1;
